@@ -3,6 +3,7 @@
  * Handles: inactivity messages, daily tips, scheduled scraping
  */
 
+// @ts-ignore - node-cron has no types
 import cron from 'node-cron'
 import { Pool } from 'pg'
 
@@ -10,16 +11,16 @@ let pool: Pool | null = null
 
 export function initScheduler(databaseUrl: string, sendMessage: SendMessageFn) {
   pool = new Pool({ connectionString: databaseUrl })
-  
+
   // Check for inactive users every 15 minutes
   cron.schedule('*/15 * * * *', () => checkInactiveUsers(sendMessage))
-  
+
   // Daily morning tips at 9 AM local time
   cron.schedule('0 9 * * *', () => sendDailyTips(sendMessage))
-  
+
   // Weekly travel deals scrape on Sundays at 10 AM
   cron.schedule('0 10 * * 0', () => scrapeAndNotifyDeals(sendMessage))
-  
+
   console.log('[SCHEDULER] Proactive tasks initialized')
 }
 
@@ -30,7 +31,7 @@ type SendMessageFn = (chatId: string, message: string) => Promise<void>
  */
 async function checkInactiveUsers(sendMessage: SendMessageFn) {
   if (!pool) return
-  
+
   try {
     // Find users who:
     // - Last active 1-2 hours ago (don't spam if already nudged)
@@ -50,17 +51,17 @@ async function checkInactiveUsers(sendMessage: SendMessageFn) {
             AND pm.sent_at > NOW() - INTERVAL '24 hours'
         )
     `)
-    
+
     for (const user of result.rows) {
       const message = generateNudgeMessage(user.display_name, user.home_location)
       await sendMessage(user.channel_user_id, message)
-      
+
       // Record that we sent a proactive message
       await pool.query(
         `INSERT INTO proactive_messages (user_id, message_type) VALUES ($1, 'nudge')`,
         [user.user_id]
       )
-      
+
       console.log(`[SCHEDULER] Sent nudge to ${user.display_name}`)
     }
   } catch (error) {
@@ -83,7 +84,7 @@ function generateNudgeMessage(name: string, location: string): string {
  */
 async function sendDailyTips(sendMessage: SendMessageFn) {
   if (!pool) return
-  
+
   try {
     // Get users who opted in to daily tips (for now, all authenticated users)
     const result = await pool.query(`
@@ -91,17 +92,17 @@ async function sendDailyTips(sendMessage: SendMessageFn) {
       FROM users u
       WHERE u.authenticated = TRUE AND u.channel = 'telegram'
     `)
-    
+
     for (const user of result.rows) {
       const tip = generateDailyTip(user.home_location)
       await sendMessage(user.channel_user_id, tip)
-      
+
       await pool.query(
         `INSERT INTO proactive_messages (user_id, message_type) VALUES ($1, 'daily_tip')`,
         [user.user_id]
       )
     }
-    
+
     console.log(`[SCHEDULER] Sent daily tips to ${result.rows.length} users`)
   } catch (error) {
     console.error('[SCHEDULER] Error sending daily tips:', error)

@@ -5,14 +5,14 @@
 
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
-import { handleMessage, initDatabase } from './character/handler.js'
+import { handleMessage, initDatabase } from './character/index.js'
 import { initScheduler } from './scheduler.js'
 import { initBrowser, closeBrowser } from './browser.js'
-import { 
-  channels, 
-  getEnabledChannels, 
+import {
+  channels,
+  getEnabledChannels,
   type ChannelAdapter,
-  type ChannelMessage 
+  type ChannelMessage
 } from './channels.js'
 
 const server = Fastify({
@@ -36,7 +36,7 @@ server.get('/health', async () => ({
 async function handleChannelMessage(adapter: ChannelAdapter, body: unknown) {
   const message = adapter.parseWebhook(body)
   if (!message) return { ok: true }
-  
+
   try {
     const response = await handleMessage(message.channel, message.userId, message.text)
     await adapter.sendMessage(message.chatId, response)
@@ -68,7 +68,7 @@ server.get('/webhook/whatsapp', async (request, reply) => {
   const mode = query['hub.mode']
   const token = query['hub.verify_token']
   const challenge = query['hub.challenge']
-  
+
   if (mode === 'subscribe' && token === process.env.WHATSAPP_VERIFY_TOKEN) {
     return reply.send(challenge)
   }
@@ -89,16 +89,16 @@ server.post('/webhook/whatsapp', async (request, reply) => {
 
 server.post('/webhook/slack', async (request, reply) => {
   const body = request.body as any
-  
+
   // Handle Slack URL verification
   if (body?.type === 'url_verification') {
     return { challenge: body.challenge }
   }
-  
+
   if (!channels.slack.isEnabled()) {
     return { ok: false, error: 'Slack not configured' }
   }
-  
+
   return handleChannelMessage(channels.slack, body)
 })
 
@@ -107,8 +107,8 @@ server.post('/webhook/slack', async (request, reply) => {
 // ============================================
 
 export async function sendChannelMessage(
-  channelName: string, 
-  chatId: string, 
+  channelName: string,
+  chatId: string,
   text: string
 ): Promise<void> {
   const adapter = channels[channelName]
@@ -129,22 +129,22 @@ const start = async () => {
       throw new Error('DATABASE_URL is required')
     }
     initDatabase(dbUrl)
-    
+
     // Initialize browser for scraping
     if (process.env.BROWSER_SCRAPING_ENABLED !== 'false') {
       await initBrowser()
     }
-    
+
     // Initialize proactive scheduler
     initScheduler(dbUrl, async (chatId: string, text: string) => {
       // Default to Telegram for proactive messages
       await sendChannelMessage('telegram', chatId, text)
     })
-    
+
     // Start server
     const port = parseInt(process.env.PORT || '3000')
     await server.listen({ port, host: '0.0.0.0' })
-    
+
     const enabledChannels = getEnabledChannels().map(ch => ch.name).join(', ') || 'none'
     server.log.info(`Aria ready on port ${port} | Channels: ${enabledChannels}`)
   } catch (err) {

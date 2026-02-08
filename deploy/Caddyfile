@@ -1,0 +1,3 @@
+{$DOMAIN} {
+    reverse_proxy aria:3000
+}

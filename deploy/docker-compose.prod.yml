@@ -1,0 +1,49 @@
+version: "3.8"
+
+# Production deployment with Caddy for HTTPS
+# Usage: DOMAIN=your-domain.com docker-compose -f deploy/docker-compose.prod.yml up -d
+
+services:
+  aria:
+    build: ..
+    container_name: aria-travel-guide
+    restart: unless-stopped
+    expose:
+      - "3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - DATABASE_URL=${DATABASE_URL}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_ENABLED=${TELEGRAM_ENABLED:-true}
+      - GOOGLE_PLACES_API_KEY=${GOOGLE_PLACES_API_KEY}
+      - PROACTIVE_NUDGES_ENABLED=${PROACTIVE_NUDGES_ENABLED:-true}
+      - DAILY_TIPS_ENABLED=${DAILY_TIPS_ENABLED:-true}
+      - BROWSER_SCRAPING_ENABLED=${BROWSER_SCRAPING_ENABLED:-true}
+    shm_size: 1gb
+    healthcheck:
+      test: [ "CMD", "wget", "-q", "--spider", "http://localhost:3000/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: aria-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN:?DOMAIN environment variable is required}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - aria
+
+volumes:
+  caddy_data:
+  caddy_config:
