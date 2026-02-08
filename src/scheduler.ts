@@ -10,7 +10,11 @@ import { Pool } from 'pg'
 let pool: Pool | null = null
 
 export function initScheduler(databaseUrl: string, sendMessage: SendMessageFn) {
-  pool = new Pool({ connectionString: databaseUrl })
+  const cleanUrl = databaseUrl.replace(/[?&]sslmode=[^&]*/g, '').replace(/\?$/, '')
+  pool = new Pool({
+    connectionString: cleanUrl,
+    ssl: { rejectUnauthorized: false },
+  })
 
   // Check for inactive users every 15 minutes
   cron.schedule('*/15 * * * *', () => checkInactiveUsers(sendMessage))

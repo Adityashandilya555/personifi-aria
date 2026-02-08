@@ -33,8 +33,12 @@ export interface Session {
 let pool: Pool | null = null
 
 export function initDatabase(databaseUrl: string): void {
+  // Strip sslmode from URL — 'no-verify' is non-standard and confuses the pg library.
+  // We handle SSL explicitly via the ssl option below.
+  const cleanUrl = databaseUrl.replace(/[?&]sslmode=[^&]*/g, '').replace(/\?$/, '')
+
   pool = new Pool({
-    connectionString: databaseUrl,
+    connectionString: cleanUrl,
     max: 10,
     idleTimeoutMillis: 30000,
     ssl: {
