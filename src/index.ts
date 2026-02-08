@@ -1,6 +1,6 @@
 /**
  * Aria Travel Guide - Main Server
- * Fastify server with Telegram webhook, proactive scheduler, and browser automation
+ * Multi-channel support with proactive scheduler and browser automation
  */
 
 import Fastify from 'fastify'
@@ -8,6 +8,12 @@ import cors from '@fastify/cors'
 import { handleMessage, initDatabase } from './character/handler.js'
 import { initScheduler } from './scheduler.js'
 import { initBrowser, closeBrowser } from './browser.js'
+import { 
+  channels, 
+  getEnabledChannels, 
+  type ChannelAdapter,
+  type ChannelMessage 
+} from './channels.js'
 
 const server = Fastify({
   logger: true,
@@ -15,65 +21,106 @@ const server = Fastify({
 
 await server.register(cors)
 
-// Health check
-server.get('/health', async () => ({ status: 'ok', character: 'aria', proactive: true }))
+// Health check with enabled channels
+server.get('/health', async () => ({
+  status: 'ok',
+  character: 'aria',
+  proactive: true,
+  channels: getEnabledChannels().map(ch => ch.name),
+}))
 
-// Telegram webhook handler
-server.post<{
-  Body: {
-    message?: {
-      chat: { id: number }
-      from: { id: number; first_name?: string }
-      text?: string
-    }
-  }
-}>('/webhook/telegram', async (request, reply) => {
-  const { message } = request.body
-  
-  if (!message?.text) {
-    return { ok: true }
-  }
-  
-  const chatId = message.chat.id
-  const userId = message.from.id.toString()
-  const text = message.text
+// ============================================
+// Generic webhook handler for all channels
+// ============================================
+
+async function handleChannelMessage(adapter: ChannelAdapter, body: unknown) {
+  const message = adapter.parseWebhook(body)
+  if (!message) return { ok: true }
   
   try {
-    // Process through Aria
-    const response = await handleMessage('telegram', userId, text)
-    
-    // Send response back
-    await sendTelegramMessage(chatId.toString(), response)
-    
+    const response = await handleMessage(message.channel, message.userId, message.text)
+    await adapter.sendMessage(message.chatId, response)
     return { ok: true }
   } catch (error) {
-    server.log.error(error, 'Failed to handle message')
+    server.log.error(error, `Failed to handle ${adapter.name} message`)
     return { ok: false }
   }
-})
-
-/**
- * Send a message to a Telegram chat
- * Used by handler and scheduler for proactive messages
- */
-export async function sendTelegramMessage(chatId: string, text: string): Promise<void> {
-  const botToken = process.env.TELEGRAM_BOT_TOKEN
-  if (!botToken) {
-    throw new Error('TELEGRAM_BOT_TOKEN not set')
-  }
-  
-  await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text,
-      parse_mode: 'Markdown',
-    }),
-  })
 }
 
+// ============================================
+// Telegram Webhook
+// ============================================
+
+server.post('/webhook/telegram', async (request, reply) => {
+  if (!channels.telegram.isEnabled()) {
+    return { ok: false, error: 'Telegram not configured' }
+  }
+  return handleChannelMessage(channels.telegram, request.body)
+})
+
+// ============================================
+// WhatsApp Webhook
+// ============================================
+
+// Verification endpoint (required for WhatsApp)
+server.get('/webhook/whatsapp', async (request, reply) => {
+  const query = request.query as Record<string, string>
+  const mode = query['hub.mode']
+  const token = query['hub.verify_token']
+  const challenge = query['hub.challenge']
+  
+  if (mode === 'subscribe' && token === process.env.WHATSAPP_VERIFY_TOKEN) {
+    return reply.send(challenge)
+  }
+  return reply.code(403).send('Forbidden')
+})
+
+// Message handler
+server.post('/webhook/whatsapp', async (request, reply) => {
+  if (!channels.whatsapp.isEnabled()) {
+    return { ok: false, error: 'WhatsApp not configured' }
+  }
+  return handleChannelMessage(channels.whatsapp, request.body)
+})
+
+// ============================================
+// Slack Webhook
+// ============================================
+
+server.post('/webhook/slack', async (request, reply) => {
+  const body = request.body as any
+  
+  // Handle Slack URL verification
+  if (body?.type === 'url_verification') {
+    return { challenge: body.challenge }
+  }
+  
+  if (!channels.slack.isEnabled()) {
+    return { ok: false, error: 'Slack not configured' }
+  }
+  
+  return handleChannelMessage(channels.slack, body)
+})
+
+// ============================================
+// Send message helper (used by scheduler)
+// ============================================
+
+export async function sendChannelMessage(
+  channelName: string, 
+  chatId: string, 
+  text: string
+): Promise<void> {
+  const adapter = channels[channelName]
+  if (adapter && adapter.isEnabled()) {
+    await adapter.sendMessage(chatId, text)
+  }
+}
+
+// ============================================
 // Startup
+// ============================================
+
 const start = async () => {
   try {
     // Initialize database
@@ -84,16 +131,22 @@ const start = async () => {
     initDatabase(dbUrl)
     
     // Initialize browser for scraping
-    await initBrowser()
+    if (process.env.BROWSER_SCRAPING_ENABLED !== 'false') {
+      await initBrowser()
+    }
     
     // Initialize proactive scheduler
-    initScheduler(dbUrl, sendTelegramMessage)
+    initScheduler(dbUrl, async (chatId: string, text: string) => {
+      // Default to Telegram for proactive messages
+      await sendChannelMessage('telegram', chatId, text)
+    })
     
     // Start server
     const port = parseInt(process.env.PORT || '3000')
     await server.listen({ port, host: '0.0.0.0' })
     
-    server.log.info(`Aria is ready on port ${port} with proactive features enabled`)
+    const enabledChannels = getEnabledChannels().map(ch => ch.name).join(', ') || 'none'
+    server.log.info(`Aria ready on port ${port} | Channels: ${enabledChannels}`)
   } catch (err) {
     server.log.error(err)
     process.exit(1)
