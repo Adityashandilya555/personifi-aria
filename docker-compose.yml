@@ -1,0 +1,24 @@
+version: "3.8"
+
+# Aria Travel Guide - Production Deployment
+# Usage: docker-compose up -d
+
+services:
+  aria:
+    build: .
+    container_name: aria-travel-guide
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - DATABASE_URL=${DATABASE_URL}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - GOOGLE_PLACES_API_KEY=${GOOGLE_PLACES_API_KEY}
+    healthcheck:
+      test: [ "CMD", "wget", "-q", "--spider", "http://localhost:3000/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3

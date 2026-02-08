@@ -1,0 +1,30 @@
+{
+  "name": "aria-travel-guide",
+  "version": "1.0.0",
+  "description": "Aria - AI Travel Guide Character with Groq",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "groq-sdk": "^0.8.0",
+    "pg": "^8.13.0",
+    "fastify": "^5.2.0",
+    "@fastify/cors": "^10.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.11.0",
+    "typescript": "^5.7.0",
+    "tsx": "^4.19.0",
+    "vitest": "^2.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
