@@ -37,6 +37,9 @@ export function initDatabase(databaseUrl: string): void {
     connectionString: databaseUrl,
     max: 10,
     idleTimeoutMillis: 30000,
+    ssl: {
+      rejectUnauthorized: false, // Accept DigitalOcean's managed DB certificate
+    },
   })
 }
 
@@ -55,7 +58,7 @@ export async function getOrCreateUser(
   channelUserId: string
 ): Promise<User> {
   const db = getPool()
-  
+
   // Try to find existing user
   const existing = await db.query<User>(
     `SELECT user_id as "userId", channel, channel_user_id as "channelUserId", 
@@ -65,11 +68,11 @@ export async function getOrCreateUser(
      WHERE channel = $1 AND channel_user_id = $2`,
     [channel, channelUserId]
   )
-  
+
   if (existing.rows.length > 0) {
     return existing.rows[0]
   }
-  
+
   // Create new user
   const result = await db.query<User>(
     `INSERT INTO users (channel, channel_user_id)
@@ -79,7 +82,7 @@ export async function getOrCreateUser(
                authenticated, created_at as "createdAt"`,
     [channel, channelUserId]
   )
-  
+
   return result.rows[0]
 }
 
@@ -92,7 +95,7 @@ export async function updateUserProfile(
   homeLocation?: string
 ): Promise<void> {
   const db = getPool()
-  
+
   await db.query(
     `UPDATE users 
      SET display_name = COALESCE($2, display_name),
@@ -108,7 +111,7 @@ export async function updateUserProfile(
  */
 export async function getOrCreateSession(userId: string): Promise<Session> {
   const db = getPool()
-  
+
   // Get most recent session
   const existing = await db.query<Session>(
     `SELECT session_id as "sessionId", user_id as "userId", 
@@ -119,11 +122,11 @@ export async function getOrCreateSession(userId: string): Promise<Session> {
      LIMIT 1`,
     [userId]
   )
-  
+
   if (existing.rows.length > 0) {
     return existing.rows[0]
   }
-  
+
   // Create new session
   const result = await db.query<Session>(
     `INSERT INTO sessions (user_id)
@@ -132,7 +135,7 @@ export async function getOrCreateSession(userId: string): Promise<Session> {
                messages, last_active as "lastActive"`,
     [userId]
   )
-  
+
   return result.rows[0]
 }
 
@@ -145,12 +148,12 @@ export async function appendMessages(
   assistantMessage: string
 ): Promise<void> {
   const db = getPool()
-  
+
   const newMessages: Message[] = [
     { role: 'user', content: userMessage, timestamp: new Date().toISOString() },
     { role: 'assistant', content: assistantMessage, timestamp: new Date().toISOString() },
   ]
-  
+
   await db.query(
     `UPDATE sessions 
      SET messages = messages || $2::jsonb,
@@ -169,18 +172,18 @@ export async function trimSessionHistory(
   maxPairs: number = 20
 ): Promise<void> {
   const db = getPool()
-  
+
   // Get current messages
   const result = await db.query<{ messages: Message[] }>(
     `SELECT messages FROM sessions WHERE session_id = $1`,
     [sessionId]
   )
-  
+
   if (result.rows.length === 0) return
-  
+
   const messages = result.rows[0].messages
   const maxMessages = maxPairs * 2 // Each pair has user + assistant
-  
+
   if (messages.length > maxMessages) {
     const trimmed = messages.slice(-maxMessages)
     await db.query(
@@ -200,7 +203,7 @@ export async function checkRateLimit(userId: string): Promise<boolean> {
   const windowStart = new Date(
     Math.floor(Date.now() / RATE_LIMIT_WINDOW_MS) * RATE_LIMIT_WINDOW_MS
   )
-  
+
   // Upsert rate limit entry
   const result = await db.query<{ request_count: number }>(
     `INSERT INTO rate_limits (user_id, window_start, request_count)
@@ -210,7 +213,7 @@ export async function checkRateLimit(userId: string): Promise<boolean> {
      RETURNING request_count`,
     [userId, windowStart]
   )
-  
+
   return result.rows[0].request_count <= RATE_LIMIT_MAX_REQUESTS
 }
 
@@ -225,7 +228,7 @@ export async function trackUsage(
   cachedTokens: number = 0
 ): Promise<void> {
   const db = getPool()
-  
+
   await db.query(
     `INSERT INTO usage_stats (user_id, channel, input_tokens, output_tokens, cached_tokens)
      VALUES ($1, $2, $3, $4, $5)`,
