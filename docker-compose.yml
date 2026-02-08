@@ -1,6 +1,6 @@
 version: "3.8"
 
-# Aria Travel Guide - Production Deployment
+# Aria Travel Guide - Production Deployment with Proactive Features
 # Usage: docker-compose up -d
 
 services:
@@ -17,6 +17,8 @@ services:
       - DATABASE_URL=${DATABASE_URL}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - GOOGLE_PLACES_API_KEY=${GOOGLE_PLACES_API_KEY}
+    # Playwright needs more shared memory
+    shm_size: 1gb
     healthcheck:
       test: [ "CMD", "wget", "-q", "--spider", "http://localhost:3000/health" ]
       interval: 30s

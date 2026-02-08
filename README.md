@@ -1,49 +1,63 @@
 # Aria Travel Guide
 
-AI-powered travel guide character with human-like conversation using Groq Llama 3.3-70B.
+AI-powered travel guide character with **proactive features** using Groq Llama 3.3-70B.
 
 ## Features
 - 🗣️ Character.AI-like conversational personality
+- ⏰ **Proactive messaging** (nudges after 1hr inactivity, daily tips)
+- 🌐 **Browser automation** (scrape flights, restaurant availability, deals)
 - 🔐 Multi-layer prompt injection protection
 - 👥 Multi-user session management
 - 📍 Google Places integration
-- 💬 Telegram bot interface
+
+## Proactive Features
+
+| Feature | Schedule | What it does |
+|---------|----------|--------------|
+| Inactivity nudge | Every 15min check | Message users after 1hr silence |
+| Daily tips | 9 AM daily | Send local travel tip |
+| Weekly deals | Sunday 10 AM | Scrape and share travel deals |
 
 ## Quick Start
 
 ```bash
-# 1. Clone and configure
+# 1. Configure
 cp .env.example .env
-# Edit .env with your API keys
+# Edit with your API keys
 
 # 2. Set up database
 psql "$DATABASE_URL" < database/schema.sql
+psql "$DATABASE_URL" < database/proactive.sql
 
 # 3. Deploy
 docker-compose up -d
 
 # 4. Set Telegram webhook
-curl -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
-  -d "url=https://your-server:3000/webhook/telegram"
+curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook?url=https://your-server:3000/webhook/telegram"
 ```
 
-## Monthly Costs
-- DigitalOcean Droplet: $12
-- PostgreSQL: $15
-- Groq API: ~$1-5 (usage-based)
+## Requirements
+
+- **4GB+ Droplet** (browser automation needs memory)
+- PostgreSQL database
+- API Keys: Groq, Telegram, Google Places
 
 ## Files
 ```
 ├── src/
-│   ├── index.ts          # Fastify server + Telegram webhook
-│   └── character/
-│       ├── handler.ts    # Main message orchestrator
-│       ├── sanitize.ts   # Input sanitization
-│       ├── output-filter.ts
-│       └── session-store.ts
-├── config/
-│   └── SOUL.md           # Aria's personality
+│   ├── index.ts              # Fastify + webhook + startup
+│   ├── scheduler.ts          # Cron jobs for proactive messages
+│   ├── browser.ts            # Playwright scraping
+│   └── character/            # Handler, sanitize, sessions
+├── config/SOUL.md            # Aria persona
 ├── database/
-│   └── schema.sql        # PostgreSQL tables
+│   ├── schema.sql            # Core tables
+│   └── proactive.sql         # Proactive messaging tables
 └── docker-compose.yml
 ```
+
+## Monthly Costs
+- DigitalOcean 4GB Droplet: $24
+- PostgreSQL: $15
+- Groq API: ~$1-5
+- **Total: ~$40-45/mo**
