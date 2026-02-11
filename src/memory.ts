@@ -28,9 +28,18 @@ import type {
 } from './types/handler.js'
 
 // Initialize Groq client for preference extraction
-const groq = new Groq({
-  apiKey: process.env.GROQ_API_KEY,
-})
+let groq: Groq | null = null
+
+function getGroqClient(): Groq {
+  if (!groq) {
+    const apiKey = process.env.GROQ_API_KEY
+    if (!apiKey) {
+      throw new Error('GROQ_API_KEY environment variable is required for preference extraction')
+    }
+    groq = new Groq({ apiKey })
+  }
+  return groq
+}
 
 // Model for preference extraction (using fast, free Llama 3.1 8B)
 const EXTRACTION_MODEL = 'llama-3.1-8b-instant'
@@ -56,6 +65,8 @@ export async function extractPreferences(
   existingPrefs: Partial<PreferencesMap> = {}
 ): Promise<ExtractedPreferences | null> {
   try {
+    const groqClient = getGroqClient()
+
     const systemPrompt = `You are a preference extraction system. Analyze user messages to identify travel preferences.
 
 Extract ONLY explicitly stated preferences in these categories:
@@ -89,7 +100,7 @@ Output: none
 Current known preferences: ${JSON.stringify(existingPrefs)}
 Only extract NEW or UPDATED preferences.`
 
-    const completion = await groq.chat.completions.create({
+    const completion = await groqClient.chat.completions.create({
       model: EXTRACTION_MODEL,
       messages: [
         { role: 'system', content: systemPrompt },
