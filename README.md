@@ -9,6 +9,7 @@ AI-powered travel guide character with **proactive features** using Groq Llama 3
 - 🔐 Multi-layer prompt injection protection
 - 👥 Multi-user session management
 - 📍 Google Places integration
+- 🧠 **Memory & Personalization** (learns user preferences from conversation)
 
 ## Proactive Features
 
@@ -28,6 +29,7 @@ cp .env.example .env
 # 2. Set up database
 psql "$DATABASE_URL" < database/schema.sql
 psql "$DATABASE_URL" < database/proactive.sql
+psql "$DATABASE_URL" < database/memory.sql
 
 # 3. Deploy
 docker-compose up -d
@@ -48,11 +50,17 @@ curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook?url=https://you
 │   ├── index.ts              # Fastify + webhook + startup
 │   ├── scheduler.ts          # Cron jobs for proactive messages
 │   ├── browser.ts            # Playwright scraping
-│   └── character/            # Handler, sanitize, sessions
+│   ├── memory.ts             # Preference extraction & personalization
+│   ├── character/            # Handler, sanitize, sessions
+│   ├── types/                # TypeScript type definitions
+│   └── examples/             # Demo scripts
 ├── config/SOUL.md            # Aria persona
 ├── database/
 │   ├── schema.sql            # Core tables
-│   └── proactive.sql         # Proactive messaging tables
+│   ├── proactive.sql         # Proactive messaging tables
+│   └── memory.sql            # Memory & personalization tables
+├── docs/
+│   └── MEMORY_SYSTEM.md      # Memory system documentation
 └── docker-compose.yml
 ```
 
