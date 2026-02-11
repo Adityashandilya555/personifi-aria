@@ -371,7 +371,7 @@ export async function processUserMessage(
 
     // Convert to PreferenceInput array
     const preferences: PreferenceInput[] = Object.entries(extracted)
-      .filter(([_, value]) => value) // Filter out null/undefined values
+      .filter(([, value]) => value) // Filter out null/undefined values
       .map(([category, value]) => ({
         category: category as PreferenceCategory,
         value: value as string,

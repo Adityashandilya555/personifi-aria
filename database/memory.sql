@@ -12,8 +12,7 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 CREATE TABLE IF NOT EXISTS user_preferences (
     preference_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL, -- REFERENCES users(user_id) ON DELETE CASCADE,
-    -- Foreign key commented until Dev 1 finishes users table
+    user_id UUID NOT NULL, -- TODO: Uncomment when Dev 1 completes users table - REFERENCES users(user_id) ON DELETE CASCADE,
     
     category VARCHAR(50) NOT NULL, -- dietary, budget, travel_style, accommodation, etc.
     value TEXT NOT NULL, -- The actual preference value
@@ -57,7 +56,7 @@ CREATE TRIGGER update_user_preferences_updated_at
 
 CREATE TABLE IF NOT EXISTS trip_plans (
     trip_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL, -- REFERENCES users(user_id) ON DELETE CASCADE,
+    user_id UUID NOT NULL, -- TODO: Uncomment when Dev 1 completes users table - REFERENCES users(user_id) ON DELETE CASCADE,
     
     destination VARCHAR(200) NOT NULL,
     origin VARCHAR(200),
@@ -108,7 +107,7 @@ CREATE TRIGGER update_trip_plans_updated_at
 
 CREATE TABLE IF NOT EXISTS price_alerts (
     alert_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL, -- REFERENCES users(user_id) ON DELETE CASCADE,
+    user_id UUID NOT NULL, -- TODO: Uncomment when Dev 1 completes users table - REFERENCES users(user_id) ON DELETE CASCADE,
     
     alert_type VARCHAR(20) NOT NULL, -- flight, hotel, activity
     
@@ -157,8 +156,8 @@ CREATE TRIGGER update_price_alerts_updated_at
 
 CREATE TABLE IF NOT EXISTS tool_log (
     log_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID, -- REFERENCES users(user_id) ON DELETE SET NULL,
-    session_id UUID, -- REFERENCES sessions(session_id) ON DELETE SET NULL,
+    user_id UUID, -- TODO: Uncomment when Dev 1 completes users table - REFERENCES users(user_id) ON DELETE SET NULL,
+    session_id UUID, -- TODO: Uncomment when Dev 1 completes sessions table - REFERENCES sessions(session_id) ON DELETE SET NULL,
     
     tool_name VARCHAR(100) NOT NULL, -- search_flights, search_hotels, etc.
     parameters JSONB DEFAULT '{}'::jsonb, -- Input parameters
