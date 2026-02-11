@@ -130,7 +130,7 @@ export function scoreConfidence(params: ConfidenceScoreParams): ConfidenceScoreR
   const lowerMessage = message.toLowerCase()
   const lowerValue = value.toLowerCase()
 
-  let confidence = CONFIDENCE.MODERATE // Default
+  let confidence: number = CONFIDENCE.MODERATE // Default
   let reasoning = 'moderate confidence from preference statement'
 
   // Check for direct statements (highest confidence)
@@ -310,7 +310,7 @@ export async function loadPreferences(
 
     const preferences: Partial<PreferencesMap> = {}
     for (const row of result.rows) {
-      preferences[row.category] = row.value
+      preferences[row.category as PreferenceCategory] = row.value
     }
 
     return preferences
