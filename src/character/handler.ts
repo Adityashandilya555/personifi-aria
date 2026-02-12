@@ -1,11 +1,28 @@
 /**
  * Main Message Handler for Aria Travel Guide
- * Orchestrates user sessions, Groq API calls, and security layers
+ * DEV 3: The Soul — Memory + Cognitive Layer + Dynamic Personality
+ *
+ * v2 Flow (classifier-gated dual-model pipeline):
+ * 0:      Detect /link command → handle early return
+ * 1:      Sanitize input
+ * 2:      Get/create user, resolve person_id
+ * 3:      Rate limit check
+ * 4:      Get session
+ * 5:      *** Classify message via 8B *** (~100 tokens, ~50-100ms)
+ * 6:      Conditional pipeline:
+ *           simple  → skip memory/graph/cognitive
+ *           moderate/complex → full 5-way Promise.all
+ * 7:      brainHooks.routeMessage() (Dev 1's hook, default: no-op)
+ * 8:      brainHooks.executeToolPipeline() if needs_tool (Dev 1's hook)
+ * 9:      Compose dynamic system prompt
+ * 10:     Build messages (minimal prompt for simple messages)
+ * 11:     Groq 70B call
+ * 12:     Optional brainHooks.formatResponse()
+ * 13-17:  Filter, store, trim, track, auth extract
+ * 18-21:  Fire-and-forget writes (SKIPPED for simple messages)
  */
 
 import Groq from 'groq-sdk'
-import * as fs from 'fs'
-import * as path from 'path'
 import {
   getOrCreateUser,
   getOrCreateSession,
@@ -19,6 +36,22 @@ import {
 import { sanitizeInput, logSuspiciousInput, isPotentialAttack } from './sanitize.js'
 import { filterOutput, needsHumanReview } from './output-filter.js'
 
+// DEV 3: The Soul — memory, cognition, personality
+import { searchMemories, addMemories } from '../memory-store.js'
+import { searchGraph, addToGraph } from '../graph-memory.js'
+import { classifyMessage, internalMonologue } from '../cognitive.js'
+import { getActiveGoal, updateConversationGoal } from '../cognitive.js'
+import { composeSystemPrompt, getRawSoulPrompt } from '../personality.js'
+import { loadPreferences, processUserMessage } from '../memory.js'
+import { getPool } from './session-store.js'
+
+// Cross-channel identity
+import { generateLinkCode, redeemLinkCode, getLinkedUserIds } from '../identity.js'
+
+// Hook system
+import { getBrainHooks } from '../hook-registry.js'
+import type { RouteContext } from '../hooks.js'
+
 // Initialize Groq client
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
@@ -29,59 +62,21 @@ const MODEL = 'llama-3.3-70b-versatile'
 const MAX_TOKENS = 500
 const TEMPERATURE = 0.8
 
-// Load system prompt from SOUL.md
-let systemPrompt: string | null = null
-
-function getSystemPrompt(): string {
-  if (!systemPrompt) {
-    // Try config/SOUL.md first (standalone), then root (openclaw)
-    const paths = [
-      path.join(process.cwd(), 'config', 'SOUL.md'),
-      path.join(process.cwd(), 'SOUL.md'),
-    ]
-    for (const soulPath of paths) {
-      try {
-        systemPrompt = fs.readFileSync(soulPath, 'utf-8')
-        break
-      } catch {
-        // Try next path
-      }
-    }
-    if (!systemPrompt) {
-      console.error('Failed to load SOUL.md, using fallback prompt')
-      systemPrompt = `You are Aria, a friendly travel guide. Keep responses short and conversational.`
-    }
-  }
-  return systemPrompt
-}
-
 /**
- * Build the messages array for Groq API
- * Includes system prompt, conversation history, and user message
- * Uses "sandwich defense" - repeats key instructions after user input
+ * Build the messages array for Groq API.
+ * Uses dynamically composed system prompt.
  */
 function buildMessages(
+  composedSystemPrompt: string,
   sessionMessages: Message[],
   userMessage: string,
-  userName?: string,
-  userLocation?: string
 ): Groq.Chat.ChatCompletionMessageParam[] {
   const messages: Groq.Chat.ChatCompletionMessageParam[] = []
 
-  // System prompt (will be auto-cached by Groq)
-  let systemContent = getSystemPrompt()
-
-  // Inject user context if authenticated
-  if (userName || userLocation) {
-    systemContent += `\n\n## Current User Context
-- User's name: ${userName || 'Not provided yet'}
-- User's location: ${userLocation || 'Not provided yet'}
-- Authenticated: ${userName && userLocation ? 'Yes' : 'No - continue authentication flow'}`
-  }
-
+  // System prompt — composed dynamically with memory + cognitive + personality
   messages.push({
     role: 'system',
-    content: systemContent,
+    content: composedSystemPrompt,
   })
 
   // Add conversation history (limit to last 10 exchanges)
@@ -117,55 +112,225 @@ export async function handleMessage(
   rawMessage: string
 ): Promise<string> {
   try {
-    // 1. Input sanitization
+    // ─── Step 0: Detect /link command (before sanitization) ────
+    const linkMatch = rawMessage.trim().match(/^\/link(?:\s+(\d{6}))?$/i)
+    if (linkMatch) {
+      return handleLinkCommand(channel, channelUserId, linkMatch[1] || null)
+    }
+
+    // ─── Step 1: Input sanitization ───────────────────────────────
     const sanitizeResult = sanitizeInput(rawMessage)
     const userMessage = sanitizeResult.sanitized
 
-    // Log if suspicious
     if (sanitizeResult.suspiciousPatterns.length > 0) {
       logSuspiciousInput(channelUserId, channel, rawMessage, sanitizeResult)
     }
 
-    // If severe attack detected, give generic response
     if (isPotentialAttack(sanitizeResult)) {
       return "Ha, nice try! 😄 I'm just Aria, your travel buddy. So... anywhere you're thinking of exploring?"
     }
 
-    // 2. Get or create user
+    // ─── Step 2: Get or create user, resolve person_id ────────────
     const user = await getOrCreateUser(channel, channelUserId)
 
-    // 3. Check rate limit
+    // ─── Step 3: Check rate limit ─────────────────────────────────
     const withinLimit = await checkRateLimit(user.userId)
     if (!withinLimit) {
       return "Whoa, we're chatting so fast! Give me a sec to catch my breath 😅 What were you asking about?"
     }
 
-    // 4. Get session with conversation history
+    // ─── Step 4: Get session with conversation history ────────────
     const session = await getOrCreateSession(user.userId)
 
-    // 5. Build messages for Groq
-    const messages = buildMessages(
-      session.messages,
+    // ─── Step 5: Classify message via 8B ──────────────────────────
+    const classification = await classifyMessage(
       userMessage,
-      user.displayName,
-      user.homeLocation
+      session.messages.slice(-4)
     )
 
-    // 6. Call Groq API (auto-caches system prompt)
+    console.log('[handler] Classification:', {
+      complexity: classification.message_complexity,
+      needsTool: classification.needs_tool,
+      toolHint: classification.tool_hint,
+      skipMemory: classification.skip_memory,
+      skipGraph: classification.skip_graph,
+      skipCognitive: classification.skip_cognitive,
+    })
+
+    // ─── Step 6: Conditional pipeline based on classification ─────
+    // Resolve linked user IDs for cross-channel search
+    const searchUserIds = user.personId
+      ? await getLinkedUserIds(user.userId).catch(() => [user.userId])
+      : [user.userId]
+
+    const pool = getPool()
+    let memories: Awaited<ReturnType<typeof searchMemories>> = []
+    let graphContext: Awaited<ReturnType<typeof searchGraph>> = []
+    let cognitiveState: Awaited<ReturnType<typeof internalMonologue>> = {
+      internalMonologue: 'No specific reasoning available.',
+      emotionalState: 'neutral' as const,
+      conversationGoal: 'inform' as const,
+      relevantMemories: [] as string[],
+    }
+    let preferences: Partial<Record<string, string>> = {}
+    let activeGoal: Awaited<ReturnType<typeof getActiveGoal>> = null
+
+    const isSimple = classification.message_complexity === 'simple'
+
+    if (!isSimple) {
+      // Full pipeline for moderate/complex messages
+      const pipelineResults = await Promise.all([
+        // Memory search (skip if classifier says so)
+        classification.skip_memory
+          ? Promise.resolve([])
+          : searchMemories(searchUserIds.length > 1 ? searchUserIds : user.userId, userMessage, 5).catch(err => {
+              console.error('[handler] Memory search failed:', err)
+              return [] as Awaited<ReturnType<typeof searchMemories>>
+            }),
+        // Graph search (skip if classifier says so)
+        classification.skip_graph
+          ? Promise.resolve([])
+          : searchGraph(searchUserIds.length > 1 ? searchUserIds : user.userId, userMessage, 2, 10).catch(err => {
+              console.error('[handler] Graph search failed:', err)
+              return [] as Awaited<ReturnType<typeof searchGraph>>
+            }),
+        // Cognitive pre-analysis (skip if classifier says so)
+        classification.skip_cognitive
+          ? Promise.resolve({
+              internalMonologue: 'Simple message — no deep analysis needed.',
+              emotionalState: 'neutral' as const,
+              conversationGoal: 'inform' as const,
+              relevantMemories: [] as string[],
+            })
+          : internalMonologue(
+              userMessage,
+              session.messages.slice(-6),
+              [],
+              []
+            ).catch(err => {
+              console.error('[handler] Cognitive analysis failed:', err)
+              return {
+                internalMonologue: 'No specific reasoning available.',
+                emotionalState: 'neutral' as const,
+                conversationGoal: 'inform' as const,
+                relevantMemories: [] as string[],
+              }
+            }),
+        // Load user preferences
+        loadPreferences(pool, user.userId).catch(err => {
+          console.error('[handler] Preferences load failed:', err)
+          return {}
+        }),
+        // Fetch active conversation goal
+        getActiveGoal(user.userId, session.sessionId).catch(err => {
+          console.error('[handler] Goal fetch failed:', err)
+          return null
+        }),
+      ])
+
+      memories = pipelineResults[0]
+      graphContext = pipelineResults[1]
+      cognitiveState = pipelineResults[2]
+      preferences = pipelineResults[3]
+      activeGoal = pipelineResults[4]
+    }
+
+    // ─── Step 7: Brain hooks — route message (Dev 1) ──────────────
+    const brainHooks = getBrainHooks()
+    const routeContext: RouteContext = {
+      userMessage,
+      channel,
+      userId: user.userId,
+      personId: user.personId || null,
+      classification,
+      memories,
+      graphContext,
+      history: session.messages.slice(-6),
+    }
+
+    const routeDecision = await brainHooks.routeMessage(routeContext)
+
+    // ─── Step 8: Execute tool pipeline if needed (Dev 1) ──────────
+    let toolResultStr: string | undefined
+    if (routeDecision.useTool) {
+      const toolResult = await brainHooks.executeToolPipeline(routeDecision, routeContext)
+      if (toolResult?.success && toolResult.data) {
+        toolResultStr = toolResult.data
+      }
+    }
+
+    // Include additional context from router
+    if (routeDecision.additionalContext) {
+      toolResultStr = toolResultStr
+        ? `${toolResultStr}\n\n${routeDecision.additionalContext}`
+        : routeDecision.additionalContext
+    }
+
+    // ─── Step 9: Compose dynamic system prompt ────────────────────
+    const isFirstMessage = session.messages.length === 0
+    let systemPromptComposed: string
+    try {
+      systemPromptComposed = composeSystemPrompt({
+        userMessage,
+        isAuthenticated: !!(user.displayName && user.homeLocation),
+        displayName: user.displayName,
+        homeLocation: user.homeLocation,
+        memories,
+        graphContext,
+        cognitiveState,
+        preferences,
+        activeGoal,
+        isFirstMessage,
+        isSimpleMessage: isSimple,
+        toolResults: toolResultStr,
+      })
+    } catch (err) {
+      console.error('[handler] Personality composition failed, using static SOUL.md', err)
+      systemPromptComposed = getRawSoulPrompt()
+    }
+
+    // Structured logging for debug
+    console.log('[handler] Prompt composed', {
+      complexity: classification.message_complexity,
+      prefCount: Object.keys(preferences).length,
+      memoryCount: memories.length,
+      graphCount: graphContext.length,
+      mood: cognitiveState.emotionalState,
+      goal: cognitiveState.conversationGoal,
+      activeGoalId: activeGoal?.id ?? null,
+      hasToolResult: !!toolResultStr,
+      promptLength: systemPromptComposed.length,
+    })
+
+    // ─── Step 10: Build messages for Groq ─────────────────────────
+    const messages = buildMessages(
+      systemPromptComposed,
+      session.messages,
+      userMessage,
+    )
+
+    // ─── Step 11: Call Groq 70B (personality response) ────────────
     const completion = await groq.chat.completions.create({
-      model: MODEL,
+      model: routeDecision.modelOverride || MODEL,
       messages,
       max_tokens: MAX_TOKENS,
       temperature: TEMPERATURE,
     })
 
-    const rawResponse = completion.choices[0]?.message?.content || ''
+    let rawResponse = completion.choices[0]?.message?.content || ''
 
-    // 7. Filter output
+    // ─── Step 12: Optional brainHooks.formatResponse() ────────────
+    if (brainHooks.formatResponse) {
+      const toolResult = routeDecision.useTool
+        ? await brainHooks.executeToolPipeline(routeDecision, routeContext).catch(() => null)
+        : null
+      rawResponse = brainHooks.formatResponse(rawResponse, toolResult)
+    }
+
+    // ─── Step 13: Filter output ───────────────────────────────────
     const filterResult = filterOutput(rawResponse)
     const assistantResponse = filterResult.filtered
 
-    // Log if output was filtered
     if (needsHumanReview(filterResult)) {
       console.error('[SECURITY] Output filtered for review:', {
         userId: user.userId,
@@ -174,13 +339,13 @@ export async function handleMessage(
       })
     }
 
-    // 8. Store messages in session
+    // ─── Step 14: Store messages in session ────────────────────────
     await appendMessages(session.sessionId, userMessage, assistantResponse)
 
-    // 9. Trim history if needed
+    // ─── Step 15: Trim history if needed ──────────────────────────
     await trimSessionHistory(session.sessionId)
 
-    // 10. Track usage for analytics
+    // ─── Step 16: Track usage ─────────────────────────────────────
     const usage = completion.usage
     if (usage) {
       await trackUsage(
@@ -188,19 +353,75 @@ export async function handleMessage(
         channel,
         usage.prompt_tokens,
         usage.completion_tokens,
-        // Groq doesn't expose cached tokens directly, but they're discounted
         0
       )
     }
 
-    // 11. Check for authentication info in response
+    // ─── Step 17: Extract auth info (existing) ────────────────────
     await extractAndSaveUserInfo(user.userId, userMessage, user)
+
+    // ─── Steps 18-21: Fire-and-forget writes (SKIPPED for simple) ──
+    if (!isSimple) {
+      const conversationHistory = session.messages.slice(-6)
+      setImmediate(() => {
+        // Step 18: Vector memory write
+        addMemories(user.userId, userMessage, conversationHistory).catch(err => {
+          console.error('[handler] Memory write failed:', err)
+        })
+        // Step 19: Graph memory write
+        addToGraph(user.userId, userMessage).catch(err => {
+          console.error('[handler] Graph write failed:', err)
+        })
+        // Step 20: Preference extraction
+        processUserMessage(pool, user.userId, userMessage).catch(err => {
+          console.error('[handler] Preference extraction failed:', err)
+        })
+        // Step 21: Persist conversation goal
+        updateConversationGoal(
+          user.userId,
+          session.sessionId,
+          cognitiveState.conversationGoal,
+          { destination: user.homeLocation, mood: cognitiveState.emotionalState }
+        ).catch(err => {
+          console.error('[handler] Goal update failed:', err)
+        })
+      })
+    }
 
     return assistantResponse
 
   } catch (error) {
     console.error('[ERROR] Message handling failed:', error)
     return "Oops, something went wrong on my end! Mind trying that again? 😅"
+  }
+}
+
+/**
+ * Handle the /link command for cross-channel identity linking.
+ */
+async function handleLinkCommand(
+  channel: string,
+  channelUserId: string,
+  code: string | null
+): Promise<string> {
+  try {
+    const user = await getOrCreateUser(channel, channelUserId)
+
+    if (!code) {
+      // Generate a new link code
+      const newCode = await generateLinkCode(user.userId)
+      return `Here's your link code: **${newCode}**\n\nSend \`/link ${newCode}\` on your other channel within 10 minutes to connect your accounts. I'll remember you across both!`
+    }
+
+    // Redeem an existing code
+    const result = await redeemLinkCode(user.userId, code)
+    if (result.success) {
+      return `${result.message} 🎉`
+    }
+    return result.message
+  } catch (error) {
+    console.error('[handler] Link command failed:', error)
+    return "Something went wrong with the link command. Please try again!"
   }
 }
 
@@ -212,16 +433,11 @@ async function extractAndSaveUserInfo(
   message: string,
   currentUser: { displayName?: string; homeLocation?: string }
 ): Promise<void> {
-  // Simple heuristics - could be enhanced with NER
-  const lowerMessage = message.toLowerCase()
-
-  // Check for name patterns
   if (!currentUser.displayName) {
     const namePatterns = [
       /(?:i'?m|my name is|call me)\s+([A-Z][a-z]+)/i,
-      /^([A-Z][a-z]+)$/,  // Just a capitalized word as response to "what's your name?"
+      /^([A-Z][a-z]+)$/,
     ]
-
     for (const pattern of namePatterns) {
       const match = message.match(pattern)
       if (match && match[1]) {
@@ -231,13 +447,11 @@ async function extractAndSaveUserInfo(
     }
   }
 
-  // Check for location patterns
   if (!currentUser.homeLocation && currentUser.displayName) {
     const locationPatterns = [
       /(?:i'?m in|based in|from|in|at)\s+([A-Z][a-zA-Z\s,]+)/i,
-      /^([A-Z][a-zA-Z\s,]+)$/,  // Just a place name
+      /^([A-Z][a-zA-Z\s,]+)$/,
     ]
-
     for (const pattern of locationPatterns) {
       const match = message.match(pattern)
       if (match && match[1]) {
@@ -257,7 +471,5 @@ export async function resetUserSession(
 ): Promise<void> {
   const user = await getOrCreateUser(channel, channelUserId)
   const session = await getOrCreateSession(user.userId)
-
-  // Clear messages by creating new session
   await appendMessages(session.sessionId, '', '')
 }

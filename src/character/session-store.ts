@@ -13,6 +13,7 @@ export interface User {
   displayName?: string
   homeLocation?: string
   authenticated: boolean
+  personId?: string
   createdAt: Date
 }
 
@@ -47,7 +48,7 @@ export function initDatabase(databaseUrl: string): void {
   })
 }
 
-function getPool(): Pool {
+export function getPool(): Pool {
   if (!pool) {
     throw new Error('Database not initialized. Call initDatabase() first.')
   }
@@ -65,10 +66,10 @@ export async function getOrCreateUser(
 
   // Try to find existing user
   const existing = await db.query<User>(
-    `SELECT user_id as "userId", channel, channel_user_id as "channelUserId", 
+    `SELECT user_id as "userId", channel, channel_user_id as "channelUserId",
             display_name as "displayName", home_location as "homeLocation",
-            authenticated, created_at as "createdAt"
-     FROM users 
+            authenticated, person_id as "personId", created_at as "createdAt"
+     FROM users
      WHERE channel = $1 AND channel_user_id = $2`,
     [channel, channelUserId]
   )
@@ -77,13 +78,13 @@ export async function getOrCreateUser(
     return existing.rows[0]
   }
 
-  // Create new user
+  // Create new user (trigger auto-creates person record if identity.sql is applied)
   const result = await db.query<User>(
     `INSERT INTO users (channel, channel_user_id)
      VALUES ($1, $2)
      RETURNING user_id as "userId", channel, channel_user_id as "channelUserId",
                display_name as "displayName", home_location as "homeLocation",
-               authenticated, created_at as "createdAt"`,
+               authenticated, person_id as "personId", created_at as "createdAt"`,
     [channel, channelUserId]
   )
 
