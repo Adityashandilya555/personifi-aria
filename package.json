@@ -12,18 +12,19 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "groq-sdk": "^0.8.0",
-    "pg": "^8.13.0",
-    "fastify": "^5.2.0",
     "@fastify/cors": "^10.0.0",
+    "fastify": "^5.2.0",
+    "groq-sdk": "^0.8.0",
     "node-cron": "^3.0.3",
-    "playwright": "^1.48.0"
+    "pg": "^8.13.0",
+    "playwright": "^1.48.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/pg": "^8.11.0",
-    "typescript": "^5.7.0",
     "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
     "vitest": "^2.1.0"
   },
   "engines": {
