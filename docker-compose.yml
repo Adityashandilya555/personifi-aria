@@ -13,10 +13,32 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      # Core services
       - GROQ_API_KEY=${GROQ_API_KEY}
       - DATABASE_URL=${DATABASE_URL}
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - GOOGLE_PLACES_API_KEY=${GOOGLE_PLACES_API_KEY}
+      # Embeddings
+      - JINA_API_KEY=${JINA_API_KEY}
+      - HF_API_KEY=${HF_API_KEY}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-jina-embeddings-v3}
+      - HF_EMBEDDING_MODEL=${HF_EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+      - EMBEDDING_DIMS=${EMBEDDING_DIMS:-768}
+      # Channels
+      - TELEGRAM_ENABLED=${TELEGRAM_ENABLED:-true}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - WHATSAPP_ENABLED=${WHATSAPP_ENABLED:-false}
+      - WHATSAPP_API_TOKEN=${WHATSAPP_API_TOKEN}
+      - WHATSAPP_PHONE_ID=${WHATSAPP_PHONE_ID}
+      - WHATSAPP_VERIFY_TOKEN=${WHATSAPP_VERIFY_TOKEN:-aria_webhook_verify}
+      - SLACK_ENABLED=${SLACK_ENABLED:-false}
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
+      - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET}
+      # Feature toggles
+      - PROACTIVE_NUDGES_ENABLED=${PROACTIVE_NUDGES_ENABLED:-true}
+      - DAILY_TIPS_ENABLED=${DAILY_TIPS_ENABLED:-true}
+      - BROWSER_SCRAPING_ENABLED=${BROWSER_SCRAPING_ENABLED:-true}
+      # Identity
+      - LINK_CODE_EXPIRY_MINUTES=${LINK_CODE_EXPIRY_MINUTES:-10}
     # Playwright needs more shared memory
     shm_size: 1gb
     healthcheck:

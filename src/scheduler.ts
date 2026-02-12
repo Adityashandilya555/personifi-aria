@@ -6,6 +6,7 @@
 // @ts-ignore - node-cron has no types
 import cron from 'node-cron'
 import { Pool } from 'pg'
+import { processEmbeddingQueue } from './embeddings.js'
 
 let pool: Pool | null = null
 
@@ -24,6 +25,18 @@ export function initScheduler(databaseUrl: string, sendMessage: SendMessageFn) {
 
   // Weekly travel deals scrape on Sundays at 10 AM
   cron.schedule('0 10 * * 0', () => scrapeAndNotifyDeals(sendMessage))
+
+  // DEV 3: Batch process pending embeddings every 5 minutes
+  cron.schedule('*/5 * * * *', async () => {
+    try {
+      const processed = await processEmbeddingQueue(50)
+      if (processed > 0) {
+        console.log(`[SCHEDULER] Processed ${processed} pending embeddings`)
+      }
+    } catch (error) {
+      console.error('[SCHEDULER] Embedding queue processing failed:', error)
+    }
+  })
 
   console.log('[SCHEDULER] Proactive tasks initialized')
 }

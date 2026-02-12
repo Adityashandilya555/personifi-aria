@@ -15,6 +15,8 @@ fi
 echo "Configure your API keys (press Enter to skip):"
 echo ""
 
+# ─── Core Services ─────────────────────────────────────────────────────────
+
 # Groq API Key
 read -p "📦 Groq API Key (console.groq.com): " GROQ_KEY
 if [ -n "$GROQ_KEY" ]; then
@@ -28,6 +30,35 @@ if [ -n "$DB_URL" ]; then
     sed -i.bak "s|DATABASE_URL=.*|DATABASE_URL=$DB_URL|" .env
     echo "   ✅ Database configured"
 fi
+
+# Google Places
+read -p "📍 Google Places API Key: " PLACES_KEY
+if [ -n "$PLACES_KEY" ]; then
+    sed -i.bak "s|GOOGLE_PLACES_API_KEY=.*|GOOGLE_PLACES_API_KEY=$PLACES_KEY|" .env
+    echo "   ✅ Google Places configured"
+fi
+
+# ─── Embedding Services ───────────────────────────────────────────────────
+
+echo ""
+echo "🧠 Embedding Services (for memory & graph):"
+echo ""
+
+# Jina AI
+read -p "🔗 Jina AI API Key (jina.ai, 1M tokens free): " JINA_KEY
+if [ -n "$JINA_KEY" ]; then
+    sed -i.bak "s|JINA_API_KEY=.*|JINA_API_KEY=$JINA_KEY|" .env
+    echo "   ✅ Jina AI configured (primary embeddings)"
+fi
+
+# HuggingFace
+read -p "🤗 HuggingFace API Key (huggingface.co, fallback): " HF_KEY
+if [ -n "$HF_KEY" ]; then
+    sed -i.bak "s|HF_API_KEY=.*|HF_API_KEY=$HF_KEY|" .env
+    echo "   ✅ HuggingFace configured (fallback embeddings)"
+fi
+
+# ─── Channel Configuration ────────────────────────────────────────────────
 
 echo ""
 echo "📱 Channel Configuration:"
@@ -67,12 +98,17 @@ if [ -n "$SLACK_SECRET" ]; then
     sed -i.bak "s|SLACK_SIGNING_SECRET=.*|SLACK_SIGNING_SECRET=$SLACK_SECRET|" .env
 fi
 
-# Google Places
-read -p "📍 Google Places API Key: " PLACES_KEY
-if [ -n "$PLACES_KEY" ]; then
-    sed -i.bak "s|GOOGLE_PLACES_API_KEY=.*|GOOGLE_PLACES_API_KEY=$PLACES_KEY|" .env
-    echo "   ✅ Google Places configured"
-fi
+# ─── Feature Toggles ──────────────────────────────────────────────────────
+
+echo ""
+echo "⚙️  Feature Toggles (defaults are fine for most setups):"
+echo ""
+echo "  PROACTIVE_NUDGES_ENABLED=true    (daily travel nudges)"
+echo "  DAILY_TIPS_ENABLED=true          (daily travel tips)"
+echo "  BROWSER_SCRAPING_ENABLED=true    (Playwright for web scraping)"
+echo "  LINK_CODE_EXPIRY_MINUTES=10      (cross-channel link code TTL)"
+echo ""
+echo "  Edit .env to change these."
 
 # Cleanup backup files
 rm -f .env.bak
@@ -81,9 +117,14 @@ echo ""
 echo "✨ Configuration complete!"
 echo ""
 echo "Next steps:"
-echo "  1. Run database migrations:"
+echo "  1. Run database migrations (in order):"
 echo "     psql \"\$DATABASE_URL\" < database/schema.sql"
+echo "     psql \"\$DATABASE_URL\" < database/memory.sql"
+echo "     psql \"\$DATABASE_URL\" < database/vector.sql"
+echo "     psql \"\$DATABASE_URL\" < database/conversation-goals.sql"
+echo "     psql \"\$DATABASE_URL\" < database/memory-blocks.sql"
 echo "     psql \"\$DATABASE_URL\" < database/proactive.sql"
+echo "     psql \"\$DATABASE_URL\" < database/identity.sql"
 echo ""
 echo "  2. Start the server:"
 echo "     docker-compose up -d"

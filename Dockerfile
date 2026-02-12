@@ -1,22 +1,37 @@
-# Aria Travel Guide - Dockerfile with Playwright
-# Uses playwright base image for browser automation
+# Aria Travel Guide - Multi-Stage Dockerfile with Playwright
+# Stage 1: Build (includes devDependencies for tsc)
+# Stage 2: Runtime (production-only deps)
 
-FROM mcr.microsoft.com/playwright:v1.48.0-focal
+# ── Stage 1: Builder ──────────────────────────────────────────────────────────
+FROM mcr.microsoft.com/playwright:v1.48.0-focal AS builder
 
 WORKDIR /app
 
-# Install Node.js dependencies
+# Install ALL dependencies (including devDependencies for TypeScript compilation)
 COPY package*.json ./
-RUN npm ci --only=production
-
-# Install Playwright browsers
-RUN npx playwright install chromium
+RUN npm ci
 
 # Copy source and build
 COPY tsconfig.json ./
 COPY src ./src
 COPY config ./config
 RUN npm run build
+
+# ── Stage 2: Runtime ──────────────────────────────────────────────────────────
+FROM mcr.microsoft.com/playwright:v1.48.0-focal
+
+WORKDIR /app
+
+# Install production-only dependencies
+COPY package*.json ./
+RUN npm ci --only=production
+
+# Install Playwright browsers
+RUN npx playwright install chromium
+
+# Copy compiled output from builder
+COPY --from=builder /app/dist ./dist
+COPY config ./config
 
 # Runtime
 ENV NODE_ENV=production

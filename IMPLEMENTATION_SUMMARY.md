@@ -1,191 +1,212 @@
-# DEV 3: Memory & Personalization Foundation — Implementation Summary
+# Aria Soul v2 — Implementation Summary
 
-## ✅ Implementation Complete
+## Overview
 
-This PR successfully delivers a complete, production-ready memory and personalization system for Aria, fully independent of other developers' work.
+This PR delivers three major capabilities on top of the existing memory/personality system:
 
-## 📦 What Was Delivered
+1. **Cross-Channel Identity** — Same person on Telegram + WhatsApp = unified memory via `/link` command
+2. **Dual-Model Architecture** — 8B classifier gate saves ~800 tokens per simple message ("hi", "thanks")
+3. **Hook System** — Typed interfaces for Dev 1 (brain/router) and Dev 2 (body/tools) to plug into
 
-### 1. Database Schema (database/memory.sql)
-✅ **4 new production-ready tables:**
+---
 
-- **`user_preferences`** (29 lines)
-  - Stores 12 preference categories with confidence scoring (0.0-1.0)
-  - UPSERT support with automatic confidence adjustment
-  - Tracks mention count and source messages
-  - Indexes for fast lookups by user, category, and confidence
+## What Was Delivered
 
-- **`trip_plans`** (26 lines)
-  - Multi-day itinerary storage with JSONB field
-  - Budget tracking (allocated, estimated, spent)
-  - Status workflow (draft → planning → confirmed → in_progress → completed → cancelled)
-  - Date validation constraints
+### Phase 1: Foundation (PR #1 — Previously Merged)
 
-- **`price_alerts`** (27 lines)
-  - Flight/hotel/activity price monitoring
-  - Target price thresholds with currency support
-  - Last checked and last triggered timestamps
-  - Optional expiration dates
+**Memory & Preference System:**
+- `database/memory.sql` — 4 tables: user_preferences, trip_plans, price_alerts, tool_log
+- `src/memory.ts` — LLM-based preference extraction with confidence scoring (0.50-0.95)
+- `src/types/database.ts` — Complete type definitions for all tables
+- `src/types/handler.ts` — Pipeline types
 
-- **`tool_log`** (18 lines)
-  - Audit trail for all tool executions
-  - Performance tracking (execution time)
-  - Success/failure logging
-  - User and session attribution
+**Vector Memory (mem0 pattern):**
+- `src/memory-store.ts` — Fact extraction → embedding → similarity search → LLM decision → execute
+- `src/embeddings.ts` — Dual-provider (Jina AI primary, HuggingFace fallback) with LRU cache
 
-**Total lines: 260** | **Total tables: 4** | **Total indexes: 15**
+**Knowledge Graph (pgvector, no Neo4j):**
+- `src/graph-memory.ts` — Entity/relation extraction, recursive CTE traversal, contradiction detection
 
-### 2. Type Safety Layer (src/types/)
-✅ **3 TypeScript definition files:**
+**Cognitive Layer:**
+- `src/cognitive.ts` — Internal monologue (8B), tone selection (pure function), conversation goals
 
-- **`database.ts`** (134 lines)
-  - Complete interfaces for all 4 tables
-  - Type-safe enums (12 preference categories, 6 trip statuses, 3 alert types)
-  - Helper types (PreferencesMap, PreferenceInput)
+**Dynamic Personality:**
+- `src/personality.ts` — 8-layer system prompt composition from SOUL.md + runtime context
 
-- **`tools.ts`** (243 lines)
-  - Mock tool implementations for independent testing
-  - 4 mock tools: search_flights, search_hotels, search_places, check_weather
-  - Returns realistic fake data without external dependencies
+---
 
-- **`handler.ts`** (148 lines)
-  - Message, Session, User interfaces
-  - Groq API type definitions
-  - Test database pool helper
-  - Preference extraction types
+### Phase 2: Soul v2 (This PR)
 
-**Total lines: 525** | **Total mock tools: 4**
+#### 1. Cross-Channel Identity
 
-### 3. Preference Extraction System (src/memory.ts)
-✅ **Complete LLM-powered memory system (387 lines):**
+**New: `database/identity.sql`**
+- `persons` table — canonical identity across channels (UUID PK)
+- `link_codes` table — 6-digit codes with configurable expiry (default 10 min)
+- `ALTER TABLE users ADD COLUMN person_id` with foreign key to persons
+- Trigger: auto-creates person record on new user INSERT
+- Backfill: creates person records for all existing users
 
-**Core Functions:**
-1. `extractPreferences(userMessage, existingPrefs)` - LLM extraction using Groq Llama 3.1 8B
-2. `scoreConfidence(value, message, existing)` - Intelligent confidence scoring
-3. `savePreferences(userId, newPrefs, message)` - UPSERT with confidence adjustment
-4. `loadPreferences(userId)` - Retrieve user preferences
-5. `formatPreferencesForPrompt(prefs)` - Format for system prompt injection
-6. `processUserMessage(pool, userId, message)` - Complete workflow (extract + save)
+**New: `src/identity.ts`**
+- `generateLinkCode(userId)` — creates 6-digit code, invalidates old codes
+- `redeemLinkCode(userId, code)` — validates, links accounts, merges person records (transactional)
+- `getLinkedUserIds(userId)` — returns all user_ids sharing the same person_id
 
-**Confidence Scoring Levels:**
-- 0.95 (Direct): "I am vegetarian", "I have allergies"
-- 0.85 (Strong): "I love...", "I always..."
-- 0.70 (Moderate): "I prefer...", "I like..."
-- 0.60 (Uncertain): "I usually...", "I tend to..."
-- 0.50 (Tentative): "I might...", "Maybe..."
+**Modified: `src/character/handler.ts`**
+- Detects `/link` and `/link 123456` at top of handleMessage() before sanitization
+- Routes to identity system for code generation or redemption
 
-**Smart Adjustments:**
-- +0.10 boost on repeat mention
-- -0.20 penalty on contradiction
+**Modified: `src/character/session-store.ts`**
+- Added `personId` to User interface
+- Updated SELECT and INSERT queries to include `person_id`
 
-**Adapted from:** letta-ai/letta (memory blocks) + openclaw/openclaw (memory search)
+**Modified: `src/memory-store.ts`**
+- `searchMemories()` now accepts `string | string[]` for userId
+- Uses `WHERE user_id = ANY($2::uuid[])` for cross-channel fan-out search
 
-### 4. Demo & Documentation
-✅ **Testing and documentation:**
+**Modified: `src/graph-memory.ts`**
+- `searchGraph()`, `searchGraphRecursive()`, `searchGraphByEmbedding()` accept `string[]`
+- Fan-out search across all linked user accounts
 
-- **`src/examples/memory-demo.ts`** (169 lines)
-  - Demonstrates all 5 core functions
-  - Tests confidence scoring (5 examples)
-  - Tests LLM extraction (5 examples, requires GROQ_API_KEY)
-  - Tests repeat mention boost
-  - Tests contradiction handling
-  - Runs successfully without API key (confidence scoring only)
+#### 2. Message Classifier (8B Token-Saving Gate)
 
-- **`docs/MEMORY_SYSTEM.md`** (266 lines)
-  - Complete API documentation
-  - Usage examples for all functions
-  - Database setup instructions
-  - Integration guides for Dev 1 and Dev 2
-  - Type safety layer explanation
+**Modified: `src/cognitive.ts` — Added `classifyMessage()`**
+- Regex fast-path for obvious simple messages (zero LLM cost)
+- 8B LLM classification for ambiguous messages (~60 tokens out, ~50-100ms)
+- Returns `ClassifierResult`:
+  - `message_complexity`: 'simple' | 'moderate' | 'complex'
+  - `needs_tool`, `tool_hint` (hints for Dev 1's router)
+  - `skip_memory`, `skip_graph`, `skip_cognitive` (pipeline gating flags)
 
-## 📊 Statistics
+**Token savings for simple messages (~800 tokens):**
+- Skip 5-way Promise.all pipeline (~300ms, ~500 tokens)
+- Skip fire-and-forget writes (~600 tokens of 8B calls)
+- Minimal system prompt (~300 tokens instead of ~650)
 
-| Category | Count |
-|----------|-------|
-| Files created | 8 |
-| Total lines of code | 1,625 |
-| Database tables | 4 |
-| TypeScript interfaces | 18 |
-| Mock tools | 4 |
-| Core functions | 6 |
-| Demo examples | 5 |
+**Modified: `src/types/cognitive.ts`**
+- Added `ClassifierResult` and `MessageComplexity` types
 
-## ✅ Validation Results
+**Modified: `src/types/schemas.ts`**
+- Added `ClassifierResultSchema` and `MessageComplexitySchema` for Zod validation
 
-### TypeScript Compilation
-✅ **PASSED** - No compilation errors
+#### 3. Hook System (Dev 1 + Dev 2 Interfaces)
 
-### Demo Script Execution
-✅ **PASSED** - All confidence scoring tests successful:
-- Direct statement: 95% ✅
-- Strong preference: 85% ✅
-- Moderate preference: 70% ✅
-- Uncertain preference: 60% ✅
-- Tentative preference: 50% ✅
-- Repeat mention boost: +10% ✅
-- Contradiction penalty: -20% ✅
+**New: `src/hooks.ts`**
+- `BrainHooks` interface — Dev 1 implements: routeMessage, executeToolPipeline, formatResponse
+- `BodyHooks` interface — Dev 2 implements: executeTool, getAvailableTools
+- Shared types: RouteContext, RouteDecision, ToolResult, ToolExecutionResult, ToolDefinition
+- Default implementations (no-ops) — system works identically without Dev 1/Dev 2 code
 
-### Code Review
-✅ **PASSED** - All comments addressed:
-- Clarified TODO comments for foreign keys
-- Improved variable naming (removed underscore)
+**New: `src/hook-registry.ts`**
+- Singleton pattern: `registerBrainHooks()` / `registerBodyHooks()`
+- Getters: `getBrainHooks()` / `getBodyHooks()`
 
-### CodeQL Security Scan
-✅ **PASSED** - 0 security alerts
+#### 4. Handler Refactor (Classifier-Gated Dual-Model Pipeline)
 
-## 🎯 Design Principles
+**Modified: `src/character/handler.ts` — Major refactor**
 
-1. **Independence**: Zero dependencies on Dev 1 or Dev 2 work
-2. **Type Safety**: Complete TypeScript coverage with strict typing
-3. **Production Ready**: Includes indexes, constraints, triggers
-4. **Testability**: Mock tools allow testing without external services
-5. **Documentation**: Comprehensive docs for integration
-6. **Security**: No SQL injection, no secrets in code, validated by CodeQL
-7. **Cognitive Depth**: Adapted from proven memory patterns (letta-ai, openclaw)
+New 22-step pipeline:
+- Step 0: `/link` command detection (early return)
+- Step 5: 8B classifier gate (NEW)
+- Step 6: Conditional pipeline — simple messages skip memory/graph/cognitive entirely
+- Steps 7-8: Brain hooks (Dev 1 integration points)
+- Step 12: Optional formatResponse hook
+- Steps 18-21: Fire-and-forget writes SKIPPED for simple messages
 
-## 🔗 Integration Ready
+Cross-channel integration:
+- Resolves linked user IDs via `getLinkedUserIds()`
+- Passes array to `searchMemories()` and `searchGraph()` for fan-out
 
-### For Dev 1 (Handler)
-```typescript
-import { processUserMessage, loadPreferences, formatPreferencesForPrompt } from './memory.js'
+#### 5. Personality Updates
 
-// In handleMessage():
-const prefs = await loadPreferences(pool, user.userId)
-systemContent += '\n\n' + formatPreferencesForPrompt(prefs)
+**Modified: `src/personality.ts`**
+- Added `isSimpleMessage` to ComposeOptions
+- Simple messages: early return with only Layer 1 (Identity+Voice) + Layer 2 (User name)
+- Enhanced Layer 8: anti-hallucination instructions for tool results
 
-// After response (non-blocking):
-processUserMessage(pool, user.userId, userMessage).catch(console.error)
-```
+#### 6. Config/Docker/Setup Fixes
 
-### For Dev 2 (Tools)
-```typescript
-// Replace mock tools with real implementations
-// Use same interfaces defined in src/types/tools.ts
-```
+**Modified: `Dockerfile`** — Multi-stage build
+- Stage 1 (builder): `npm ci` (all deps) → `npm run build`
+- Stage 2 (runtime): `npm ci --only=production` → copy `dist/` from builder
 
-## 📝 Next Steps (Optional Future Enhancements)
+**Modified: `docker-compose.yml` + `deploy/docker-compose.prod.yml`**
+- Added all missing env vars: JINA_API_KEY, HF_API_KEY, EMBEDDING_MODEL, EMBEDDING_DIMS
+- Added channel toggles, feature toggles, LINK_CODE_EXPIRY_MINUTES
 
-- [ ] Preference decay (reduce confidence over time)
-- [ ] Preference merging (combine related preferences)
-- [ ] Tool log analytics functions
-- [ ] Trip plan builder utilities
-- [ ] Price alert scheduler
+**Modified: `setup.sh`**
+- Added prompts for Jina AI and HuggingFace API keys
+- Lists ALL 7 SQL migrations in correct order
+- Shows feature toggles section
 
-## 🏆 Success Criteria Met
+**Modified: `.env.example`**
+- Added `LINK_CODE_EXPIRY_MINUTES=10`
 
-✅ **All requirements from problem statement delivered:**
-- [x] 4 database tables with proper schema
-- [x] 3 type definition files (database, tools, handler)
-- [x] Complete preference extraction system
-- [x] Confidence scoring (0.50-0.95)
-- [x] UPSERT pattern with automatic adjustment
-- [x] Mock tools for independence
-- [x] Working demo script
-- [x] Comprehensive documentation
-- [x] TypeScript compilation successful
-- [x] No security vulnerabilities
-- [x] Code review feedback addressed
+#### 7. Handoff Documentation
 
-## 🎉 Conclusion
+**New: `DEV1_HANDOFF.md`** — Complete guide for Dev 1 (brain/router):
+- Hook interface reference, registration, RouteContext/RouteDecision types
+- Pipeline flow, key files, ownership boundaries
 
-The memory and personalization system is **complete, tested, and ready for integration**. All code compiles, runs successfully, passes security scans, and is fully documented. Dev 3 has delivered a production-ready foundation that other developers can integrate without modification.
+**New: `DEV2_HANDOFF.md`** — Complete guide for Dev 2 (body/tools):
+- BodyHooks interface, tool definition format, execution flow
+- Available infrastructure (Playwright, Google Places API, DB)
+- Tool ideas matching classifier hints
+
+**New: `ARCHITECTURE.md`** — Current state and target architecture diagrams
+
+---
+
+## File Summary
+
+### New Files (7)
+
+| File | Lines | Purpose |
+|------|:-----:|---------|
+| `database/identity.sql` | 67 | persons, link_codes tables, trigger, backfill |
+| `src/identity.ts` | 157 | Link code gen/redeem, memory merge, linked user lookup |
+| `src/hooks.ts` | 117 | BrainHooks + BodyHooks interfaces + defaults |
+| `src/hook-registry.ts` | 41 | Singleton hook registration |
+| `DEV1_HANDOFF.md` | 72 | Brain/router handoff |
+| `DEV2_HANDOFF.md` | 78 | Body/tools handoff |
+| `ARCHITECTURE.md` | 200+ | Current + target architecture |
+
+### Modified Files (14)
+
+| File | Scope | What Changed |
+|------|:-----:|-------------|
+| `src/character/handler.ts` | **Major** | /link detection, classifier gating, hook calls, simple-message fast path, cross-channel fan-out |
+| `src/cognitive.ts` | **Medium** | Added classifyMessage() with regex fast-path + 8B LLM |
+| `src/personality.ts` | **Small** | isSimpleMessage flag, minimal prompt path, Layer 8 anti-hallucination |
+| `src/character/session-store.ts` | **Small** | personId in User interface + queries |
+| `src/memory-store.ts` | **Small** | searchMemories() accepts string[] for fan-out |
+| `src/graph-memory.ts` | **Small** | searchGraph() + internals accept string[] |
+| `src/types/cognitive.ts` | **Small** | ClassifierResult, MessageComplexity types |
+| `src/types/schemas.ts` | **Small** | ClassifierResultSchema Zod validation |
+| `src/character/index.ts` | **Small** | Exports identity, hooks, classifier APIs |
+| `Dockerfile` | **Small** | Multi-stage build (builder + runtime) |
+| `docker-compose.yml` | **Small** | All env vars added |
+| `deploy/docker-compose.prod.yml` | **Small** | All env vars added |
+| `setup.sh` | **Medium** | Embedding prompts, all 7 migrations, feature toggles |
+| `.env.example` | **Small** | LINK_CODE_EXPIRY_MINUTES |
+
+### Deleted Files (1)
+
+| File | Reason |
+|------|--------|
+| `FUTURE_IMPLEMENTATION_PLAN.md` | Superseded by ARCHITECTURE.md and DEV handoff docs |
+
+---
+
+## Validation
+
+| Check | Status |
+|:------|:------:|
+| TypeScript compiles (`npm run build`) | **PASS** — 0 errors |
+| All 24 .js files in dist/ | **PASS** |
+| Simple message fast path works | Classifier returns simple + skips pipeline |
+| Complex message full pipeline works | All 5 parallel calls + hooks execute |
+| /link generates 6-digit code | Code stored in link_codes with expiry |
+| /link 123456 redeems code | Accounts linked, person records merged |
+| Hook defaults (no Dev 1/Dev 2) | System behaves identically to before |
+| Docker multi-stage build | Builder + runtime stages separate |
+| Setup lists all migrations | 7 SQL files in correct order |
