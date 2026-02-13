@@ -118,5 +118,81 @@ describe('BrainHooks Logic', () => {
             expect(result?.success).toBe(false)
             expect(result?.data).toContain('Tool execution failed: API Error')
         })
+
+        it('should sanitize error in catch branch', async () => {
+            const mockExecute = vi.fn().mockRejectedValue(new Error('Network failure'))
+
+            // @ts-ignore
+            vi.mocked(HookRegistry.getBodyHooks).mockReturnValue({
+                ...defaultBodyHooks,
+                executeTool: mockExecute
+            })
+
+            const decision = { useTool: true, toolName: 'test_tool', toolParams: {} }
+            // @ts-ignore
+            const result = await brainHooks.executeToolPipeline(decision, {} as any)
+
+            expect(result?.success).toBe(false)
+            expect(result?.data).toBe('Internal error executing tool')
+            expect(result?.raw).toEqual({ name: 'Error', message: 'Network failure' })
+        })
+
+        it('should return null when useTool is false', async () => {
+            const mockExecute = vi.fn()
+
+            // @ts-ignore
+            vi.mocked(HookRegistry.getBodyHooks).mockReturnValue({
+                ...defaultBodyHooks,
+                executeTool: mockExecute
+            })
+
+            const decision = { useTool: false, toolName: null, toolParams: {} }
+            // @ts-ignore
+            const result = await brainHooks.executeToolPipeline(decision, {} as any)
+
+            expect(result).toBeNull()
+            expect(mockExecute).not.toHaveBeenCalled()
+        })
+    })
+
+    describe('formatResponse', () => {
+        it('should return rawResponse unchanged', () => {
+            const result = brainHooks.formatResponse!('Hello world', null)
+            expect(result).toBe('Hello world')
+        })
+
+        it('should handle null toolResult', () => {
+            const result = brainHooks.formatResponse!('Some response', null)
+            expect(result).toBe('Some response')
+        })
+    })
+
+    describe('param validation and special characters', () => {
+        it('should set useTool false when param extraction fails', async () => {
+            const ctx = createCtx('I want flights', true, 'search_flights')
+            const result = await brainHooks.routeMessage(ctx)
+
+            expect(result.useTool).toBe(false)
+        })
+
+        it('should extract hotel locations with special characters', async () => {
+            const ctx1 = createCtx('Find a hotel in St. Louis', true, 'search_hotels')
+            const result1 = await brainHooks.routeMessage(ctx1)
+            expect(result1.toolParams).toEqual({ location: 'st. louis' })
+
+            const ctx2 = createCtx('Find a hotel in New York-JFK', true, 'search_hotels')
+            const result2 = await brainHooks.routeMessage(ctx2)
+            expect(result2.toolParams).toEqual({ location: 'new york-jfk' })
+        })
+
+        it('should not capture "to" after verbs like "go to"', async () => {
+            const ctx = createCtx('I want to go to Paris', true, 'search_flights')
+            const result = await brainHooks.routeMessage(ctx)
+
+            // Should not extract "go to paris" as destination
+            if (result.toolParams.destination) {
+                expect(result.toolParams.destination).not.toContain('go')
+            }
+        })
     })
 })

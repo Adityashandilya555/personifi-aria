@@ -22,7 +22,7 @@ function extractToolParams(toolName: string, userMessage: string): Record<string
         } else {
             // Priority 2: Independent params if combined failed
             const fromMatch = lowerMsg.match(/\bfrom\s+(.+?)(?:\s+to\b|\s+on\b|\s+at\b|$)/)
-            const toMatch = lowerMsg.match(/\bto\s+(.+?)(?:\s+from\b|\s+on\b|\s+at\b|$)/)
+            const toMatch = lowerMsg.match(/(?<!\b(?:go|travel|drive|going|fly|want)\s)\bto\s+(.+?)(?:\s+from\b|\s+on\b|\s+at\b|$)/)
 
             if (fromMatch) params.origin = fromMatch[1].trim()
             if (toMatch && !params.destination) params.destination = toMatch[1].trim()
@@ -31,7 +31,7 @@ function extractToolParams(toolName: string, userMessage: string): Record<string
 
     if (toolName === 'search_hotels') {
         // Pattern: "in [location]"
-        const inMatch = lowerMsg.match(/(?:in|at)\s+([a-z\s]+?)(?:$|\s+for|\s+on)/)
+        const inMatch = lowerMsg.match(/(?:in|at)\s+(.+?)(?:$|\s+for|\s+on)/)
 
         if (inMatch) params.location = inMatch[1].trim()
     }
@@ -52,9 +52,19 @@ export const brainHooks: BrainHooks = {
 
         // If classifier says we need a tool, try to extract params
         if (classification.needs_tool && classification.tool_hint) {
-            decision.useTool = true
-            decision.toolName = classification.tool_hint
-            decision.toolParams = extractToolParams(classification.tool_hint, userMessage)
+            const extractedParams = extractToolParams(classification.tool_hint, userMessage)
+
+            // Validate that we got meaningful parameters
+            const hasValidParams = Object.keys(extractedParams).length > 0 &&
+                Object.values(extractedParams).some(val => val && String(val).trim().length > 0)
+
+            if (hasValidParams) {
+                decision.useTool = true
+                decision.toolName = classification.tool_hint
+                decision.toolParams = extractedParams
+            } else {
+                console.warn(`[brain] Failed to extract valid params for tool '${classification.tool_hint}' from message: "${userMessage}"`)
+            }
         }
 
         return decision
@@ -87,7 +97,9 @@ export const brainHooks: BrainHooks = {
             return {
                 success: false,
                 data: 'Internal error executing tool',
-                raw: error
+                raw: error instanceof Error
+                    ? { name: error.name, message: error.message }
+                    : String(error)
             }
         }
     },
