@@ -1,7 +1,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { brainHooks } from './index.js'
-import { defaultBodyHooks, type RouteContext } from '../hooks.js'
+import { defaultBodyHooks, type RouteContext, type RouteDecision, type BodyHooks } from '../hooks.js'
 import * as HookRegistry from '../hook-registry.js'
 
 // Mock getBodyHooks
@@ -32,6 +32,13 @@ describe('BrainHooks Logic', () => {
         graphContext: [],
         history: []
     })
+
+    const mockBodyHooks = (executeTool: BodyHooks['executeTool']): void => {
+        vi.mocked(HookRegistry.getBodyHooks).mockReturnValue({
+            ...defaultBodyHooks,
+            executeTool
+        })
+    }
 
     describe('routeMessage', () => {
         it('should route to search_flights and extract params', async () => {
@@ -82,20 +89,14 @@ describe('BrainHooks Logic', () => {
 
         it('should execute tool via bodyHooks', async () => {
             const mockExecute = vi.fn().mockResolvedValue({ success: true, data: { status: 'ok' } })
+            mockBodyHooks(mockExecute)
 
-            // @ts-ignore
-            vi.mocked(HookRegistry.getBodyHooks).mockReturnValue({
-                ...defaultBodyHooks,
-                executeTool: mockExecute
-            })
-
-            const decision = {
+            const decision: RouteDecision = {
                 useTool: true,
                 toolName: 'test_tool',
                 toolParams: { foo: 'bar' }
             }
-            // @ts-ignore
-            const result = await brainHooks.executeToolPipeline(decision, {} as any)
+            const result = await brainHooks.executeToolPipeline(decision, {} as RouteContext)
 
             expect(mockExecute).toHaveBeenCalledWith('test_tool', { foo: 'bar' })
             expect(result?.success).toBe(true)
@@ -104,51 +105,45 @@ describe('BrainHooks Logic', () => {
 
         it('should handle tool failures gracefully', async () => {
             const mockExecute = vi.fn().mockResolvedValue({ success: false, error: 'API Error' })
+            mockBodyHooks(mockExecute)
 
-            // @ts-ignore
-            vi.mocked(HookRegistry.getBodyHooks).mockReturnValue({
-                ...defaultBodyHooks,
-                executeTool: mockExecute
-            })
-
-            const decision = { useTool: true, toolName: 'test_tool', toolParams: {} }
-            // @ts-ignore
-            const result = await brainHooks.executeToolPipeline(decision, {} as any)
+            const decision: RouteDecision = { useTool: true, toolName: 'test_tool', toolParams: {} }
+            const result = await brainHooks.executeToolPipeline(decision, {} as RouteContext)
 
             expect(result?.success).toBe(false)
             expect(result?.data).toContain('Tool execution failed: API Error')
         })
 
-        it('should sanitize error in catch branch', async () => {
+        it('should sanitize Error instances in catch branch', async () => {
             const mockExecute = vi.fn().mockRejectedValue(new Error('Network failure'))
+            mockBodyHooks(mockExecute)
 
-            // @ts-ignore
-            vi.mocked(HookRegistry.getBodyHooks).mockReturnValue({
-                ...defaultBodyHooks,
-                executeTool: mockExecute
-            })
-
-            const decision = { useTool: true, toolName: 'test_tool', toolParams: {} }
-            // @ts-ignore
-            const result = await brainHooks.executeToolPipeline(decision, {} as any)
+            const decision: RouteDecision = { useTool: true, toolName: 'test_tool', toolParams: {} }
+            const result = await brainHooks.executeToolPipeline(decision, {} as RouteContext)
 
             expect(result?.success).toBe(false)
             expect(result?.data).toBe('Internal error executing tool')
             expect(result?.raw).toEqual({ name: 'Error', message: 'Network failure' })
         })
 
+        it('should stringify non-Error thrown values in catch branch', async () => {
+            const mockExecute = vi.fn().mockRejectedValue('raw string error')
+            mockBodyHooks(mockExecute)
+
+            const decision: RouteDecision = { useTool: true, toolName: 'test_tool', toolParams: {} }
+            const result = await brainHooks.executeToolPipeline(decision, {} as RouteContext)
+
+            expect(result?.success).toBe(false)
+            expect(result?.data).toBe('Internal error executing tool')
+            expect(result?.raw).toBe('raw string error')
+        })
+
         it('should return null when useTool is false', async () => {
             const mockExecute = vi.fn()
+            mockBodyHooks(mockExecute)
 
-            // @ts-ignore
-            vi.mocked(HookRegistry.getBodyHooks).mockReturnValue({
-                ...defaultBodyHooks,
-                executeTool: mockExecute
-            })
-
-            const decision = { useTool: false, toolName: null, toolParams: {} }
-            // @ts-ignore
-            const result = await brainHooks.executeToolPipeline(decision, {} as any)
+            const decision: RouteDecision = { useTool: false, toolName: null, toolParams: {} }
+            const result = await brainHooks.executeToolPipeline(decision, {} as RouteContext)
 
             expect(result).toBeNull()
             expect(mockExecute).not.toHaveBeenCalled()
@@ -161,9 +156,12 @@ describe('BrainHooks Logic', () => {
             expect(result).toBe('Hello world')
         })
 
-        it('should handle null toolResult', () => {
-            const result = brainHooks.formatResponse!('Some response', null)
-            expect(result).toBe('Some response')
+        it('should return rawResponse unchanged when toolResult is provided', () => {
+            const result = brainHooks.formatResponse!('Hello world', {
+                success: true,
+                data: '{"status": "ok"}'
+            })
+            expect(result).toBe('Hello world')
         })
     })
 
@@ -185,14 +183,21 @@ describe('BrainHooks Logic', () => {
             expect(result2.toolParams).toEqual({ location: 'new york-jfk' })
         })
 
-        it('should not capture "to" after verbs like "go to"', async () => {
+        it('should not route when input has verb-prefix "to" without origin', async () => {
             const ctx = createCtx('I want to go to Paris', true, 'search_flights')
             const result = await brainHooks.routeMessage(ctx)
 
-            // Should not extract "go to paris" as destination
-            if (result.toolParams.destination) {
-                expect(result.toolParams.destination).not.toContain('go')
-            }
+            // No valid origin/destination extractable → param validation gate rejects
+            expect(result.useTool).toBe(false)
+        })
+
+        it('should extract destination correctly with "from X to Y" despite verb prefix', async () => {
+            const ctx = createCtx('I want to go from NYC to Paris', true, 'search_flights')
+            const result = await brainHooks.routeMessage(ctx)
+
+            expect(result.useTool).toBe(true)
+            expect(result.toolParams.origin).toBe('nyc')
+            expect(result.toolParams.destination).toBe('paris')
         })
     })
 })
