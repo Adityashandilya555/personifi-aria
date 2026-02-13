@@ -1,22 +1,28 @@
 /**
  * Browser Automation for Aria
- * Uses Playwright for headless browsing: scraping deals, checking availability, etc.
+ * Uses Playwright Extra + Stealth for robust scraping and "Aria Snapshots"
  */
 
-import { chromium, Browser, Page } from 'playwright'
+import { chromium } from 'playwright-extra'
+// @ts-ignore
+import stealthPlugin from 'puppeteer-extra-plugin-stealth'
+import { Browser, Page } from 'playwright'
+
+// Configure stealth mode
+chromium.use(stealthPlugin())
 
 let browser: Browser | null = null
 
 /**
- * Initialize the browser instance (reuse for efficiency)
+ * Initialize the browser instance
  */
 export async function initBrowser(): Promise<void> {
   if (!browser) {
     browser = await chromium.launch({
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'], // For Docker
-    })
-    console.log('[BROWSER] Playwright browser initialized')
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    }) as unknown as Browser // Cast because playwright-extra types can be tricky
+    console.log('[BROWSER] Playwright (Stealth) initialized')
   }
 }
 
@@ -32,17 +38,56 @@ export async function closeBrowser(): Promise<void> {
 }
 
 /**
- * Get a new page (auto-initializes browser if needed)
+ * Get a new page with stealth settings
  */
-async function getPage(): Promise<Page> {
+export async function getPage(): Promise<Page> {
   if (!browser) {
     await initBrowser()
   }
-  return browser!.newPage()
+  const context = await browser!.newContext({
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
+    viewport: { width: 1280, height: 800 },
+  })
+  return context.newPage()
+}
+
+/**
+ * Aria Snapshot: Capture text content of a page
+ */
+export interface AriaSnapshot {
+  title: string
+  url: string
+  content: string
+}
+
+export async function captureAriaSnapshot(url: string): Promise<AriaSnapshot> {
+  const page = await getPage()
+  try {
+    console.log(`[BROWSER] Navigating to ${url}`)
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
+
+    // Random wait to appear human
+    await page.waitForTimeout(1000 + Math.random() * 2000)
+
+    const title = await page.title()
+    const content = await page.evaluate(() => {
+      // Remove scripts, styles, etc.
+      const scripts = document.querySelectorAll('script, style, noscript, nav, header, footer')
+      scripts.forEach(s => s.remove())
+      return document.body.innerText.trim()
+    })
+
+    return { title, url, content }
+  } catch (error) {
+    console.error(`[BROWSER] Snapshot failed for ${url}:`, error)
+    return { title: 'Error', url, content: '' }
+  } finally {
+    await page.close()
+  }
 }
 
 // ============================================
-// Travel Scraping Functions
+// Legacy / Specific Scraping Functions
 // ============================================
 
 export interface FlightDeal {
@@ -54,9 +99,6 @@ export interface FlightDeal {
   url: string
 }
 
-/**
- * Scrape flight deals from Google Flights
- */
 export async function scrapeFlightDeals(
   from: string,
   to: string,
@@ -64,25 +106,20 @@ export async function scrapeFlightDeals(
 ): Promise<FlightDeal[]> {
   const page = await getPage()
   const deals: FlightDeal[] = []
-  
+
   try {
-    // Google Flights URL
     const url = `https://www.google.com/travel/flights?q=flights+from+${encodeURIComponent(from)}+to+${encodeURIComponent(to)}`
     await page.goto(url, { waitUntil: 'networkidle' })
-    
-    // Wait for results to load
     await page.waitForSelector('[data-price]', { timeout: 10000 }).catch(() => null)
-    
-    // Extract flight info (simplified - real implementation would be more robust)
+
     const flights = await page.$$eval('[role="listitem"]', (items) => {
       return items.slice(0, 5).map((item) => ({
         airline: item.querySelector('[data-airline]')?.textContent || 'Unknown',
         price: item.querySelector('[data-price]')?.textContent || 'N/A',
-        duration: item.querySelector('[data-duration]')?.textContent || '',
       }))
     })
-    
-    flights.forEach((f, i) => {
+
+    flights.forEach((f) => {
       deals.push({
         airline: f.airline,
         from,
@@ -92,87 +129,30 @@ export async function scrapeFlightDeals(
         url,
       })
     })
-    
-    console.log(`[BROWSER] Scraped ${deals.length} flight deals`)
   } catch (error) {
     console.error('[BROWSER] Error scraping flights:', error)
   } finally {
     await page.close()
   }
-  
+
   return deals
-}
-
-export interface RestaurantInfo {
-  name: string
-  rating: string
-  priceLevel: string
-  cuisine: string
-  bookingAvailable: boolean
-  url: string
-}
-
-/**
- * Scrape restaurant info and check booking availability
- */
-export async function checkRestaurantAvailability(
-  restaurantName: string,
-  location: string,
-  date: string,
-  partySize: number = 2
-): Promise<RestaurantInfo | null> {
-  const page = await getPage()
-  
-  try {
-    // Search on OpenTable or similar
-    const searchUrl = `https://www.opentable.com/s?term=${encodeURIComponent(restaurantName + ' ' + location)}`
-    await page.goto(searchUrl, { waitUntil: 'networkidle' })
-    
-    // Check if restaurant appears
-    const firstResult = await page.$('[data-test="restaurant-card"]')
-    if (!firstResult) {
-      return null
-    }
-    
-    const info: RestaurantInfo = {
-      name: await firstResult.$eval('[data-test="restaurant-name"]', el => el.textContent || '').catch(() => restaurantName),
-      rating: await firstResult.$eval('[data-test="rating"]', el => el.textContent || '').catch(() => 'N/A'),
-      priceLevel: await firstResult.$eval('[data-test="price"]', el => el.textContent || '').catch(() => '$$'),
-      cuisine: await firstResult.$eval('[data-test="cuisine"]', el => el.textContent || '').catch(() => 'Various'),
-      bookingAvailable: await firstResult.$('[data-test="availability"]') !== null,
-      url: searchUrl,
-    }
-    
-    console.log(`[BROWSER] Found restaurant: ${info.name}`)
-    return info
-  } catch (error) {
-    console.error('[BROWSER] Error checking restaurant:', error)
-    return null
-  } finally {
-    await page.close()
-  }
 }
 
 export interface TravelDeal {
   title: string
   destination: string
   price: string
-  discount: string
   source: string
   url: string
 }
 
-/**
- * Scrape travel deals from popular sites
- */
-export async function scrapeTravelDeals(location?: string): Promise<TravelDeal[]> {
+export async function scrapeTravelDeals(): Promise<TravelDeal[]> {
   const page = await getPage()
   const deals: TravelDeal[] = []
-  
+
   try {
-    // Example: Scrape from a deals aggregator
     await page.goto('https://www.secretflying.com/posts/', { waitUntil: 'networkidle' })
-    
+
     const posts = await page.$$eval('article', (articles) => {
       return articles.slice(0, 10).map((article) => ({
         title: article.querySelector('h2')?.textContent?.trim() || '',
@@ -180,50 +160,23 @@ export async function scrapeTravelDeals(location?: string): Promise<TravelDeal[]
         url: article.querySelector('a')?.href || '',
       }))
     })
-    
+
     posts.forEach((p) => {
       if (p.title && p.url) {
         deals.push({
           title: p.title,
-          destination: extractDestination(p.title),
+          destination: 'Various', // Simplification
           price: p.price || 'See details',
-          discount: '',
           source: 'Secret Flying',
           url: p.url,
         })
       }
     })
-    
-    console.log(`[BROWSER] Scraped ${deals.length} travel deals`)
   } catch (error) {
     console.error('[BROWSER] Error scraping deals:', error)
   } finally {
     await page.close()
   }
-  
+
   return deals
-}
-
-function extractDestination(title: string): string {
-  // Simple extraction - look for "to CITY" pattern
-  const match = title.match(/to\s+([A-Z][a-zA-Z\s]+)/i)
-  return match?.[1]?.trim() || 'Various'
-}
-
-/**
- * Take a screenshot of a page (for debugging or sharing)
- */
-export async function screenshotPage(url: string): Promise<Buffer | null> {
-  const page = await getPage()
-  
-  try {
-    await page.goto(url, { waitUntil: 'networkidle' })
-    const screenshot = await page.screenshot({ type: 'png' })
-    return screenshot
-  } catch (error) {
-    console.error('[BROWSER] Error taking screenshot:', error)
-    return null
-  } finally {
-    await page.close()
-  }
 }

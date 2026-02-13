@@ -6,7 +6,10 @@
 // @ts-ignore - node-cron has no types
 import cron from 'node-cron'
 import { Pool } from 'pg'
+import Groq from 'groq-sdk'
 import { processEmbeddingQueue } from './embeddings.js'
+import { searchFlights } from './tools/flights.js'
+import { scrapeTravelDeals } from './browser.js'
 
 let pool: Pool | null = null
 
@@ -29,14 +32,17 @@ export function initScheduler(databaseUrl: string, sendMessage: SendMessageFn) {
   // DEV 3: Batch process pending embeddings every 5 minutes
   cron.schedule('*/5 * * * *', async () => {
     try {
-      const processed = await processEmbeddingQueue(50)
-      if (processed > 0) {
-        console.log(`[SCHEDULER] Processed ${processed} pending embeddings`)
+      const processStart = await processEmbeddingQueue(50)
+      if (processStart > 0) {
+        console.log(`[SCHEDULER] Processed pending embeddings`)
       }
     } catch (error) {
       console.error('[SCHEDULER] Embedding queue processing failed:', error)
     }
   })
+
+  // Hourly Price Alerts
+  cron.schedule('0 * * * *', () => checkPriceAlerts(sendMessage))
 
   console.log('[SCHEDULER] Proactive tasks initialized')
 }
@@ -139,11 +145,123 @@ function generateDailyTip(location: string): string {
 /**
  * Weekly travel deals scraping (stub - integrate with browser.ts)
  */
+/**
+ * Weekly travel deals scraping
+ */
 async function scrapeAndNotifyDeals(sendMessage: SendMessageFn) {
-  // This will be enhanced with browser automation
-  console.log('[SCHEDULER] Weekly deals scrape triggered')
-  // TODO: Integrate with browser.ts for actual scraping
+  if (!pool) return
+
+  try {
+    console.log('[SCHEDULER] Starting weekly deals scrape...')
+    const deals = await scrapeTravelDeals()
+
+    if (deals.length === 0) {
+      console.log('[SCHEDULER] No deals found.')
+      return
+    }
+
+    // Summarize top deals using Groq
+    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY })
+    const dealText = deals.slice(0, 5).map(d => `- ${d.title}: ${d.price} (${d.source})`).join('\n')
+
+    const summaryCompletion = await groq.chat.completions.create({
+      model: 'llama-3.1-8b-instant',
+      messages: [{
+        role: 'user',
+        content: `Summarize these travel deals into a catchy, exciting 2-sentence notification for a travel bot. Emphasize the lowest prices (keep the format: Dest - Price). Do not add hashtags.\n\n${dealText}`
+      }]
+    })
+
+    const summary = summaryCompletion.choices[0]?.message?.content || 'Found some amazing travel deals! Check checking them out.'
+
+    // Notify users
+    // For MVP: Get just a few active users to avoid mass spam in dev
+    const users = await pool.query(`
+      SELECT channel_user_id FROM users 
+      WHERE authenticated = TRUE AND channel = 'telegram' 
+      LIMIT 10
+    `)
+
+    for (const user of users.rows) {
+      await sendMessage(user.channel_user_id, `✈️ **Weekly Deal Drop!**\n\n${summary}\n\nCheck the "Secret Flying" website for details!`)
+    }
+
+    console.log(`[SCHEDULER] Sent deals to ${users.rows.length} users`)
+
+  } catch (error) {
+    console.error('[SCHEDULER] Error scraping deals:', error)
+  }
+}
+
+/**
+ * Check active price alerts
+ */
+async function checkPriceAlerts(sendMessage: SendMessageFn) {
+  if (!pool) return
+
+  try {
+    // Get active alerts that haven't been checked in the last 4 hours
+    const alerts = await pool.query(`
+      SELECT pa.*, u.channel_user_id, u.display_name 
+      FROM price_alerts pa
+      JOIN users u ON pa.user_id = u.user_id
+      WHERE pa.is_active = TRUE
+        AND (pa.last_checked_at IS NULL OR pa.last_checked_at < NOW() - INTERVAL '4 hours')
+    `)
+
+    if (alerts.rows.length === 0) return
+
+    console.log(`[SCHEDULER] Checking ${alerts.rows.length} price alerts...`)
+
+    for (const alert of alerts.rows) {
+      // Call flight search
+      const result = await searchFlights({
+        origin: alert.origin,
+        destination: alert.destination,
+        departureDate: alert.departure_date.toISOString().split('T')[0],
+        returnDate: alert.return_date ? alert.return_date.toISOString().split('T')[0] : undefined,
+        currency: alert.currency
+      })
+
+      if (result.success && result.raw) {
+        // Simple parsing of 'raw' which assumes Amadeus response structure
+        // If fallback was used, 'raw' structure might differ. 
+        // For production, a normalized 'price' field in ToolResult would be better.
+        // Here we try to extract the lowest price from the string output if raw parsing is complex
+        // Actually, let's use a regex on the 'data' string which is formatted as "USD 123: ..."
+
+        const priceMatch = result.data.match(/([A-Z]{3})\s+(\d+(\.\d{1,2})?)/)
+        if (priceMatch) {
+          const currentPrice = parseFloat(priceMatch[2])
+          const currency = priceMatch[1]
+
+          // Update last checked
+          await pool.query(
+            `UPDATE price_alerts SET last_checked_price = $1, last_checked_at = NOW() WHERE alert_id = $2`,
+            [currentPrice, alert.alert_id]
+          )
+
+          // Check if below target
+          if (alert.target_price && currentPrice <= alert.target_price) {
+            await sendMessage(
+              alert.channel_user_id,
+              `🚨 **Price Alert!**\n\nFlight from ${alert.origin} to ${alert.destination} is now ${currency} ${currentPrice} (Target: ${alert.target_price})!\n\n${result.data.split('\n')[1] || 'Check it out!'}`
+            )
+            // Optionally disable alert or throttle
+          }
+        }
+      }
+
+      // Wait a bit to avoid rate limits
+      await new Promise(r => setTimeout(r, 2000))
+    }
+
+  } catch (error) {
+    console.error('[SCHEDULER] Error checking price alerts:', error)
+  }
 }
 
 // Export for manual triggering
-export { checkInactiveUsers, sendDailyTips, scrapeAndNotifyDeals }
+// Export for manual triggering
+export { checkInactiveUsers, sendDailyTips, scrapeAndNotifyDeals, checkPriceAlerts }
+
