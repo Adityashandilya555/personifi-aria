@@ -1,4 +1,4 @@
-import { ToolResult } from '../hooks.js'
+import type { ToolExecutionResult } from '../hooks.js'
 import { captureAriaSnapshot } from '../browser.js'
 
 interface TransportParams {
@@ -10,7 +10,7 @@ interface TransportParams {
 /**
  * Get transport estimate using Google Maps (web scraping)
  */
-export async function getTransportEstimate(params: TransportParams): Promise<ToolResult> {
+export async function getTransportEstimate(params: TransportParams): Promise<ToolExecutionResult> {
     const { origin, destination, mode = 'driving' } = params
 
     try {
@@ -27,7 +27,8 @@ export async function getTransportEstimate(params: TransportParams): Promise<Too
         if (!snapshot.content) {
             return {
                 success: false,
-                data: 'Failed to retrieve transport info from Google Maps.',
+                data: null,
+                error: 'Failed to retrieve transport info from Google Maps.',
             }
         }
 
@@ -40,15 +41,15 @@ export async function getTransportEstimate(params: TransportParams): Promise<Too
 
         return {
             success: true,
-            data: `Transport estimate from ${origin} to ${destination} (${mode}):\nSource: Google Maps\nSnapshot Text: ${summary}...`,
-            raw: { url: snapshot.url }
+            data: { formatted: `Transport estimate from ${origin} to ${destination} (${mode}):\nSource: Google Maps\nSnapshot Text: ${summary}...`, raw: { url: snapshot.url } },
         }
 
     } catch (error: any) {
         console.error('[Compare Tool] Error:', error)
         return {
             success: false,
-            data: `Error checking transport: ${error.message}`,
+            data: null,
+            error: `Error checking transport: ${error.message}`,
         }
     }
 }

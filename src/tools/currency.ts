@@ -1,4 +1,4 @@
-import { ToolResult } from '../hooks.js'
+import type { ToolExecutionResult } from '../hooks.js'
 
 interface CurrencyParams {
     amount: number
@@ -9,7 +9,7 @@ interface CurrencyParams {
 /**
  * Convert currency using ExchangeRate-API (free)
  */
-export async function convertCurrency(params: CurrencyParams): Promise<ToolResult> {
+export async function convertCurrency(params: CurrencyParams): Promise<ToolExecutionResult> {
     const { amount, from, to } = params
     const fromCode = from.toUpperCase()
     const toCode = to.toUpperCase()
@@ -20,7 +20,8 @@ export async function convertCurrency(params: CurrencyParams): Promise<ToolResul
         if (!response.ok) {
             return {
                 success: false,
-                data: `Currency API error: ${response.status} ${response.statusText}`,
+                data: null,
+                error: `Currency API error: ${response.status} ${response.statusText}`,
             }
         }
         const data = await response.json()
@@ -37,15 +38,15 @@ export async function convertCurrency(params: CurrencyParams): Promise<ToolResul
 
         return {
             success: true,
-            data: `${amount} ${fromCode} = **${result} ${toCode}** (Rate: ${rate})`,
-            raw: { rate, result }
+            data: { formatted: `${amount} ${fromCode} = **${result} ${toCode}** (Rate: ${rate})`, raw: { rate, result } },
         }
 
     } catch (error: any) {
         console.error('[Currency Tool] Error:', error)
         return {
             success: false,
-            data: `Error converting currency: ${error.message}`,
+            data: null,
+            error: `Error converting currency: ${error.message}`,
         }
     }
 }

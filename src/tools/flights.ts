@@ -1,5 +1,5 @@
 import Amadeus from 'amadeus'
-import { ToolResult } from '../hooks.js'
+import type { ToolExecutionResult } from '../hooks.js'
 
 // Lazy-initialize Amadeus client to avoid eager auth with missing keys
 let amadeus: InstanceType<typeof Amadeus> | null = null
@@ -26,7 +26,7 @@ interface FlightSearchParams {
 /**
  * Search for flights using Amadeus API
  */
-export async function searchFlights(params: FlightSearchParams): Promise<ToolResult> {
+export async function searchFlights(params: FlightSearchParams): Promise<ToolExecutionResult> {
     const { origin, destination, departureDate, returnDate, adults = 1, currency = 'USD' } = params
 
     // Check if API keys are set
@@ -38,7 +38,8 @@ export async function searchFlights(params: FlightSearchParams): Promise<ToolRes
         }
         return {
             success: false,
-            data: 'Configuration error: Amadeus API keys are missing and no fallback is available.',
+            data: null,
+            error: 'Configuration error: Amadeus API keys are missing and no fallback is available.',
         }
     }
 
@@ -60,7 +61,7 @@ export async function searchFlights(params: FlightSearchParams): Promise<ToolRes
             }
             return {
                 success: true,
-                data: `No flights found from ${origin} to ${destination} on ${departureDate}.`,
+                data: { formatted: `No flights found from ${origin} to ${destination} on ${departureDate}.`, raw: null },
             }
         }
 
@@ -82,8 +83,7 @@ export async function searchFlights(params: FlightSearchParams): Promise<ToolRes
 
         return {
             success: true,
-            data: `Flight offers from ${origin} to ${destination}:\n${offers}`,
-            raw: response.data
+            data: { formatted: `Flight offers from ${origin} to ${destination}:\n${offers}`, raw: response.data },
         }
 
     } catch (error: any) {
@@ -97,7 +97,8 @@ export async function searchFlights(params: FlightSearchParams): Promise<ToolRes
 
         return {
             success: false,
-            data: `Error searching flights: ${error.message || 'Unknown error'}`,
+            data: null,
+            error: `Error searching flights: ${error.message || 'Unknown error'}`,
         }
     }
 }
@@ -105,11 +106,12 @@ export async function searchFlights(params: FlightSearchParams): Promise<ToolRes
 /**
  * Fallback flight search using SerpAPI (Google Flights)
  */
-export async function searchFlightsFallback(params: FlightSearchParams): Promise<ToolResult> {
+export async function searchFlightsFallback(params: FlightSearchParams): Promise<ToolExecutionResult> {
     if (!process.env.SERPAPI_KEY) {
         return {
             success: false,
-            data: 'Configuration error: SerpAPI key is missing.'
+            data: null,
+            error: 'Configuration error: SerpAPI key is missing.',
         }
     }
 
@@ -140,14 +142,13 @@ export async function searchFlightsFallback(params: FlightSearchParams): Promise
             throw new Error(data.error)
         }
 
-        const bestFlights = data.best_flights // || data.other_flights
+        const bestFlights = data.best_flights
         if (!bestFlights || bestFlights.length === 0) {
-            // Try 'other_flights' if 'best_flights' is empty
             const otherFlights = data.other_flights
             if (!otherFlights || otherFlights.length === 0) {
                 return {
                     success: true,
-                    data: `No flights found via Google Flights from ${origin} to ${destination}.`
+                    data: { formatted: `No flights found via Google Flights from ${origin} to ${destination}.`, raw: null },
                 }
             }
             return formatSerpApiFlights(otherFlights.slice(0, 5), origin, destination)
@@ -159,12 +160,13 @@ export async function searchFlightsFallback(params: FlightSearchParams): Promise
         console.error('[Flight Tool] SerpAPI error:', error)
         return {
             success: false,
-            data: `Error searching flights (fallback): ${error.message}`,
+            data: null,
+            error: `Error searching flights (fallback): ${error.message}`,
         }
     }
 }
 
-function formatSerpApiFlights(flights: any[], origin: string, destination: string): ToolResult {
+function formatSerpApiFlights(flights: any[], origin: string, destination: string): ToolExecutionResult {
     const offers = flights.map((flight: any) => {
         const price = flight.price
         const duration = flight.total_duration ? `${flight.total_duration}m` : 'N/A'
@@ -183,8 +185,7 @@ function formatSerpApiFlights(flights: any[], origin: string, destination: strin
 
     return {
         success: true,
-        data: `Google Flights from ${origin} to ${destination}:\n${offers}`,
-        raw: flights
+        data: { formatted: `Google Flights from ${origin} to ${destination}:\n${offers}`, raw: flights },
     }
 }
 

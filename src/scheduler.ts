@@ -227,16 +227,14 @@ async function checkPriceAlerts(sendMessage: SendMessageFn) {
         currency: alert.currency
       })
 
-      if (result.success && result.raw) {
-        // Simple parsing of 'raw' which assumes Amadeus response structure
-        // If fallback was used, 'raw' structure might differ. 
-        // For production, a normalized 'price' field in ToolResult would be better.
-        // Here we try to extract the lowest price from the string output if raw parsing is complex
-        // Actually, let's use a regex on the 'data' string which is formatted as "USD 123: ..."
+      if (result.success && result.data) {
+        // Extract formatted string from ToolExecutionResult data
+        const dataObj = result.data as { formatted?: string; raw?: unknown }
+        const formatted = typeof dataObj === 'string' ? dataObj : (dataObj.formatted || '')
 
         // Match "USD 123.45" (Amadeus) or "$123" (SerpAPI fallback)
-        const priceMatch = result.data.match(/([A-Z]{3})\s+(\d+(?:\.\d{1,2})?)/)
-            || result.data.match(/\$(\d+(?:\.\d{1,2})?)/)
+        const priceMatch = formatted.match(/([A-Z]{3})\s+(\d+(?:\.\d{1,2})?)/)
+            || formatted.match(/\$(\d+(?:\.\d{1,2})?)/)
         if (priceMatch) {
           const currentPrice = parseFloat(priceMatch[2] ?? priceMatch[1])
           const currency = priceMatch[2] ? priceMatch[1] : 'USD'
@@ -251,7 +249,7 @@ async function checkPriceAlerts(sendMessage: SendMessageFn) {
           if (alert.target_price && currentPrice <= alert.target_price) {
             await sendMessage(
               alert.channel_user_id,
-              `🚨 **Price Alert!**\n\nFlight from ${alert.origin} to ${alert.destination} is now ${currency} ${currentPrice} (Target: ${alert.target_price})!\n\n${result.data.split('\n')[1] || 'Check it out!'}`
+              `🚨 **Price Alert!**\n\nFlight from ${alert.origin} to ${alert.destination} is now ${currency} ${currentPrice} (Target: ${alert.target_price})!\n\n${formatted.split('\n')[1] || 'Check it out!'}`
             )
             // Optionally disable alert or throttle
           }
