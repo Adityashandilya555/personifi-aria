@@ -5,7 +5,8 @@
 
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
-import { handleMessage, initDatabase } from './character/index.js'
+import { handleMessage, initDatabase, registerBrainHooks } from './character/index.js'
+import { brainHooks } from './brain/index.js'
 import { initScheduler } from './scheduler.js'
 import { initBrowser, closeBrowser } from './browser.js'
 import {
@@ -129,6 +130,9 @@ const start = async () => {
       throw new Error('DATABASE_URL is required')
     }
     initDatabase(dbUrl)
+
+    // Register Brain Hooks (Dev 1)
+    registerBrainHooks(brainHooks)
 
     // Initialize browser for scraping
     if (process.env.BROWSER_SCRAPING_ENABLED !== 'false') {
