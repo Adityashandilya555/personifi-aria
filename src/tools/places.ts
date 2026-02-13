@@ -1,4 +1,4 @@
-import { ToolResult } from '../hooks.js'
+import type { ToolExecutionResult } from '../hooks.js'
 
 interface PlaceSearchParams {
     query: string
@@ -11,13 +11,14 @@ interface PlaceSearchParams {
  * Search for places using Google Places API (New Text Search)
  * https://places.googleapis.com/v1/places:searchText
  */
-export async function searchPlaces(params: PlaceSearchParams): Promise<ToolResult> {
+export async function searchPlaces(params: PlaceSearchParams): Promise<ToolExecutionResult> {
     const { query, location, openNow = false, minRating = 0 } = params
 
     if (!process.env.GOOGLE_PLACES_API_KEY) {
         return {
             success: false,
-            data: 'Configuration error: Google Places API key is missing.',
+            data: null,
+            error: 'Configuration error: Google Places API key is missing.',
         }
     }
 
@@ -60,7 +61,8 @@ export async function searchPlaces(params: PlaceSearchParams): Promise<ToolResul
         if (!response.ok) {
             return {
                 success: false,
-                data: `Places API error: ${response.status} ${response.statusText}`,
+                data: null,
+                error: `Places API error: ${response.status} ${response.statusText}`,
             }
         }
 
@@ -86,15 +88,15 @@ export async function searchPlaces(params: PlaceSearchParams): Promise<ToolResul
 
         return {
             success: true,
-            data: `Found places for "${textQuery}":\n\n${places}`,
-            raw: data.places
+            data: { formatted: `Found places for "${textQuery}":\n\n${places}`, raw: data.places },
         }
 
     } catch (error: any) {
         console.error('[Places Tool] Error:', error)
         return {
             success: false,
-            data: `Error searching places: ${error.message}`,
+            data: null,
+            error: `Error searching places: ${error.message}`,
         }
     }
 }

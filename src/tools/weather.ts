@@ -1,4 +1,4 @@
-import { ToolResult } from '../hooks.js'
+import type { ToolExecutionResult } from '../hooks.js'
 
 interface WeatherParams {
     location: string
@@ -7,13 +7,14 @@ interface WeatherParams {
 /**
  * Get current weather using OpenWeatherMap
  */
-export async function getWeather(params: WeatherParams): Promise<ToolResult> {
+export async function getWeather(params: WeatherParams): Promise<ToolExecutionResult> {
     const { location } = params
 
     if (!process.env.OPENWEATHERMAP_API_KEY) {
         return {
             success: false,
-            data: 'Configuration error: OpenWeatherMap API key is missing.',
+            data: null,
+            error: 'Configuration error: OpenWeatherMap API key is missing.',
         }
     }
 
@@ -37,19 +38,22 @@ export async function getWeather(params: WeatherParams): Promise<ToolResult> {
 
         return {
             success: true,
-            data: `Current weather in ${data.name}, ${data.sys.country}:\n` +
-                `- **${temp}°C** (Feels like ${feelsLike}°C)\n` +
-                `- ${desc.charAt(0).toUpperCase() + desc.slice(1)}\n` +
-                `- Humidity: ${humidity}%\n` +
-                `- Wind: ${wind} km/h`,
-            raw: data
+            data: {
+                formatted: `Current weather in ${data.name}, ${data.sys.country}:\n` +
+                    `- **${temp}°C** (Feels like ${feelsLike}°C)\n` +
+                    `- ${desc.charAt(0).toUpperCase() + desc.slice(1)}\n` +
+                    `- Humidity: ${humidity}%\n` +
+                    `- Wind: ${wind} km/h`,
+                raw: data,
+            },
         }
 
     } catch (error: any) {
         console.error('[Weather Tool] Error:', error)
         return {
             success: false,
-            data: `Error fetching weather: ${error.message}`,
+            data: null,
+            error: `Error fetching weather: ${error.message}`,
         }
     }
 }

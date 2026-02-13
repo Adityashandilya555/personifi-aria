@@ -1,4 +1,4 @@
-import { ToolResult } from '../hooks.js'
+import type { ToolExecutionResult } from '../hooks.js'
 
 interface HotelSearchParams {
     location: string
@@ -17,13 +17,14 @@ const RAPIDAPI_HOST = 'booking-com.p.rapidapi.com'
  * 1. Search location to get dest_id
  * 2. Search hotels using dest_id
  */
-export async function searchHotels(params: HotelSearchParams): Promise<ToolResult> {
+export async function searchHotels(params: HotelSearchParams): Promise<ToolExecutionResult> {
     const { location, checkInDate, checkOutDate, adults = 1, rooms = 1, currency = 'USD' } = params
 
     if (!process.env.RAPIDAPI_KEY) {
         return {
             success: false,
-            data: 'Configuration error: RapidAPI key is missing.',
+            data: null,
+            error: 'Configuration error: RapidAPI key is missing.',
         }
     }
 
@@ -39,7 +40,8 @@ export async function searchHotels(params: HotelSearchParams): Promise<ToolResul
         if (!locRes.ok) {
             return {
                 success: false,
-                data: `Hotel location API error: ${locRes.status} ${locRes.statusText}`,
+                data: null,
+                error: `Hotel location API error: ${locRes.status} ${locRes.statusText}`,
             }
         }
         const locData = await locRes.json()
@@ -73,7 +75,8 @@ export async function searchHotels(params: HotelSearchParams): Promise<ToolResul
         if (!searchRes.ok) {
             return {
                 success: false,
-                data: `Hotel search API error: ${searchRes.status} ${searchRes.statusText}`,
+                data: null,
+                error: `Hotel search API error: ${searchRes.status} ${searchRes.statusText}`,
             }
         }
         const searchData = await searchRes.json()
@@ -100,15 +103,15 @@ export async function searchHotels(params: HotelSearchParams): Promise<ToolResul
 
         return {
             success: true,
-            data: `Hotels in ${location} (${checkInDate} to ${checkOutDate}):\n\n${hotels}`,
-            raw: searchData.result.slice(0, 5)
+            data: { formatted: `Hotels in ${location} (${checkInDate} to ${checkOutDate}):\n\n${hotels}`, raw: searchData.result.slice(0, 5) },
         }
 
     } catch (error: any) {
         console.error('[Hotel Tool] Error:', error)
         return {
             success: false,
-            data: `Error searching hotels: ${error.message}`,
+            data: null,
+            error: `Error searching hotels: ${error.message}`,
         }
     }
 }
