@@ -78,3 +78,23 @@ CREATE INDEX idx_usage_stats_user ON usage_stats(user_id);
 
 -- Cleanup old sessions (optional, run weekly)
 -- DELETE FROM sessions WHERE last_active < NOW() - INTERVAL '30 days';
+
+-- Price Alerts for Flight Tracking
+CREATE TABLE price_alerts (
+    alert_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    origin VARCHAR(3) NOT NULL,
+    destination VARCHAR(3) NOT NULL,
+    departure_date DATE NOT NULL,
+    return_date DATE,
+    target_price DECIMAL(10, 2),
+    currency VARCHAR(3) DEFAULT 'USD',
+    last_checked_price DECIMAL(10, 2),
+    last_checked_at TIMESTAMP WITH TIME ZONE,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX idx_price_alerts_user ON price_alerts(user_id);
+CREATE INDEX idx_price_alerts_active ON price_alerts(is_active);
+
