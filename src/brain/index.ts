@@ -12,12 +12,21 @@ function extractToolParams(toolName: string, userMessage: string): Record<string
     const lowerMsg = userMessage.toLowerCase()
 
     if (toolName === 'search_flights') {
-        // Pattern: "from [origin] to [destination]"
-        const fromMatch = lowerMsg.match(/from\s+([a-z\s]+?)\s+(?:to)/)
-        const toMatch = lowerMsg.match(/to\s+([a-z\s]+?)(?:$|\s+on|\s+at)/)
+        // Priority 1: Combined "from X to Y" pattern
+        // Matches "from [origin] to [destination]"
+        const combinedMatch = lowerMsg.match(/\bfrom\s+(.+?)\s+to\s+(.+?)(?:\s+on\b|\s+at\b|$)/)
 
-        if (fromMatch) params.origin = fromMatch[1].trim()
-        if (toMatch) params.destination = toMatch[1].trim()
+        if (combinedMatch) {
+            params.origin = combinedMatch[1].trim()
+            params.destination = combinedMatch[2].trim()
+        } else {
+            // Priority 2: Independent params if combined failed
+            const fromMatch = lowerMsg.match(/\bfrom\s+(.+?)(?:\s+to\b|\s+on\b|\s+at\b|$)/)
+            const toMatch = lowerMsg.match(/\bto\s+(.+?)(?:\s+from\b|\s+on\b|\s+at\b|$)/)
+
+            if (fromMatch) params.origin = fromMatch[1].trim()
+            if (toMatch && !params.destination) params.destination = toMatch[1].trim()
+        }
     }
 
     if (toolName === 'search_hotels') {

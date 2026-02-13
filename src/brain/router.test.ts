@@ -46,6 +46,17 @@ describe('BrainHooks Logic', () => {
             })
         })
 
+        it('should correctly handle "I want to fly from..." prefixes', async () => {
+            const ctx = createCtx('I want to fly from NYC to LA', true, 'search_flights')
+            const result = await brainHooks.routeMessage(ctx)
+
+            expect(result.useTool).toBe(true)
+            expect(result.toolParams).toEqual({
+                origin: 'nyc',
+                destination: 'la'
+            })
+        })
+
         it('should route to search_hotels and extract params', async () => {
             const ctx = createCtx('Find a hotel IN Paris', true, 'search_hotels')
             const result = await brainHooks.routeMessage(ctx)
