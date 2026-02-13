@@ -9,6 +9,7 @@ import { handleMessage, initDatabase, registerBrainHooks } from './character/ind
 import { brainHooks } from './brain/index.js'
 import { initScheduler } from './scheduler.js'
 import { initBrowser, closeBrowser } from './browser.js'
+import './tools/index.js'  // Register body hooks (DEV 2 tools)
 import {
   channels,
   getEnabledChannels,
