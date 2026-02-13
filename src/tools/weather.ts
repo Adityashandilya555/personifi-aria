@@ -5,7 +5,16 @@ interface WeatherParams {
 }
 
 /**
- * Get current weather using OpenWeatherMap
+ * Retrieve current weather for a given location from OpenWeatherMap.
+ *
+ * Queries the OpenWeatherMap API for the provided `location` and returns a human-readable
+ * summary of the current conditions along with the full raw API response when available.
+ *
+ * @param params.location - The city or location name to look up (e.g., "London" or "New York,US")
+ * @returns A ToolResult containing:
+ *  - on success: `data` with a formatted weather summary and `raw` with the full API response (`success: true`),
+ *  - when the location is not found: `data` with a not-found message (`success: true`),
+ *  - on configuration or fetch errors: `data` with an error message (`success: false`).
  */
 export async function getWeather(params: WeatherParams): Promise<ToolResult> {
     const { location } = params

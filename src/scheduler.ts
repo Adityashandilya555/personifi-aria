@@ -13,6 +13,16 @@ import { scrapeTravelDeals } from './browser.js'
 
 let pool: Pool | null = null
 
+/**
+ * Initialize the scheduler by creating a database connection pool and registering recurring proactive jobs.
+ *
+ * Sets up a PostgreSQL pool using the provided database URL (SSL mode query parameters will be removed)
+ * and schedules recurring tasks that use the provided `sendMessage` function to perform proactive actions
+ * such as inactivity nudges, daily tips, weekly travel-deals notifications, batch embedding processing, and hourly price alerts.
+ *
+ * @param databaseUrl - The PostgreSQL connection URL (will be sanitized to remove `sslmode` query parameters)
+ * @param sendMessage - Function used by scheduled tasks to send messages to users
+ */
 export function initScheduler(databaseUrl: string, sendMessage: SendMessageFn) {
   const cleanUrl = databaseUrl.replace(/[?&]sslmode=[^&]*/g, '').replace(/\?$/, '')
   pool = new Pool({
@@ -146,7 +156,11 @@ function generateDailyTip(location: string): string {
  * Weekly travel deals scraping (stub - integrate with browser.ts)
  */
 /**
- * Weekly travel deals scraping
+ * Scrapes current travel deals, generates a short catchy summary emphasizing low prices, and notifies a subset of active Telegram users.
+ *
+ * The function retrieves travel deals, creates a two-sentence summary for a travel bot notification, and sends that notification to up to 10 authenticated Telegram users while logging progress and errors.
+ *
+ * @param sendMessage - Function used to deliver a text message to a user's channel identifier
  */
 async function scrapeAndNotifyDeals(sendMessage: SendMessageFn) {
   if (!pool) return
@@ -194,7 +208,15 @@ async function scrapeAndNotifyDeals(sendMessage: SendMessageFn) {
 }
 
 /**
- * Check active price alerts
+ * Check configured price alerts and notify users when current fares meet or fall below their targets.
+ *
+ * Queries active price alerts that have not been checked in the last 4 hours, performs a flight search for each alert,
+ * updates the alert's last-checked price and timestamp, and sends a notification to the user when the current price
+ * is less than or equal to the alert's target price. Pauses briefly between requests to mitigate rate limits.
+ *
+ * Requires an initialized database pool.
+ *
+ * @param sendMessage - Function used to deliver a text message to a user's channel
  */
 async function checkPriceAlerts(sendMessage: SendMessageFn) {
   if (!pool) return
@@ -264,4 +286,3 @@ async function checkPriceAlerts(sendMessage: SendMessageFn) {
 // Export for manual triggering
 // Export for manual triggering
 export { checkInactiveUsers, sendDailyTips, scrapeAndNotifyDeals, checkPriceAlerts }
-

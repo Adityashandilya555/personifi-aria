@@ -7,7 +7,12 @@ interface CurrencyParams {
 }
 
 /**
- * Convert currency using ExchangeRate-API (free)
+ * Convert an amount from one currency to another using ExchangeRate-API.
+ *
+ * @param params.amount - The numeric amount to convert
+ * @param params.from - Source currency code (e.g., "USD"); case-insensitive
+ * @param params.to - Target currency code (e.g., "EUR"); case-insensitive
+ * @returns On success, a ToolResult with `success: true`, `data` containing a formatted conversion string and `raw` containing `{ rate, result }`. On failure, a ToolResult with `success: false` and `data` containing an error message.
  */
 export async function convertCurrency(params: CurrencyParams): Promise<ToolResult> {
     const { amount, from, to } = params

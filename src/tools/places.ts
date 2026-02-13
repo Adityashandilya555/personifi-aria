@@ -8,8 +8,18 @@ interface PlaceSearchParams {
 }
 
 /**
- * Search for places using Google Places API (New Text Search)
- * https://places.googleapis.com/v1/places:searchText
+ * Search for places matching a query (optionally constrained by location, open status, and minimum rating) using the Google Places Text Search API.
+ *
+ * If `location` is a plain name (no comma), it is appended to the query as "in <location>". If `location` is a lat,lng pair it is not appended and may be used for biasing in future enhancements.
+ *
+ * @param params.query - What to search for (e.g., "sushi", "bookstore")
+ * @param params.location - Optional location context; either "lat,lng" or a human-readable place name. When a name is provided (no comma), it will be appended to the text query.
+ * @param params.openNow - If true, only include places currently open.
+ * @param params.minRating - If greater than 0, only include places with this minimum rating.
+ * @returns A ToolResult object:
+ * - On success with matches: `success` is `true`, `data` is a markdown-formatted list of up to 5 places, and `raw` contains the original `places` array from the API.
+ * - On success with no matches: `success` is `true` and `data` contains a "no places found" message.
+ * - On configuration or runtime error: `success` is `false` and `data` contains an error message.
  */
 export async function searchPlaces(params: PlaceSearchParams): Promise<ToolResult> {
     const { query, location, openNow = false, minRating = 0 } = params

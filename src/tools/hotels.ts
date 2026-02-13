@@ -12,10 +12,18 @@ interface HotelSearchParams {
 const RAPIDAPI_HOST = 'booking-com.p.rapidapi.com'
 
 /**
- * Search for hotels using Booking.com via RapidAPI
- * Two-step process:
- * 1. Search location to get dest_id
- * 2. Search hotels using dest_id
+ * Search for hotels in a location and return formatted top results.
+ *
+ * Performs a location lookup to obtain a destination id, then searches hotels for the specified dates, occupants, and currency.
+ *
+ * @param params - Search parameters
+ * @param params.location - City or location name to search
+ * @param params.checkInDate - Check-in date in YYYY-MM-DD format
+ * @param params.checkOutDate - Check-out date in YYYY-MM-DD format
+ * @param params.adults - Number of adults (default 1)
+ * @param params.rooms - Number of rooms (default 1)
+ * @param params.currency - Currency code for prices (default 'USD')
+ * @returns A ToolResult with `success` indicating operation outcome, `data` containing a user-facing message or formatted hotel list, and `raw` containing up to five raw hotel result objects when successful
  */
 export async function searchHotels(params: HotelSearchParams): Promise<ToolResult> {
     const { location, checkInDate, checkOutDate, adults = 1, rooms = 1, currency = 'USD' } = params
