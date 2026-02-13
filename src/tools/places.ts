@@ -57,6 +57,13 @@ export async function searchPlaces(params: PlaceSearchParams): Promise<ToolResul
             body: JSON.stringify(requestBody),
         })
 
+        if (!response.ok) {
+            return {
+                success: false,
+                data: `Places API error: ${response.status} ${response.statusText}`,
+            }
+        }
+
         const data = await response.json()
 
         if (!data.places || data.places.length === 0) {

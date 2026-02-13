@@ -1,12 +1,15 @@
 /**
  * Browser Automation for Aria
  * Uses Playwright Extra + Stealth for robust scraping and "Aria Snapshots"
+ *
+ * NOTE: puppeteer-extra-plugin-stealth with playwright-extra is best-effort
+ * compatibility. For stronger bot evasion consider rebrowser-playwright.
  */
 
 import { chromium } from 'playwright-extra'
 // @ts-ignore
 import stealthPlugin from 'puppeteer-extra-plugin-stealth'
-import { Browser, Page } from 'playwright'
+import { Browser, BrowserContext, Page } from 'playwright'
 
 // Configure stealth mode
 chromium.use(stealthPlugin())
@@ -38,9 +41,10 @@ export async function closeBrowser(): Promise<void> {
 }
 
 /**
- * Get a new page with stealth settings
+ * Get a new page with stealth settings.
+ * Returns both page and context so callers can close the context to avoid leaks.
  */
-export async function getPage(): Promise<Page> {
+export async function getPage(): Promise<{ page: Page; context: BrowserContext }> {
   if (!browser) {
     await initBrowser()
   }
@@ -48,7 +52,8 @@ export async function getPage(): Promise<Page> {
     userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
     viewport: { width: 1280, height: 800 },
   })
-  return context.newPage()
+  const page = await context.newPage()
+  return { page, context }
 }
 
 /**
@@ -61,10 +66,10 @@ export interface AriaSnapshot {
 }
 
 export async function captureAriaSnapshot(url: string): Promise<AriaSnapshot> {
-  const page = await getPage()
+  const { page, context } = await getPage()
   try {
     console.log(`[BROWSER] Navigating to ${url}`)
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 })
 
     // Random wait to appear human
     await page.waitForTimeout(1000 + Math.random() * 2000)
@@ -82,7 +87,7 @@ export async function captureAriaSnapshot(url: string): Promise<AriaSnapshot> {
     console.error(`[BROWSER] Snapshot failed for ${url}:`, error)
     return { title: 'Error', url, content: '' }
   } finally {
-    await page.close()
+    await context.close()
   }
 }
 
@@ -104,7 +109,7 @@ export async function scrapeFlightDeals(
   to: string,
   date?: string
 ): Promise<FlightDeal[]> {
-  const page = await getPage()
+  const { page, context } = await getPage()
   const deals: FlightDeal[] = []
 
   try {
@@ -132,7 +137,7 @@ export async function scrapeFlightDeals(
   } catch (error) {
     console.error('[BROWSER] Error scraping flights:', error)
   } finally {
-    await page.close()
+    await context.close()
   }
 
   return deals
@@ -147,7 +152,7 @@ export interface TravelDeal {
 }
 
 export async function scrapeTravelDeals(): Promise<TravelDeal[]> {
-  const page = await getPage()
+  const { page, context } = await getPage()
   const deals: TravelDeal[] = []
 
   try {
@@ -175,7 +180,7 @@ export async function scrapeTravelDeals(): Promise<TravelDeal[]> {
   } catch (error) {
     console.error('[BROWSER] Error scraping deals:', error)
   } finally {
-    await page.close()
+    await context.close()
   }
 
   return deals

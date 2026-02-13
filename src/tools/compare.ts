@@ -14,7 +14,9 @@ export async function getTransportEstimate(params: TransportParams): Promise<Too
     const { origin, destination, mode = 'driving' } = params
 
     try {
-        const url = `https://www.google.com/maps/dir/${encodeURIComponent(origin)}/${encodeURIComponent(destination)}`
+        const modeMap: Record<string, string> = { driving: '0', transit: '3', walking: '2' }
+        const modeParam = modeMap[mode] || '0'
+        const url = `https://www.google.com/maps/dir/${encodeURIComponent(origin)}/${encodeURIComponent(destination)}/data=!4m2!4m1!3e${modeParam}`
 
         // We use the snapshot to get the text content. 
         // Google Maps is complex, but often the duration/distance is in the title or approachable text.
