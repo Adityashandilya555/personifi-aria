@@ -14,7 +14,9 @@ chromium.use(stealthPlugin())
 let browser: Browser | null = null
 
 /**
- * Initialize the browser instance
+ * Ensures a singleton Chromium browser instance (Playwright Extra with stealth) is launched.
+ *
+ * If a browser is already initialized, this function does nothing.
  */
 export async function initBrowser(): Promise<void> {
   if (!browser) {
@@ -27,7 +29,10 @@ export async function initBrowser(): Promise<void> {
 }
 
 /**
- * Close browser on shutdown
+ * Closes the shared browser instance and resets the internal singleton.
+ *
+ * If a browser is currently running, it is closed and the module-level
+ * `browser` reference is set to `null`.
  */
 export async function closeBrowser(): Promise<void> {
   if (browser) {
@@ -38,7 +43,11 @@ export async function closeBrowser(): Promise<void> {
 }
 
 /**
- * Get a new page with stealth settings
+ * Provide a new Playwright Page from a fresh browser context configured for stealth.
+ *
+ * Ensures the module's singleton browser is initialized, creates a new context with a fixed user agent and viewport, and returns a new Page from that context.
+ *
+ * @returns A Playwright `Page` created from the new browser context. 
  */
 export async function getPage(): Promise<Page> {
   if (!browser) {
@@ -60,6 +69,12 @@ export interface AriaSnapshot {
   content: string
 }
 
+/**
+ * Capture a text snapshot of a web page suitable for Aria.
+ *
+ * @param url - The page URL to visit and capture.
+ * @returns An AriaSnapshot containing the page title, the original `url`, and the page's visible text content. On failure returns `{ title: 'Error', url, content: '' }`.
+ */
 export async function captureAriaSnapshot(url: string): Promise<AriaSnapshot> {
   const page = await getPage()
   try {
@@ -99,6 +114,14 @@ export interface FlightDeal {
   url: string
 }
 
+/**
+ * Retrieves up to 5 flight deals between two locations by scraping Google Travel.
+ *
+ * @param from - Departure location (city or airport)
+ * @param to - Arrival location (city or airport)
+ * @param date - Optional travel date; when omitted the deal's `date` field will be `'Flexible'`
+ * @returns An array of FlightDeal objects extracted from the page; the array may be empty if no deals were found or an error occurred
+ */
 export async function scrapeFlightDeals(
   from: string,
   to: string,
@@ -146,6 +169,13 @@ export interface TravelDeal {
   url: string
 }
 
+/**
+ * Scrapes recent travel deal posts from Secret Flying and returns them as structured deals.
+ *
+ * Extracts up to 10 posts from the Secret Flying posts page and maps each post with a title, destination set to "Various", a price (or "See details" if missing), source "Secret Flying", and the post URL.
+ *
+ * @returns An array of `TravelDeal` objects representing the scraped posts; returns an empty array if no deals are found or an error occurs.
+ */
 export async function scrapeTravelDeals(): Promise<TravelDeal[]> {
   const page = await getPage()
   const deals: TravelDeal[] = []

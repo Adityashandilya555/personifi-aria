@@ -17,7 +17,10 @@ interface FlightSearchParams {
 }
 
 /**
- * Search for flights using Amadeus API
+ * Searches for flight offers between two IATA locations using Amadeus and falls back to SerpAPI when Amadeus is unavailable or errors occur.
+ *
+ * @param params - Flight search parameters: `origin`, `destination`, `departureDate`, optional `returnDate`, optional `adults`, and optional `currency`.
+ * @returns A ToolResult where `success` indicates the operation outcome; `data` contains a human-readable summary of offers or an error/configuration message; `raw` contains the original API response when available.
  */
 export async function searchFlights(params: FlightSearchParams): Promise<ToolResult> {
     const { origin, destination, departureDate, returnDate, adults = 1, currency = 'USD' } = params
@@ -92,7 +95,13 @@ export async function searchFlights(params: FlightSearchParams): Promise<ToolRes
 }
 
 /**
- * Fallback flight search using SerpAPI (Google Flights)
+ * Search Google Flights via SerpAPI as a fallback flight provider.
+ *
+ * Requires the `SERPAPI_KEY` environment variable. Performs either a one-way or round-trip query
+ * depending on whether `returnDate` is provided. Returns formatted flight information limited to
+ * the top results, or a clear message when no flights are found.
+ *
+ * @returns A `ToolResult` containing formatted flight text and raw SerpAPI data when flights are found; `success` is `true` with a human-readable no-results message when no flights are available; `success` is `false` with an error message for missing configuration or request failures.
  */
 export async function searchFlightsFallback(params: FlightSearchParams): Promise<ToolResult> {
     if (!process.env.SERPAPI_KEY) {
@@ -156,6 +165,14 @@ export async function searchFlightsFallback(params: FlightSearchParams): Promise
     }
 }
 
+/**
+ * Convert SerpAPI (Google Flights) flight entries into a human-readable summary and include the original raw data.
+ *
+ * @param flights - Array of flight objects returned by SerpAPI/Google Flights
+ * @param origin - Origin airport IATA code used in the query
+ * @param destination - Destination airport IATA code used in the query
+ * @returns A ToolResult with `success: true`, `data` containing a formatted list of up to the provided flights prefixed by "Google Flights from {origin} to {destination}:", and `raw` containing the original `flights` array
+ */
 function formatSerpApiFlights(flights: any[], origin: string, destination: string): ToolResult {
     const offers = flights.map((flight: any) => {
         const price = flight.price

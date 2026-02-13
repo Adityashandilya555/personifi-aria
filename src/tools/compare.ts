@@ -8,7 +8,14 @@ interface TransportParams {
 }
 
 /**
- * Get transport estimate using Google Maps (web scraping)
+ * Estimate travel time and distance between two places using a Google Maps page snapshot.
+ *
+ * Builds a Google Maps directions URL for the given origin and destination, captures a textual ARIA snapshot of the page, and returns a concise summary plus the snapshot URL.
+ *
+ * @param params.origin - Start location
+ * @param params.destination - End location
+ * @param params.mode - Mode of transport; defaults to `'driving'`. Allowed values: `'driving' | 'transit' | 'walking'`
+ * @returns A ToolResult containing a human-readable summary in `data`. On success `raw.url` contains the snapshot URL; on failure `data` contains an error message and `success` is `false`.
  */
 export async function getTransportEstimate(params: TransportParams): Promise<ToolResult> {
     const { origin, destination, mode = 'driving' } = params
