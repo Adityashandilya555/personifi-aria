@@ -1,8 +1,10 @@
 /**
  * Tool Registry — BodyHooks implementation (DEV 2)
  * Aggregates all travel tools and registers them with the hook system.
+ * Exports Groq-compatible tool definitions for native function calling.
  */
 
+import type Groq from 'groq-sdk'
 import { registerBodyHooks } from '../hook-registry.js'
 import type { BodyHooks, ToolExecutionResult, ToolDefinition } from '../hooks.js'
 
@@ -47,5 +49,20 @@ const bodyHooks: BodyHooks = {
 
 registerBodyHooks(bodyHooks)
 console.log(`[Tools] Registered ${bodyHooks.getAvailableTools().length} tools`)
+
+/**
+ * Convert our ToolDefinition[] to Groq's ChatCompletionTool[] format
+ * for native function calling on the 70B model.
+ */
+export function getGroqTools(): Groq.Chat.Completions.ChatCompletionTool[] {
+    return bodyHooks.getAvailableTools().map(tool => ({
+        type: 'function' as const,
+        function: {
+            name: tool.name,
+            description: tool.description,
+            parameters: tool.parameters as Groq.Chat.Completions.ChatCompletionTool['function']['parameters'],
+        },
+    }))
+}
 
 export { bodyHooks }

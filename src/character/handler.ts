@@ -320,11 +320,12 @@ export async function handleMessage(
     let rawResponse = completion.choices[0]?.message?.content || ''
 
     // ─── Step 12: Optional brainHooks.formatResponse() ────────────
+    // Reuse toolResult from Step 8 — do NOT re-execute the tool pipeline
     if (brainHooks.formatResponse) {
-      const toolResult = routeDecision.useTool
-        ? await brainHooks.executeToolPipeline(routeDecision, routeContext).catch(() => null)
+      const step8ToolResult = (routeDecision.useTool && toolResultStr)
+        ? { success: true, data: toolResultStr }
         : null
-      rawResponse = brainHooks.formatResponse(rawResponse, toolResult)
+      rawResponse = brainHooks.formatResponse(rawResponse, step8ToolResult)
     }
 
     // ─── Step 13: Filter output ───────────────────────────────────

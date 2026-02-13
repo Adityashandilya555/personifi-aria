@@ -25,6 +25,7 @@ import { ClassifierResultSchema, safeParseLLM } from './types/schemas.js'
 import type { MemoryItem } from './memory-store.js'
 import type { GraphSearchResult } from './graph-memory.js'
 import { getPool } from './character/session-store.js'
+import { getGroqTools } from './tools/index.js'
 
 // ─── Groq Client ────────────────────────────────────────────────────────────
 
@@ -65,45 +66,32 @@ Guidelines:
 
 Keep the response very concise. This is internal reasoning, not the actual response.`
 
-// ─── Classifier Prompt ───────────────────────────────────────────────────────
+// ─── Classifier Prompt (Slim — tool schemas are passed via native tools[]) ───
 
-const CLASSIFIER_PROMPT = `You are a message classifier for a travel chatbot. Classify the user's message to decide which processing pipeline to run.
+const CLASSIFIER_PROMPT = `You are a travel chatbot message router. Decide how to handle the user's message.
 
-Return a JSON object with these fields:
-{
-  "message_complexity": "simple" | "moderate" | "complex",
-  "needs_tool": true/false,
-  "tool_hint": "tool_name" or null,
-  "skip_memory": true/false,
-  "skip_graph": true/false,
-  "skip_cognitive": true/false
-}
+If the user needs real-time data (flights, hotels, weather, places, currency, transport), call the appropriate tool.
+If no tool is needed, respond with a short classification only.
 
-Classification rules:
-- "simple": greetings (hi, hello, hey), farewells (bye, thanks), single-word responses (yes, no, ok, sure), pleasantries. Set ALL skip flags to true.
-- "moderate": questions about Aria herself, general travel chat, opinions, follow-ups that don't need tools or deep memory. skip_memory=false, skip_graph=true, skip_cognitive=false.
-- "complex": specific travel requests, booking inquiries, price checks, itinerary planning, anything needing real-time data. ALL skip flags false. Set needs_tool=true with a tool_hint.
-
-Tool hints (for complex messages):
-- "search_flights" — flight queries
-- "search_hotels" — hotel/accommodation queries
-- "search_activities" — activity/tour queries
-- "check_prices" — price comparison
-- "get_weather" — weather queries
-- "plan_itinerary" — multi-day planning
-- null — no specific tool needed
-
-Keep the response minimal. Only output the JSON object.`
+When NOT calling a tool, reply with JSON:
+{"c":"simple"} — for greetings, farewells, yes/no, thanks
+{"c":"moderate"} — for general travel chat, opinions, follow-ups
+{"c":"complex"} — for complex questions that need memory/context but no tool`
 
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 /**
- * Classify a message to determine pipeline depth.
- * Uses 8B model for speed (~50-100ms, ~60 tokens out).
+ * Classify a message using native Groq function calling on 8B.
  *
- * For "hi", "thanks", "yes" → returns simple + skip everything
- * For "find flights to Bali" → returns complex + needs_tool
- * For "tell me about your favorite places" → returns moderate
+ * The 8B model receives tool schemas via the native `tools[]` parameter.
+ * - If it decides a tool is needed → it returns a tool_call with extracted args
+ * - If no tool needed → it returns a JSON classification {"c":"simple"|"moderate"|"complex"}
+ *
+ * This gives us reliable, schema-validated parameter extraction at 8B cost
+ * while keeping the 70B personality model completely free of tool schemas.
+ *
+ * Cost: ~150 input tokens (prompt) + tool schemas (~400 tokens, cached by Groq)
+ * Latency: ~50-150ms on 8B-instant
  */
 export async function classifyMessage(
     userMessage: string,
@@ -133,14 +121,70 @@ export async function classifyMessage(
                         : `User message: "${userMessage}"`,
                 },
             ],
+            tools: getGroqTools(),
+            tool_choice: 'auto',
             temperature: 0.1,
-            max_tokens: 100,
-            response_format: { type: 'json_object' },
+            max_tokens: 250,
         })
 
-        const content = response.choices[0]?.message?.content
-        const parsed = safeParseLLM(content, ClassifierResultSchema)
-        if (parsed) return parsed
+        const choice = response.choices[0]
+        const message = choice?.message
+
+        // ── Path A: Model decided to call a tool ──
+        if (choice?.finish_reason === 'tool_calls' && message?.tool_calls?.length) {
+            const toolCall = message.tool_calls[0]
+            const toolName = toolCall.function.name
+            let toolArgs: Record<string, unknown> = {}
+
+            try {
+                toolArgs = JSON.parse(toolCall.function.arguments)
+            } catch {
+                console.warn('[cognitive] Failed to parse tool_call arguments:', toolCall.function.arguments)
+            }
+
+            return {
+                message_complexity: 'complex',
+                needs_tool: true,
+                tool_hint: toolName,
+                tool_args: toolArgs,
+                skip_memory: false,
+                skip_graph: false,
+                skip_cognitive: false,
+            }
+        }
+
+        // ── Path B: No tool call — parse text classification ──
+        const content = message?.content
+        if (content) {
+            try {
+                const parsed = JSON.parse(content)
+                const complexity = parsed.c || parsed.message_complexity || 'moderate'
+
+                if (complexity === 'simple') return getSimpleClassification()
+                if (complexity === 'complex') return {
+                    message_complexity: 'complex',
+                    needs_tool: false,
+                    tool_hint: null,
+                    tool_args: {},
+                    skip_memory: false,
+                    skip_graph: false,
+                    skip_cognitive: false,
+                }
+
+                // moderate (default)
+                return {
+                    message_complexity: 'moderate',
+                    needs_tool: false,
+                    tool_hint: null,
+                    tool_args: {},
+                    skip_memory: false,
+                    skip_graph: true,
+                    skip_cognitive: false,
+                }
+            } catch {
+                // If content isn't valid JSON, fall through to default
+            }
+        }
 
         return getDefaultClassification()
     } catch (error) {
@@ -169,6 +213,7 @@ function getSimpleClassification(): ClassifierResult {
         message_complexity: 'simple',
         needs_tool: false,
         tool_hint: null,
+        tool_args: {},
         skip_memory: true,
         skip_graph: true,
         skip_cognitive: true,
@@ -180,6 +225,7 @@ function getDefaultClassification(): ClassifierResult {
         message_complexity: 'moderate',
         needs_tool: false,
         tool_hint: null,
+        tool_args: {},
         skip_memory: false,
         skip_graph: false,
         skip_cognitive: false,
