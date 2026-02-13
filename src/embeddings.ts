@@ -201,6 +201,19 @@ export async function embedBatch(
 
 // ─── Embedding Queue (for batch cron job) ───────────────────────────────────
 
+/** Allowed table→columns for embedding queue (prevents SQL injection) */
+const ALLOWED_TARGETS: Record<string, { columns: Set<string>; idColumn: string }> = {
+    memories: { columns: new Set(['embedding']), idColumn: 'id' },
+    entity_relations: { columns: new Set(['embedding']), idColumn: 'relation_id' },
+}
+
+function validateTarget(table: string, column: string): { idColumn: string } {
+    const target = ALLOWED_TARGETS[table]
+    if (!target) throw new Error(`[embeddings] Invalid target table: ${table}`)
+    if (!target.columns.has(column)) throw new Error(`[embeddings] Invalid target column: ${column} for table ${table}`)
+    return { idColumn: target.idColumn }
+}
+
 /**
  * Queue a text for embedding in the background.
  * Used when you want to avoid blocking the response path.
@@ -211,6 +224,7 @@ export async function queueForEmbedding(
     targetColumn: string,
     textToEmbed: string
 ): Promise<void> {
+    validateTarget(targetTable, targetColumn)
     const pool = getPool()
     await pool.query(
         `INSERT INTO embedding_queue (target_table, target_id, target_column, text_to_embed)
@@ -255,12 +269,16 @@ export async function processEmbeddingQueue(batchSize = 50): Promise<number> {
 
         if (embedding) {
             try {
+                // Validate target table/column against whitelist (prevents SQL injection)
+                const { idColumn } = validateTarget(row.target_table, row.target_column)
+
                 // Update the target table with the embedding
+                // table/column names are safe — validated against ALLOWED_TARGETS whitelist
                 const vectorStr = `[${embedding.join(',')}]`
                 await pool.query(
                     `UPDATE ${row.target_table}
            SET ${row.target_column} = $1::vector
-           WHERE ${row.target_table === 'memories' ? 'id' : 'relation_id'} = $2`,
+           WHERE ${idColumn} = $2`,
                     [vectorStr, row.target_id]
                 )
 

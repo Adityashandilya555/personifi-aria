@@ -17,6 +17,8 @@ export interface ClassifierResult {
     needs_tool: boolean
     /** If needs_tool is true, which tool? e.g. "search_flights", "search_hotels" */
     tool_hint: string | null
+    /** Structured parameters extracted by the 8B classifier for the hinted tool */
+    tool_args: Record<string, unknown>
     /** Skip vector memory search (true for greetings, yes/no, thanks) */
     skip_memory: boolean
     /** Skip knowledge graph search */

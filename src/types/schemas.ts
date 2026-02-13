@@ -170,6 +170,7 @@ export const ClassifierResultSchema = z.object({
     message_complexity: MessageComplexitySchema.default('moderate'),
     needs_tool: z.boolean().default(false),
     tool_hint: z.string().nullable().default(null),
+    tool_args: z.record(z.string(), z.unknown()).default({}),
     skip_memory: z.boolean().default(false),
     skip_graph: z.boolean().default(false),
     skip_cognitive: z.boolean().default(false),

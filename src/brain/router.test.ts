@@ -15,7 +15,13 @@ vi.mock('../hook-registry.js', () => ({
 describe('BrainHooks Logic', () => {
 
     // Helper to create a base context
-    const createCtx = (msg: string, needsTool = false, toolHint: string | null = null): RouteContext => ({
+    // tool_args are now populated by the 8B classifier via native function calling
+    const createCtx = (
+        msg: string,
+        needsTool = false,
+        toolHint: string | null = null,
+        toolArgs: Record<string, unknown> = {}
+    ): RouteContext => ({
         userMessage: msg,
         channel: 'test',
         userId: 'u1',
@@ -24,6 +30,7 @@ describe('BrainHooks Logic', () => {
             message_complexity: needsTool ? 'complex' : 'simple',
             needs_tool: needsTool,
             tool_hint: toolHint,
+            tool_args: toolArgs,
             skip_memory: true,
             skip_graph: true,
             skip_cognitive: true
@@ -41,44 +48,72 @@ describe('BrainHooks Logic', () => {
     }
 
     describe('routeMessage', () => {
-        it('should route to search_flights and extract params', async () => {
-            const ctx = createCtx('Find flights FROM New York TO London', true, 'search_flights')
+        it('should route to search_flights with classifier-extracted args', async () => {
+            const ctx = createCtx(
+                'Find flights from New York to London',
+                true,
+                'search_flights',
+                { origin: 'New York', destination: 'London' }
+            )
             const result = await brainHooks.routeMessage(ctx)
 
             expect(result.useTool).toBe(true)
             expect(result.toolName).toBe('search_flights')
-            expect(result.toolParams).toEqual({
-                origin: 'new york',
-                destination: 'london'
-            })
+            expect(result.toolParams).toEqual({ origin: 'New York', destination: 'London' })
         })
 
-        it('should correctly handle "I want to fly from..." prefixes', async () => {
-            const ctx = createCtx('I want to fly from NYC to LA', true, 'search_flights')
-            const result = await brainHooks.routeMessage(ctx)
-
-            expect(result.useTool).toBe(true)
-            expect(result.toolParams).toEqual({
-                origin: 'nyc',
-                destination: 'la'
-            })
-        })
-
-        it('should route to search_hotels and extract params', async () => {
-            const ctx = createCtx('Find a hotel IN Paris', true, 'search_hotels')
+        it('should route to search_hotels with classifier-extracted args', async () => {
+            const ctx = createCtx(
+                'Find a hotel in Paris',
+                true,
+                'search_hotels',
+                { location: 'Paris' }
+            )
             const result = await brainHooks.routeMessage(ctx)
 
             expect(result.useTool).toBe(true)
             expect(result.toolName).toBe('search_hotels')
-            expect(result.toolParams).toEqual({
-                location: 'paris'
-            })
+            expect(result.toolParams).toEqual({ location: 'Paris' })
         })
 
         it('should return no tool if classifier says false', async () => {
             const ctx = createCtx('Hello there', false, null)
             const result = await brainHooks.routeMessage(ctx)
             expect(result.useTool).toBe(false)
+        })
+
+        it('should reject tool call when classifier provides no args', async () => {
+            const ctx = createCtx('I want flights', true, 'search_flights', {})
+            const result = await brainHooks.routeMessage(ctx)
+            expect(result.useTool).toBe(false)
+        })
+
+        it('should route get_weather with single param', async () => {
+            const ctx = createCtx(
+                "What's the weather in Tokyo?",
+                true,
+                'get_weather',
+                { location: 'Tokyo' }
+            )
+            const result = await brainHooks.routeMessage(ctx)
+
+            expect(result.useTool).toBe(true)
+            expect(result.toolName).toBe('get_weather')
+            expect(result.toolParams).toEqual({ location: 'Tokyo' })
+        })
+
+        it('should route convert_currency with all params', async () => {
+            const ctx = createCtx(
+                'Convert 100 USD to EUR',
+                true,
+                'convert_currency',
+                { amount: 100, from: 'USD', to: 'EUR' }
+            )
+            const result = await brainHooks.routeMessage(ctx)
+
+            expect(result.useTool).toBe(true)
+            expect(result.toolName).toBe('convert_currency')
+            expect(result.toolParams).toEqual({ amount: 100, from: 'USD', to: 'EUR' })
         })
     })
 
@@ -162,42 +197,6 @@ describe('BrainHooks Logic', () => {
                 data: '{"status": "ok"}'
             })
             expect(result).toBe('Hello world')
-        })
-    })
-
-    describe('param validation and special characters', () => {
-        it('should set useTool false when param extraction fails', async () => {
-            const ctx = createCtx('I want flights', true, 'search_flights')
-            const result = await brainHooks.routeMessage(ctx)
-
-            expect(result.useTool).toBe(false)
-        })
-
-        it('should extract hotel locations with special characters', async () => {
-            const ctx1 = createCtx('Find a hotel in St. Louis', true, 'search_hotels')
-            const result1 = await brainHooks.routeMessage(ctx1)
-            expect(result1.toolParams).toEqual({ location: 'st. louis' })
-
-            const ctx2 = createCtx('Find a hotel in New York-JFK', true, 'search_hotels')
-            const result2 = await brainHooks.routeMessage(ctx2)
-            expect(result2.toolParams).toEqual({ location: 'new york-jfk' })
-        })
-
-        it('should not route when input has verb-prefix "to" without origin', async () => {
-            const ctx = createCtx('I want to go to Paris', true, 'search_flights')
-            const result = await brainHooks.routeMessage(ctx)
-
-            // No valid origin/destination extractable → param validation gate rejects
-            expect(result.useTool).toBe(false)
-        })
-
-        it('should extract destination correctly with "from X to Y" despite verb prefix', async () => {
-            const ctx = createCtx('I want to go from NYC to Paris', true, 'search_flights')
-            const result = await brainHooks.routeMessage(ctx)
-
-            expect(result.useTool).toBe(true)
-            expect(result.toolParams.origin).toBe('nyc')
-            expect(result.toolParams.destination).toBe('paris')
         })
     })
 })
