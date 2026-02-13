@@ -1,11 +1,18 @@
 import Amadeus from 'amadeus'
 import { ToolResult } from '../hooks.js'
 
-// Initialize Amadeus client
-const amadeus = new Amadeus({
-    clientId: process.env.AMADEUS_API_KEY || 'PLACEHOLDER',
-    clientSecret: process.env.AMADEUS_API_SECRET || 'PLACEHOLDER',
-})
+// Lazy-initialize Amadeus client to avoid eager auth with missing keys
+let amadeus: InstanceType<typeof Amadeus> | null = null
+
+function getAmadeusClient(): InstanceType<typeof Amadeus> | null {
+    if (!amadeus && process.env.AMADEUS_API_KEY && process.env.AMADEUS_API_SECRET) {
+        amadeus = new Amadeus({
+            clientId: process.env.AMADEUS_API_KEY,
+            clientSecret: process.env.AMADEUS_API_SECRET,
+        })
+    }
+    return amadeus
+}
 
 interface FlightSearchParams {
     origin: string
@@ -23,7 +30,8 @@ export async function searchFlights(params: FlightSearchParams): Promise<ToolRes
     const { origin, destination, departureDate, returnDate, adults = 1, currency = 'USD' } = params
 
     // Check if API keys are set
-    if (!process.env.AMADEUS_API_KEY || !process.env.AMADEUS_API_SECRET) {
+    const client = getAmadeusClient()
+    if (!client) {
         if (process.env.SERPAPI_KEY) {
             console.log('[Flight Tool] Amadeus keys missing, falling back to SerpAPI')
             return searchFlightsFallback(params)
@@ -35,7 +43,7 @@ export async function searchFlights(params: FlightSearchParams): Promise<ToolRes
     }
 
     try {
-        const response = await amadeus.shopping.flightOffersSearch.get({
+        const response = await client.shopping.flightOffersSearch.get({
             originLocationCode: origin,
             destinationLocationCode: destination,
             departureDate: departureDate,
@@ -58,6 +66,9 @@ export async function searchFlights(params: FlightSearchParams): Promise<ToolRes
 
         // Format results
         const offers = response.data.map((offer: any) => {
+            if (!offer.itineraries || offer.itineraries.length === 0) {
+                return `- **${offer.price?.currency || ''} ${offer.price?.total || 'N/A'}**: (no itinerary data)`
+            }
             const itinerary = offer.itineraries[0]
             const duration = itinerary.duration.replace('PT', '').toLowerCase()
             const segments = itinerary.segments.map((seg: any) => {
@@ -98,7 +109,7 @@ export async function searchFlightsFallback(params: FlightSearchParams): Promise
     if (!process.env.SERPAPI_KEY) {
         return {
             success: false,
-            data: 'Configuration error: SerpAPI key matches missing.'
+            data: 'Configuration error: SerpAPI key is missing.'
         }
     }
 
@@ -139,9 +150,6 @@ export async function searchFlightsFallback(params: FlightSearchParams): Promise
                     data: `No flights found via Google Flights from ${origin} to ${destination}.`
                 }
             }
-            // use other flights if best flights are missing
-            // ... logic to parse other flights ...
-            // For simplicity, let's just use the first 5 from whatever list we have
             return formatSerpApiFlights(otherFlights.slice(0, 5), origin, destination)
         }
 
@@ -169,8 +177,8 @@ function formatSerpApiFlights(flights: any[], origin: string, destination: strin
             return `${f.departure_airport?.id} ${dep} -> ${f.arrival_airport?.id} ${arr}`
         }).join(', ')
 
-
-        return `- **$${price}**: ${airline} ${flightNumbers} (${times}) [${duration}]`
+        const priceDisplay = price != null ? `$${price}` : 'N/A'
+        return `- **${priceDisplay}**: ${airline} ${flightNumbers} (${times}) [${duration}]`
     }).join('\n')
 
     return {

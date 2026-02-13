@@ -161,6 +161,10 @@ async function scrapeAndNotifyDeals(sendMessage: SendMessageFn) {
     }
 
     // Summarize top deals using Groq
+    if (!process.env.GROQ_API_KEY) {
+      console.warn('[SCHEDULER] GROQ_API_KEY not set, skipping deal summary')
+      return
+    }
     const groq = new Groq({ apiKey: process.env.GROQ_API_KEY })
     const dealText = deals.slice(0, 5).map(d => `- ${d.title}: ${d.price} (${d.source})`).join('\n')
 
@@ -172,7 +176,7 @@ async function scrapeAndNotifyDeals(sendMessage: SendMessageFn) {
       }]
     })
 
-    const summary = summaryCompletion.choices[0]?.message?.content || 'Found some amazing travel deals! Check checking them out.'
+    const summary = summaryCompletion.choices[0]?.message?.content || 'Found some amazing travel deals! Check them out.'
 
     // Notify users
     // For MVP: Get just a few active users to avoid mass spam in dev
@@ -230,10 +234,12 @@ async function checkPriceAlerts(sendMessage: SendMessageFn) {
         // Here we try to extract the lowest price from the string output if raw parsing is complex
         // Actually, let's use a regex on the 'data' string which is formatted as "USD 123: ..."
 
-        const priceMatch = result.data.match(/([A-Z]{3})\s+(\d+(\.\d{1,2})?)/)
+        // Match "USD 123.45" (Amadeus) or "$123" (SerpAPI fallback)
+        const priceMatch = result.data.match(/([A-Z]{3})\s+(\d+(?:\.\d{1,2})?)/)
+            || result.data.match(/\$(\d+(?:\.\d{1,2})?)/)
         if (priceMatch) {
-          const currentPrice = parseFloat(priceMatch[2])
-          const currency = priceMatch[1]
+          const currentPrice = parseFloat(priceMatch[2] ?? priceMatch[1])
+          const currency = priceMatch[2] ? priceMatch[1] : 'USD'
 
           // Update last checked
           await pool.query(
@@ -261,7 +267,6 @@ async function checkPriceAlerts(sendMessage: SendMessageFn) {
   }
 }
 
-// Export for manual triggering
 // Export for manual triggering
 export { checkInactiveUsers, sendDailyTips, scrapeAndNotifyDeals, checkPriceAlerts }
 

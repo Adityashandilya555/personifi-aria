@@ -17,6 +17,12 @@ export async function convertCurrency(params: CurrencyParams): Promise<ToolResul
     try {
         const url = `https://api.exchangerate-api.com/v4/latest/${fromCode}`
         const response = await fetch(url)
+        if (!response.ok) {
+            return {
+                success: false,
+                data: `Currency API error: ${response.status} ${response.statusText}`,
+            }
+        }
         const data = await response.json()
 
         if (!data.rates || !data.rates[toCode]) {

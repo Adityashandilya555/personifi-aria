@@ -36,6 +36,12 @@ export async function searchHotels(params: HotelSearchParams): Promise<ToolResul
         // Step 1: Get Destination ID
         const locUrl = `https://${RAPIDAPI_HOST}/v1/hotels/locations?name=${encodeURIComponent(location)}&locale=en-gb`
         const locRes = await fetch(locUrl, { headers })
+        if (!locRes.ok) {
+            return {
+                success: false,
+                data: `Hotel location API error: ${locRes.status} ${locRes.statusText}`,
+            }
+        }
         const locData = await locRes.json()
 
         if (!locData || locData.length === 0) {
@@ -64,6 +70,12 @@ export async function searchHotels(params: HotelSearchParams): Promise<ToolResul
         searchUrl.searchParams.append('currency', currency)
 
         const searchRes = await fetch(searchUrl.toString(), { headers })
+        if (!searchRes.ok) {
+            return {
+                success: false,
+                data: `Hotel search API error: ${searchRes.status} ${searchRes.statusText}`,
+            }
+        }
         const searchData = await searchRes.json()
 
         if (!searchData || !searchData.result || searchData.result.length === 0) {
@@ -126,6 +138,10 @@ export const hotelToolDefinition = {
             rooms: {
                 type: 'number',
                 description: 'Number of rooms (default: 1)',
+            },
+            currency: {
+                type: 'string',
+                description: 'Currency code for prices (default: USD)',
             },
         },
         required: ['location', 'checkInDate', 'checkOutDate'],
