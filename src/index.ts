@@ -41,7 +41,13 @@ async function handleChannelMessage(adapter: ChannelAdapter, body: unknown) {
 
   try {
     const response = await handleMessage(message.channel, message.userId, message.text)
-    await adapter.sendMessage(message.chatId, response)
+
+    // Send media (dish images etc.) before the text response
+    if (response.media?.length && adapter.sendMedia) {
+      await adapter.sendMedia(message.chatId, response.media)
+    }
+
+    await adapter.sendMessage(message.chatId, response.text)
     return { ok: true }
   } catch (error) {
     server.log.error(error, `Failed to handle ${adapter.name} message`)

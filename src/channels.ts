@@ -12,11 +12,18 @@ export interface ChannelMessage {
   metadata?: Record<string, unknown>
 }
 
+export interface MediaItem {
+  type: 'photo'
+  url: string
+  caption?: string
+}
+
 export interface ChannelAdapter {
   name: string
   isEnabled: () => boolean
   parseWebhook: (body: unknown) => ChannelMessage | null
   sendMessage: (chatId: string, text: string) => Promise<void>
+  sendMedia?: (chatId: string, media: MediaItem[]) => Promise<void>
 }
 
 // ============================================
@@ -57,6 +64,42 @@ export const telegramAdapter: ChannelAdapter = {
         parse_mode: 'Markdown',
       }),
     })
+  },
+
+  sendMedia: async (chatId: string, media: MediaItem[]) => {
+    const token = process.env.TELEGRAM_BOT_TOKEN
+    if (!token || media.length === 0) return
+
+    if (media.length === 1) {
+      // Single photo — use sendPhoto for cleaner UX
+      await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          photo: media[0].url,
+          caption: media[0].caption || '',
+          parse_mode: 'Markdown',
+        }),
+      })
+    } else {
+      // Multiple photos — use sendMediaGroup (album)
+      const mediaGroup = media.slice(0, 10).map((item, i) => ({
+        type: 'photo' as const,
+        media: item.url,
+        caption: i === 0 ? (item.caption || '') : '', // Only first item gets caption
+        parse_mode: 'Markdown' as const,
+      }))
+
+      await fetch(`https://api.telegram.org/bot${token}/sendMediaGroup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          media: mediaGroup,
+        }),
+      })
+    }
   },
 }
 
