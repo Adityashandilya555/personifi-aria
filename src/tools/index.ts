@@ -14,6 +14,7 @@ import { getWeather, weatherToolDefinition } from './weather.js'
 import { searchPlaces, placeToolDefinition } from './places.js'
 import { convertCurrency, currencyToolDefinition } from './currency.js'
 import { getTransportEstimate, compareToolDefinition } from './compare.js'
+import { compareFoodPrices, foodCompareDefinition } from './food-compare.js'
 
 const bodyHooks: BodyHooks = {
     async executeTool(name: string, params: Record<string, unknown>): Promise<ToolExecutionResult> {
@@ -30,6 +31,8 @@ const bodyHooks: BodyHooks = {
                 return convertCurrency(params as any)
             case 'get_transport_estimate':
                 return getTransportEstimate(params as any)
+            case 'compare_food_prices':
+                return compareFoodPrices(params as any)
             default:
                 return { success: false, data: null, error: `Unknown tool: ${name}` }
         }
@@ -43,6 +46,7 @@ const bodyHooks: BodyHooks = {
             placeToolDefinition,
             currencyToolDefinition,
             compareToolDefinition,
+            foodCompareDefinition,
         ]
     },
 }

@@ -106,16 +106,52 @@ function buildMessages(
 /**
  * Main entry point: handle an incoming message
  */
+export interface MessageResponse {
+  text: string
+  media?: { type: 'photo'; url: string; caption?: string }[]
+}
+
+/**
+ * Extract dish/restaurant images from tool raw data for sending as media.
+ * Currently supports food comparison tool results (Swiggy dish images).
+ */
+function extractMediaFromToolResult(rawData: unknown): MessageResponse['media'] | undefined {
+  if (!rawData || typeof rawData !== 'object') return undefined
+
+  const data = rawData as any
+  // Food comparison results have raw[] with items containing imageUrl
+  const results = data?.raw ?? data
+  if (!Array.isArray(results)) return undefined
+
+  const media: { type: 'photo'; url: string; caption?: string }[] = []
+
+  for (const r of results) {
+    if (!r?.items || !Array.isArray(r.items)) continue
+    for (const item of r.items) {
+      if (item.imageUrl && media.length < 5) {
+        const badge = item.isBestseller ? ' ⭐ BESTSELLER' : ''
+        media.push({
+          type: 'photo',
+          url: item.imageUrl,
+          caption: `${item.name} — ₹${item.price}${badge}\n📍 ${r.restaurant} (${r.platform})`,
+        })
+      }
+    }
+  }
+
+  return media.length > 0 ? media : undefined
+}
+
 export async function handleMessage(
   channel: string,
   channelUserId: string,
   rawMessage: string
-): Promise<string> {
+): Promise<MessageResponse> {
   try {
     // ─── Step 0: Detect /link command (before sanitization) ────
     const linkMatch = rawMessage.trim().match(/^\/link(?:\s+(\d{6}))?$/i)
     if (linkMatch) {
-      return handleLinkCommand(channel, channelUserId, linkMatch[1] || null)
+      return { text: await handleLinkCommand(channel, channelUserId, linkMatch[1] || null) }
     }
 
     // ─── Step 1: Input sanitization ───────────────────────────────
@@ -127,7 +163,7 @@ export async function handleMessage(
     }
 
     if (isPotentialAttack(sanitizeResult)) {
-      return "Ha, nice try! 😄 I'm just Aria, your travel buddy. So... anywhere you're thinking of exploring?"
+      return { text: "Ha, nice try! 😄 I'm just Aria, your travel buddy. So... anywhere you're thinking of exploring?" }
     }
 
     // ─── Step 2: Get or create user, resolve person_id ────────────
@@ -136,7 +172,7 @@ export async function handleMessage(
     // ─── Step 3: Check rate limit ─────────────────────────────────
     const withinLimit = await checkRateLimit(user.userId)
     if (!withinLimit) {
-      return "Whoa, we're chatting so fast! Give me a sec to catch my breath 😅 What were you asking about?"
+      return { text: "Whoa, we're chatting so fast! Give me a sec to catch my breath 😅 What were you asking about?" }
     }
 
     // ─── Step 4: Get session with conversation history ────────────
@@ -252,10 +288,12 @@ export async function handleMessage(
 
     // ─── Step 8: Execute tool pipeline if needed (Dev 1) ──────────
     let toolResultStr: string | undefined
+    let toolRawData: unknown = null
     if (routeDecision.useTool) {
       const toolResult = await brainHooks.executeToolPipeline(routeDecision, routeContext)
       if (toolResult?.success && toolResult.data) {
         toolResultStr = toolResult.data
+        toolRawData = toolResult.raw
       }
     }
 
@@ -389,11 +427,14 @@ export async function handleMessage(
       })
     }
 
-    return assistantResponse
+    return {
+      text: assistantResponse,
+      media: extractMediaFromToolResult(toolRawData),
+    }
 
   } catch (error) {
     console.error('[ERROR] Message handling failed:', error)
-    return "Oops, something went wrong on my end! Mind trying that again? 😅"
+    return { text: "Oops, something went wrong on my end! Mind trying that again? 😅" }
   }
 }
 

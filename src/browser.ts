@@ -92,6 +92,67 @@ export async function captureAriaSnapshot(url: string): Promise<AriaSnapshot> {
 }
 
 // ============================================
+// Network Interception Helper
+// ============================================
+
+export interface InterceptedResponse {
+    url: string
+    body: any
+}
+
+interface InterceptionOptions {
+    /** URL to navigate to */
+    url: string
+    /** URL substrings to match against intercepted responses */
+    urlPatterns: string[]
+    /** Max time to wait for intercepted responses (ms) */
+    timeout?: number
+}
+
+/**
+ * Navigate to a page and intercept JSON API responses matching URL patterns.
+ * Returns collected JSON payloads. Context is closed after scraping.
+ */
+export async function scrapeWithInterception(options: InterceptionOptions): Promise<InterceptedResponse[]> {
+    const { url, urlPatterns, timeout = 15000 } = options
+    const { page, context } = await getPage()
+    const collected: InterceptedResponse[] = []
+
+    try {
+        // Register response listener before navigation
+        page.on('response', async (response) => {
+            const respUrl = response.url()
+            const matches = urlPatterns.some(pattern => respUrl.includes(pattern))
+            if (!matches) return
+
+            try {
+                const body = await response.json()
+                collected.push({ url: respUrl, body })
+            } catch {
+                // Not JSON or response already disposed — skip
+            }
+        })
+
+        console.log(`[BROWSER] Scraping ${url}`)
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout })
+
+        // Wait for API responses to arrive
+        await page.waitForTimeout(Math.min(timeout / 2, 5000))
+
+        // If nothing intercepted yet, wait a bit more
+        if (collected.length === 0) {
+            await page.waitForTimeout(3000)
+        }
+    } catch (error) {
+        console.error(`[BROWSER] Interception scrape failed for ${url}:`, error)
+    } finally {
+        await context.close()
+    }
+
+    return collected
+}
+
+// ============================================
 // Legacy / Specific Scraping Functions
 // ============================================
 
