@@ -10,6 +10,7 @@ import { brainHooks } from './brain/index.js'
 import { initScheduler } from './scheduler.js'
 import { initBrowser, closeBrowser } from './browser.js'
 import './tools/index.js'  // Register body hooks (DEV 2 tools)
+import { verifySlackSignature } from './slack-verify.js'
 import {
   channels,
   getEnabledChannels,
@@ -22,6 +23,21 @@ const server = Fastify({
 })
 
 await server.register(cors)
+
+// Capture raw body for Slack signature verification
+server.addContentTypeParser(
+  'application/json',
+  { parseAs: 'string' },
+  (req, body, done) => {
+    try {
+      const rawBody = typeof body === 'string' ? body : body.toString()
+        ; (req as any).rawBody = rawBody
+      done(null, JSON.parse(rawBody))
+    } catch (err: any) {
+      done(err, undefined)
+    }
+  }
+)
 
 // Health check with enabled channels
 server.get('/health', async () => ({
@@ -96,6 +112,19 @@ server.post('/webhook/whatsapp', async (request, reply) => {
 // ============================================
 
 server.post('/webhook/slack', async (request, reply) => {
+  // Verify Slack request signature to prevent forged events
+  const signingSecret = process.env.SLACK_SIGNING_SECRET || ''
+  const result = verifySlackSignature(
+    signingSecret,
+    request.headers['x-slack-request-timestamp'] as string | undefined,
+    (request as any).rawBody || '',
+    request.headers['x-slack-signature'] as string | undefined
+  )
+  if (!result.valid) {
+    server.log.warn(`Slack signature verification failed: ${result.error}`)
+    return reply.code(401).send({ error: result.error })
+  }
+
   const body = request.body as any
 
   // Handle Slack URL verification
