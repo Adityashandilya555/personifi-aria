@@ -112,24 +112,29 @@ server.post('/webhook/whatsapp', async (request, reply) => {
 // ============================================
 
 server.post('/webhook/slack', async (request, reply) => {
-  // Verify Slack request signature to prevent forged events
-  const signingSecret = process.env.SLACK_SIGNING_SECRET || ''
-  const result = verifySlackSignature(
-    signingSecret,
-    request.headers['x-slack-request-timestamp'] as string | undefined,
-    (request as any).rawBody || '',
-    request.headers['x-slack-signature'] as string | undefined
-  )
-  if (!result.valid) {
-    server.log.warn(`Slack signature verification failed: ${result.error}`)
-    return reply.code(401).send({ error: result.error })
-  }
-
   const body = request.body as any
 
-  // Handle Slack URL verification
+  // Handle Slack URL verification first — this must come before signature
+  // verification because Slack sends this challenge during initial app setup,
+  // before the signing secret is even configured.
   if (body?.type === 'url_verification') {
     return { challenge: body.challenge }
+  }
+
+  // Verify Slack request signature when signing secret is configured.
+  // When SLACK_SIGNING_SECRET is not set, skip verification for backward compatibility.
+  const signingSecret = process.env.SLACK_SIGNING_SECRET
+  if (signingSecret) {
+    const result = verifySlackSignature(
+      signingSecret,
+      request.headers['x-slack-request-timestamp'] as string | undefined,
+      (request as any).rawBody || '',
+      request.headers['x-slack-signature'] as string | undefined
+    )
+    if (!result.valid) {
+      server.log.warn(`Slack signature verification failed: ${result.error}`)
+      return reply.code(403).send({ error: result.error })
+    }
   }
 
   if (!channels.slack.isEnabled()) {
