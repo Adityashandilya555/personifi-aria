@@ -9,6 +9,7 @@
  *   4. Future searches fan out across all linked user_ids
  */
 
+import { randomInt } from 'crypto'
 import { getPool } from './character/session-store.js'
 
 const LINK_CODE_EXPIRY_MINUTES = parseInt(process.env.LINK_CODE_EXPIRY_MINUTES || '10', 10)
@@ -181,7 +182,7 @@ export async function getLinkedUserIds(userId: string): Promise<string[]> {
 // ─── Internal Helpers ────────────────────────────────────────────────────────
 
 function generateSixDigitCode(): string {
-    return String(Math.floor(100000 + Math.random() * 900000))
+    return String(randomInt(100000, 1000000))
 }
 
 /**

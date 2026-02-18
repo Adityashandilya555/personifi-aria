@@ -13,7 +13,10 @@
         "esModuleInterop": true,
         "skipLibCheck": true,
         "declaration": true,
-        "resolveJsonModule": true
+        "resolveJsonModule": true,
+        "types": [
+            "node"
+        ]
     },
     "include": [
         "src/**/*"
