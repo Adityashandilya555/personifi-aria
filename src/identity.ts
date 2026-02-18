@@ -9,7 +9,7 @@
  *   4. Future searches fan out across all linked user_ids
  */
 
-import { randomInt } from 'crypto'
+import { randomInt } from 'node:crypto'
 import { getPool } from './character/session-store.js'
 import type { PoolClient } from 'pg'
 
