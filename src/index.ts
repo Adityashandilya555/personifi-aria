@@ -18,26 +18,18 @@ import {
   type ChannelMessage
 } from './channels.js'
 
+// Type augmentation for raw body on Slack requests
+declare module 'fastify' {
+  interface FastifyRequest {
+    rawBody?: string
+  }
+}
+
 const server = Fastify({
   logger: true,
 })
 
 await server.register(cors)
-
-// Capture raw body for Slack signature verification
-server.addContentTypeParser(
-  'application/json',
-  { parseAs: 'string' },
-  (req, body, done) => {
-    try {
-      const rawBody = typeof body === 'string' ? body : body.toString()
-        ; (req as any).rawBody = rawBody
-      done(null, JSON.parse(rawBody))
-    } catch (err: any) {
-      done(err, undefined)
-    }
-  }
-)
 
 // Health check with enabled channels
 server.get('/health', async () => ({
@@ -111,24 +103,44 @@ server.post('/webhook/whatsapp', async (request, reply) => {
 // Slack Webhook
 // ============================================
 
+// Capture raw body only for Slack route (avoids global memory overhead)
+server.addHook('preParsing', async (request, reply, payload) => {
+  if (request.url === '/webhook/slack' && request.method === 'POST') {
+    const chunks: Buffer[] = []
+    for await (const chunk of payload) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+    }
+    const raw = Buffer.concat(chunks).toString('utf8')
+    request.rawBody = raw
+    const { Readable } = await import('node:stream')
+    const newPayload = Readable.from(Buffer.from(raw)) as typeof payload
+    return newPayload
+  }
+  return payload
+})
+
 server.post('/webhook/slack', async (request, reply) => {
   const body = request.body as any
 
-  // Handle Slack URL verification first — this must come before signature
-  // verification because Slack sends this challenge during initial app setup,
-  // before the signing secret is even configured.
+  // Handle Slack URL verification first — must come before signature
+  // verification because Slack sends this during initial app setup.
   if (body?.type === 'url_verification') {
     return { challenge: body.challenge }
   }
 
   // Verify Slack request signature when signing secret is configured.
-  // When SLACK_SIGNING_SECRET is not set, skip verification for backward compatibility.
   const signingSecret = process.env.SLACK_SIGNING_SECRET
   if (signingSecret) {
+    // Reject if raw body is missing (parser bypassed or failed)
+    if (!request.rawBody) {
+      server.log.warn('Missing raw body for Slack signature verification')
+      return reply.code(400).send({ error: 'Invalid request' })
+    }
+
     const result = verifySlackSignature(
       signingSecret,
       request.headers['x-slack-request-timestamp'] as string | undefined,
-      (request as any).rawBody || '',
+      request.rawBody,
       request.headers['x-slack-signature'] as string | undefined
     )
     if (!result.valid) {

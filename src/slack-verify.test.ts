@@ -1,16 +1,17 @@
 import { describe, it, expect } from 'vitest'
-import { createHmac } from 'crypto'
+import { createHmac } from 'node:crypto'
 import { verifySlackSignature } from './slack-verify.js'
 
-const SIGNING_SECRET = 'test_signing_secret_abc123'
+const SECRET = 'test_signing_secret_abc123'
 
-/** Helper — produce a valid Slack signature for the given body and timestamp */
-function sign(body: string, timestamp: string): string {
-    const baseString = `v0:${timestamp}:${body}`
-    return 'v0=' + createHmac('sha256', SIGNING_SECRET).update(baseString).digest('hex')
+
+function sign(secret: string, timestamp: string, body: string): string {
+    const sig = createHmac('sha256', secret)
+        .update(`v0:${timestamp}:${body}`)
+        .digest('hex')
+    return `v0=${sig}`
 }
 
-/** Current unix timestamp as a string */
 function nowTs(): string {
     return String(Math.floor(Date.now() / 1000))
 }
@@ -18,43 +19,77 @@ function nowTs(): string {
 describe('verifySlackSignature', () => {
 
     it('should accept a valid signature', () => {
-        const body = '{"type":"event_callback","event":{"type":"message"}}'
         const ts = nowTs()
-        const sig = sign(body, ts)
+        const body = '{"type":"event_callback"}'
+        const sig = sign(SECRET, ts, body)
 
-        const result = verifySlackSignature(SIGNING_SECRET, ts, body, sig)
+        const result = verifySlackSignature(SECRET, ts, body, sig)
         expect(result.valid).toBe(true)
         expect(result.error).toBeUndefined()
     })
 
-    it('should reject a wrong signature', () => {
-        const body = '{"type":"event_callback"}'
+    it('should reject a tampered body', () => {
         const ts = nowTs()
+        const body = '{"type":"event_callback"}'
+        const sig = sign(SECRET, ts, body)
 
-        const result = verifySlackSignature(SIGNING_SECRET, ts, body, 'v0=badhex')
+        const result = verifySlackSignature(SECRET, ts, body + 'tampered', sig)
         expect(result.valid).toBe(false)
         expect(result.error).toBe('Invalid signature')
     })
 
-    it('should reject a request older than 5 minutes', () => {
-        const body = '{"text":"hello"}'
-        const staleTs = String(Math.floor(Date.now() / 1000) - 6 * 60) // 6 min ago
-        const sig = sign(body, staleTs)
+    it('should reject a wrong signature', () => {
+        const ts = nowTs()
+        const body = '{"type":"event_callback"}'
 
-        const result = verifySlackSignature(SIGNING_SECRET, staleTs, body, sig)
+        const result = verifySlackSignature(SECRET, ts, body, 'v0=deadbeef')
+        expect(result.valid).toBe(false)
+        expect(result.error).toBe('Invalid signature')
+    })
+
+    it('should reject an expired timestamp (>5 min old)', () => {
+        const oldTs = String(Math.floor(Date.now() / 1000) - 400) // 6+ minutes ago
+        const body = '{"type":"event_callback"}'
+        const sig = sign(SECRET, oldTs, body)
+
+        const result = verifySlackSignature(SECRET, oldTs, body, sig)
         expect(result.valid).toBe(false)
         expect(result.error).toBe('Request too old')
     })
 
-    it('should reject when signature header is missing', () => {
-        const result = verifySlackSignature(SIGNING_SECRET, nowTs(), '{}', undefined)
+    it('should reject a future timestamp', () => {
+        const futureTs = String(Math.floor(Date.now() / 1000) + 180) // 3 min in the future
+        const body = '{"type":"event_callback"}'
+        const sig = sign(SECRET, futureTs, body)
+
+        const result = verifySlackSignature(SECRET, futureTs, body, sig)
         expect(result.valid).toBe(false)
-        expect(result.error).toBe('Missing signature or timestamp headers')
+        expect(result.error).toBe('Invalid timestamp')
+    })
+
+    it('should reject a NaN timestamp', () => {
+        const body = '{"type":"event_callback"}'
+        const sig = sign(SECRET, 'abc', body)
+
+        const result = verifySlackSignature(SECRET, 'abc', body, sig)
+        expect(result.valid).toBe(false)
+        expect(result.error).toBe('Invalid timestamp')
     })
 
     it('should reject when timestamp header is missing', () => {
-        const result = verifySlackSignature(SIGNING_SECRET, undefined, '{}', 'v0=abc')
+        const body = '{"type":"event_callback"}'
+
+        const result = verifySlackSignature(SECRET, undefined, body, 'v0=something')
         expect(result.valid).toBe(false)
-        expect(result.error).toBe('Missing signature or timestamp headers')
+        expect(result.error).toBe('Missing timestamp header')
+    })
+
+    it('should reject when signature header is missing', () => {
+        const ts = nowTs()
+        const body = '{"type":"event_callback"}'
+
+        const result = verifySlackSignature(SECRET, ts, body, undefined)
+        expect(result.valid).toBe(false)
+        expect(result.error).toBe('Missing signature header')
     })
 })
