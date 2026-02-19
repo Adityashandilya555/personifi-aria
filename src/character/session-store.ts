@@ -42,9 +42,16 @@ export function initDatabase(databaseUrl: string): void {
     connectionString: cleanUrl,
     max: 10,
     idleTimeoutMillis: 30000,
-    ssl: {
-      rejectUnauthorized: false, // Accept DigitalOcean's managed DB certificate
-    },
+    ssl: process.env.NODE_ENV === 'production'
+      ? {
+        ca: process.env.DATABASE_CA_CERT
+          ? Buffer.from(process.env.DATABASE_CA_CERT, 'base64').toString()
+          : undefined,
+        rejectUnauthorized: !!process.env.DATABASE_CA_CERT,
+      }
+      : {
+        rejectUnauthorized: false, // Allow self-signed certs in development
+      },
   })
 }
 
