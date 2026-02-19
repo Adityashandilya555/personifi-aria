@@ -9,7 +9,9 @@
  *   4. Future searches fan out across all linked user_ids
  */
 
+import { randomInt } from 'node:crypto'
 import { getPool } from './character/session-store.js'
+import type { PoolClient } from 'pg'
 
 const LINK_CODE_EXPIRY_MINUTES = parseInt(process.env.LINK_CODE_EXPIRY_MINUTES || '10', 10)
 
@@ -23,13 +25,11 @@ export async function generateLinkCode(userId: string): Promise<string> {
     const pool = getPool()
 
     // Get this user's person_id
-    const userResult = await pool.query(
-        'SELECT person_id FROM users WHERE user_id = $1',
-        [userId]
-    )
+    const userResult = await pool.query('SELECT person_id FROM users WHERE user_id = $1', [userId])
     if (userResult.rows.length === 0) {
         throw new Error('User not found')
     }
+
     const personId = userResult.rows[0].person_id
     if (!personId) {
         throw new Error('User has no person_id — run identity.sql migration')
@@ -85,20 +85,15 @@ export async function redeemLinkCode(
     if (linkCode.redeemed) {
         return { success: false, message: 'This code has already been used.' }
     }
-
     if (new Date(linkCode.expires_at) < new Date()) {
         return { success: false, message: 'This code has expired. Generate a new one with /link on your other device.' }
     }
-
     if (linkCode.user_id === userId) {
         return { success: false, message: "You can't link to yourself! Send /link on your other channel." }
     }
 
     // Get the redeeming user's current person_id
-    const redeemingUser = await pool.query(
-        'SELECT person_id FROM users WHERE user_id = $1',
-        [userId]
-    )
+    const redeemingUser = await pool.query('SELECT person_id FROM users WHERE user_id = $1', [userId])
     if (redeemingUser.rows.length === 0) {
         return { success: false, message: 'User not found.' }
     }
@@ -117,17 +112,11 @@ export async function redeemLinkCode(
         await client.query('BEGIN')
 
         // 1. Update the redeeming user's person_id to the primary
-        await client.query(
-            'UPDATE users SET person_id = $1 WHERE user_id = $2',
-            [primaryPersonId, userId]
-        )
+        await client.query('UPDATE users SET person_id = $1 WHERE user_id = $2', [primaryPersonId, userId])
 
         // 2. Update any other users that shared the old person_id
         if (oldPersonId) {
-            await client.query(
-                'UPDATE users SET person_id = $1 WHERE person_id = $2',
-                [primaryPersonId, oldPersonId]
-            )
+            await client.query('UPDATE users SET person_id = $1 WHERE person_id = $2', [primaryPersonId, oldPersonId])
         }
 
         // 3. Merge memories, graph, preferences, goals
@@ -166,7 +155,6 @@ export async function redeemLinkCode(
  */
 export async function getLinkedUserIds(userId: string): Promise<string[]> {
     const pool = getPool()
-
     const result = await pool.query(
         `SELECT u2.user_id
          FROM users u1
@@ -174,14 +162,13 @@ export async function getLinkedUserIds(userId: string): Promise<string[]> {
          WHERE u1.user_id = $1 AND u1.person_id IS NOT NULL`,
         [userId]
     )
-
-    return result.rows.map((r: any) => r.user_id)
+    return result.rows.map((r: { user_id: string }) => r.user_id)
 }
 
 // ─── Internal Helpers ────────────────────────────────────────────────────────
 
-function generateSixDigitCode(): string {
-    return String(Math.floor(100000 + Math.random() * 900000))
+export function generateSixDigitCode(): string {
+    return String(randomInt(100_000, 1_000_000))
 }
 
 /**
@@ -189,7 +176,7 @@ function generateSixDigitCode(): string {
  * This is called within a transaction.
  */
 async function mergeUserData(
-    client: any,
+    client: PoolClient,
     primaryPersonId: string,
     secondaryUserId: string,
     oldPersonId: string | null
@@ -200,7 +187,6 @@ async function mergeUserData(
     // but is queryable via the person_id linkage.
     //
     // However, if the old person had separate person-level data, we merge that.
-
     // Merge display_name to primary person if not set
     if (oldPersonId) {
         await client.query(
@@ -213,7 +199,5 @@ async function mergeUserData(
         )
     }
 
-    console.log(
-        `[identity] Merged user ${secondaryUserId} (person: ${oldPersonId}) → primary person: ${primaryPersonId}`
-    )
+    console.log(`[identity] Merged user ${secondaryUserId} (person: ${oldPersonId}) → primary person: ${primaryPersonId}`)
 }
