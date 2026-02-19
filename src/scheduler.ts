@@ -198,6 +198,49 @@ async function scrapeAndNotifyDeals(sendMessage: SendMessageFn) {
 }
 
 /**
+ * Extract price and currency from a tool execution result.
+ * Prefers structured `raw` data (Amadeus / SerpAPI) over regex on the formatted string.
+ * Handles comma-separated numbers (e.g. "INR 12,500").
+ */
+export function extractPriceFromResult(
+  data: { formatted?: string; raw?: any },
+  alertCurrency?: string
+): { price: number; currency: string } | null {
+  let currentPrice: number | null = null
+  let currency = alertCurrency || 'USD'
+
+  // 1. Prefer structured raw data
+  if (data.raw) {
+    // Amadeus format: array of offers with price.total / price.currency
+    if (Array.isArray(data.raw) && data.raw[0]?.price?.total) {
+      currentPrice = parseFloat(data.raw[0].price.total)
+      if (data.raw[0].price.currency) currency = data.raw[0].price.currency
+    }
+    // SerpAPI format: array of flights with .price (number)
+    else if (Array.isArray(data.raw) && typeof data.raw[0]?.price === 'number') {
+      currentPrice = data.raw[0].price
+    }
+  }
+
+  // 2. Fallback to regex on formatted string (handles commas like "12,500")
+  if (currentPrice === null && data.formatted) {
+    const priceMatch =
+      data.formatted.match(/([A-Z]{3})\s+([\d,]+(?:\.\d{1,2})?)/)
+      || data.formatted.match(/\$([\d,]+(?:\.\d{1,2})?)/)
+    if (priceMatch) {
+      const priceStr = (priceMatch[2] ?? priceMatch[1]).replace(/,/g, '')
+      currentPrice = parseFloat(priceStr)
+      if (priceMatch[2]) currency = priceMatch[1]
+    }
+  }
+
+  if (currentPrice !== null && !isNaN(currentPrice)) {
+    return { price: currentPrice, currency }
+  }
+  return null
+}
+
+/**
  * Check active price alerts
  */
 async function checkPriceAlerts(sendMessage: SendMessageFn) {
@@ -228,16 +271,11 @@ async function checkPriceAlerts(sendMessage: SendMessageFn) {
       })
 
       if (result.success && result.data) {
-        // Extract formatted string from ToolExecutionResult data
-        const dataObj = result.data as { formatted?: string; raw?: unknown }
-        const formatted = typeof dataObj === 'string' ? dataObj : (dataObj.formatted || '')
+        const dataObj = result.data as { formatted?: string; raw?: any }
+        const extracted = extractPriceFromResult(dataObj, alert.currency)
 
-        // Match "USD 123.45" (Amadeus) or "$123" (SerpAPI fallback)
-        const priceMatch = formatted.match(/([A-Z]{3})\s+(\d+(?:\.\d{1,2})?)/)
-            || formatted.match(/\$(\d+(?:\.\d{1,2})?)/)
-        if (priceMatch) {
-          const currentPrice = parseFloat(priceMatch[2] ?? priceMatch[1])
-          const currency = priceMatch[2] ? priceMatch[1] : 'USD'
+        if (extracted) {
+          const { price: currentPrice, currency } = extracted
 
           // Update last checked
           await pool.query(
@@ -247,6 +285,7 @@ async function checkPriceAlerts(sendMessage: SendMessageFn) {
 
           // Check if below target
           if (alert.target_price && currentPrice <= alert.target_price) {
+            const formatted = dataObj.formatted || ''
             await sendMessage(
               alert.channel_user_id,
               `🚨 **Price Alert!**\n\nFlight from ${alert.origin} to ${alert.destination} is now ${currency} ${currentPrice} (Target: ${alert.target_price})!\n\n${formatted.split('\n')[1] || 'Check it out!'}`
