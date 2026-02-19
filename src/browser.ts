@@ -10,6 +10,147 @@ import { chromium } from 'playwright-extra'
 // @ts-ignore
 import stealthPlugin from 'puppeteer-extra-plugin-stealth'
 import { Browser, BrowserContext, Page } from 'playwright'
+import { lookup as dnsLookup } from 'node:dns/promises'
+import { isIPv4, isIPv6 } from 'node:net'
+
+// ============================================
+// SSRF Protection — URL Validation
+// ============================================
+
+/** Blocked private/reserved IPv4 CIDR ranges */
+const BLOCKED_IPV4_PREFIXES = [
+  '10.',         // 10.0.0.0/8
+  '127.',        // 127.0.0.0/8 (loopback)
+  '169.254.',    // 169.254.0.0/16 (link-local / cloud metadata)
+  '192.168.',    // 192.168.0.0/16
+  '0.',          // 0.0.0.0/8
+]
+
+function isBlockedIPv4(ip: string): boolean {
+  // Check known prefixes first
+  if (BLOCKED_IPV4_PREFIXES.some(p => ip.startsWith(p))) return true
+
+  const parts = ip.split('.').map(p => parseInt(p, 10))
+  if (parts.length !== 4) return false // Should be valid IPv4 if checking here
+
+  const [first, second] = parts
+
+  // 172.16.0.0/12 — 172.16.x to 172.31.x
+  if (first === 172 && second >= 16 && second <= 31) return true
+
+  // 100.64.0.0/10 — 100.64.x to 100.127.x (Carrier-Grade NAT)
+  if (first === 100 && second >= 64 && second <= 127) return true
+
+  // 198.18.0.0/15 — 198.18.x and 198.19.x (Benchmark)
+  if (first === 198 && (second === 18 || second === 19)) return true
+
+  // 240.0.0.0/4 — 240.x to 255.x (Reserved for Future Use)
+  if (first >= 240) return true // Includes 255.255.255.255 (Broadcast)
+
+  return false
+}
+
+function isBlockedIPv6(ip: string): boolean {
+  const normalized = ip.toLowerCase()
+
+  // IPv4-mapped IPv6 — dotted-decimal form (e.g., ::ffff:127.0.0.1)
+  const v4DottedMatch = normalized.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/)
+  if (v4DottedMatch) {
+    return isBlockedIPv4(v4DottedMatch[1])
+  }
+
+  // Expanded IPv4-mapped IPv6 (e.g., 0:0:0:0:0:ffff:127.0.0.1)
+  const v4ExpandedMatch = normalized.match(/^(?:0:){5}ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/)
+  if (v4ExpandedMatch) {
+    return isBlockedIPv4(v4ExpandedMatch[1])
+  }
+
+  // IPv4-mapped IPv6 — hex-normalized form (e.g., ::ffff:7f00:1)
+  // URL parser often normalizes ::ffff:127.0.0.1 → ::ffff:7f00:1
+  const v4HexMatch = normalized.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/)
+  if (v4HexMatch) {
+    const high = parseInt(v4HexMatch[1], 16)
+    const low = parseInt(v4HexMatch[2], 16)
+    const dotted = `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`
+    return isBlockedIPv4(dotted)
+  }
+
+  return normalized === '::1'
+    || normalized === '::' // Unspecified address
+    || normalized.startsWith('fc')
+    || normalized.startsWith('fd')
+    || normalized.startsWith('fe80')
+}
+
+/**
+ * Validate a URL is safe to navigate to (prevents SSRF).
+ * Blocks private IPs, cloud metadata endpoints, and non-HTTP(S) schemes.
+ * Resolves the hostname via DNS to check the actual IP address.
+ */
+export async function validateUrl(url: string): Promise<void> {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    throw new Error(`[BROWSER] Invalid URL: ${url}`)
+  }
+
+  // Only allow http/https
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`[BROWSER] Blocked URL with scheme '${parsed.protocol}': ${url}`)
+  }
+
+  const hostname = parsed.hostname
+
+  // Strip brackets from IPv6 addresses (URL parser keeps them)
+  const bareHost = hostname.startsWith('[') && hostname.endsWith(']')
+    ? hostname.slice(1, -1)
+    : hostname
+
+  // Check if hostname is a raw IP
+  if (isIPv4(bareHost)) {
+    if (isBlockedIPv4(bareHost)) {
+      throw new Error(`[BROWSER] Blocked private/reserved IP: ${bareHost}`)
+    }
+    return
+  }
+  if (isIPv6(bareHost)) {
+    if (isBlockedIPv6(bareHost)) {
+      throw new Error(`[BROWSER] Blocked private/reserved IP: ${bareHost}`)
+    }
+    return
+  }
+
+  // Block common metadata hostnames
+  if (hostname === 'metadata.google.internal' || hostname === 'metadata.internal') {
+    throw new Error(`[BROWSER] Blocked metadata endpoint: ${hostname}`)
+  }
+
+  // Resolve hostname (both A and AAAA records) and check the resulting IPs
+  try {
+    const entries = await dnsLookup(hostname, { all: true })
+    for (const { address, family } of entries) {
+      if (family === 4 && isBlockedIPv4(address)) {
+        throw new Error(`[BROWSER] Hostname '${hostname}' resolves to blocked IP: ${address}`)
+      }
+      if (family === 6 && isBlockedIPv6(address)) {
+        throw new Error(`[BROWSER] Hostname '${hostname}' resolves to blocked IP: ${address}`)
+      }
+    }
+  } catch (err: any) {
+    // Re-throw our own validation errors
+    if (err.message?.startsWith('[BROWSER]')) throw err
+    // DNS resolution failure — block to be safe
+    throw new Error(`[BROWSER] DNS resolution failed for '${hostname}': ${err.message}`)
+  }
+}
+
+/**
+ * Re-validate URL immediately before navigation to reduce TOCTOU window.
+ */
+async function revalidateBeforeNavigate(url: string): Promise<void> {
+  await validateUrl(url)
+}
 
 // Configure stealth mode
 chromium.use(stealthPlugin())
@@ -66,8 +207,12 @@ export interface AriaSnapshot {
 }
 
 export async function captureAriaSnapshot(url: string): Promise<AriaSnapshot> {
+  await validateUrl(url)
   const { page, context } = await getPage()
   try {
+    // Re-validate immediately before navigation (mitigate DNS rebinding)
+    await revalidateBeforeNavigate(url)
+
     console.log(`[BROWSER] Navigating to ${url}`)
     await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 })
 
@@ -96,17 +241,17 @@ export async function captureAriaSnapshot(url: string): Promise<AriaSnapshot> {
 // ============================================
 
 export interface InterceptedResponse {
-    url: string
-    body: any
+  url: string
+  body: any
 }
 
 interface InterceptionOptions {
-    /** URL to navigate to */
-    url: string
-    /** URL substrings to match against intercepted responses */
-    urlPatterns: string[]
-    /** Max time to wait for intercepted responses (ms) */
-    timeout?: number
+  /** URL to navigate to */
+  url: string
+  /** URL substrings to match against intercepted responses */
+  urlPatterns: string[]
+  /** Max time to wait for intercepted responses (ms) */
+  timeout?: number
 }
 
 /**
@@ -114,42 +259,46 @@ interface InterceptionOptions {
  * Returns collected JSON payloads. Context is closed after scraping.
  */
 export async function scrapeWithInterception(options: InterceptionOptions): Promise<InterceptedResponse[]> {
-    const { url, urlPatterns, timeout = 15000 } = options
-    const { page, context } = await getPage()
-    const collected: InterceptedResponse[] = []
+  const { url, urlPatterns, timeout = 15000 } = options
+  await validateUrl(url)
+  const { page, context } = await getPage()
+  const collected: InterceptedResponse[] = []
 
-    try {
-        // Register response listener before navigation
-        page.on('response', async (response) => {
-            const respUrl = response.url()
-            const matches = urlPatterns.some(pattern => respUrl.includes(pattern))
-            if (!matches) return
+  try {
+    // Re-validate immediately before navigation (mitigate DNS rebinding)
+    await revalidateBeforeNavigate(url)
 
-            try {
-                const body = await response.json()
-                collected.push({ url: respUrl, body })
-            } catch {
-                // Not JSON or response already disposed — skip
-            }
-        })
+    // Register response listener before navigation
+    page.on('response', async (response) => {
+      const respUrl = response.url()
+      const matches = urlPatterns.some(pattern => respUrl.includes(pattern))
+      if (!matches) return
 
-        console.log(`[BROWSER] Scraping ${url}`)
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout })
+      try {
+        const body = await response.json()
+        collected.push({ url: respUrl, body })
+      } catch {
+        // Not JSON or response already disposed — skip
+      }
+    })
 
-        // Wait for API responses to arrive
-        await page.waitForTimeout(Math.min(timeout / 2, 5000))
+    console.log(`[BROWSER] Scraping ${url}`)
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout })
 
-        // If nothing intercepted yet, wait a bit more
-        if (collected.length === 0) {
-            await page.waitForTimeout(3000)
-        }
-    } catch (error) {
-        console.error(`[BROWSER] Interception scrape failed for ${url}:`, error)
-    } finally {
-        await context.close()
+    // Wait for API responses to arrive
+    await page.waitForTimeout(Math.min(timeout / 2, 5000))
+
+    // If nothing intercepted yet, wait a bit more
+    if (collected.length === 0) {
+      await page.waitForTimeout(3000)
     }
+  } catch (error) {
+    console.error(`[BROWSER] Interception scrape failed for ${url}:`, error)
+  } finally {
+    await context.close()
+  }
 
-    return collected
+  return collected
 }
 
 // ============================================
