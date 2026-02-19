@@ -10,7 +10,7 @@ import { chromium } from 'playwright-extra'
 // @ts-ignore
 import stealthPlugin from 'puppeteer-extra-plugin-stealth'
 import { Browser, BrowserContext, Page } from 'playwright'
-import { resolve as dnsResolve } from 'node:dns/promises'
+import { lookup as dnsLookup } from 'node:dns/promises'
 import { isIPv4, isIPv6 } from 'node:net'
 
 // ============================================
@@ -27,18 +27,56 @@ const BLOCKED_IPV4_PREFIXES = [
 ]
 
 function isBlockedIPv4(ip: string): boolean {
+  // Check known prefixes first
   if (BLOCKED_IPV4_PREFIXES.some(p => ip.startsWith(p))) return true
+
+  const parts = ip.split('.').map(p => parseInt(p, 10))
+  if (parts.length !== 4) return false // Should be valid IPv4 if checking here
+
+  const [first, second] = parts
+
   // 172.16.0.0/12 — 172.16.x to 172.31.x
-  if (ip.startsWith('172.')) {
-    const second = parseInt(ip.split('.')[1], 10)
-    if (second >= 16 && second <= 31) return true
-  }
+  if (first === 172 && second >= 16 && second <= 31) return true
+
+  // 100.64.0.0/10 — 100.64.x to 100.127.x (Carrier-Grade NAT)
+  if (first === 100 && second >= 64 && second <= 127) return true
+
+  // 198.18.0.0/15 — 198.18.x and 198.19.x (Benchmark)
+  if (first === 198 && (second === 18 || second === 19)) return true
+
+  // 240.0.0.0/4 — 240.x to 255.x (Reserved for Future Use)
+  if (first >= 240) return true // Includes 255.255.255.255 (Broadcast)
+
   return false
 }
 
 function isBlockedIPv6(ip: string): boolean {
   const normalized = ip.toLowerCase()
+
+  // IPv4-mapped IPv6 — dotted-decimal form (e.g., ::ffff:127.0.0.1)
+  const v4DottedMatch = normalized.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/)
+  if (v4DottedMatch) {
+    return isBlockedIPv4(v4DottedMatch[1])
+  }
+
+  // Expanded IPv4-mapped IPv6 (e.g., 0:0:0:0:0:ffff:127.0.0.1)
+  const v4ExpandedMatch = normalized.match(/^(?:0:){5}ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/)
+  if (v4ExpandedMatch) {
+    return isBlockedIPv4(v4ExpandedMatch[1])
+  }
+
+  // IPv4-mapped IPv6 — hex-normalized form (e.g., ::ffff:7f00:1)
+  // URL parser often normalizes ::ffff:127.0.0.1 → ::ffff:7f00:1
+  const v4HexMatch = normalized.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/)
+  if (v4HexMatch) {
+    const high = parseInt(v4HexMatch[1], 16)
+    const low = parseInt(v4HexMatch[2], 16)
+    const dotted = `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`
+    return isBlockedIPv4(dotted)
+  }
+
   return normalized === '::1'
+    || normalized === '::' // Unspecified address
     || normalized.startsWith('fc')
     || normalized.startsWith('fd')
     || normalized.startsWith('fe80')
@@ -88,15 +126,15 @@ export async function validateUrl(url: string): Promise<void> {
     throw new Error(`[BROWSER] Blocked metadata endpoint: ${hostname}`)
   }
 
-  // Resolve hostname and check the resulting IPs
+  // Resolve hostname (both A and AAAA records) and check the resulting IPs
   try {
-    const addresses = await dnsResolve(hostname)
-    for (const addr of addresses) {
-      if (isIPv4(addr) && isBlockedIPv4(addr)) {
-        throw new Error(`[BROWSER] Hostname '${hostname}' resolves to blocked IP: ${addr}`)
+    const entries = await dnsLookup(hostname, { all: true })
+    for (const { address, family } of entries) {
+      if (family === 4 && isBlockedIPv4(address)) {
+        throw new Error(`[BROWSER] Hostname '${hostname}' resolves to blocked IP: ${address}`)
       }
-      if (isIPv6(addr) && isBlockedIPv6(addr)) {
-        throw new Error(`[BROWSER] Hostname '${hostname}' resolves to blocked IP: ${addr}`)
+      if (family === 6 && isBlockedIPv6(address)) {
+        throw new Error(`[BROWSER] Hostname '${hostname}' resolves to blocked IP: ${address}`)
       }
     }
   } catch (err: any) {
@@ -105,6 +143,13 @@ export async function validateUrl(url: string): Promise<void> {
     // DNS resolution failure — block to be safe
     throw new Error(`[BROWSER] DNS resolution failed for '${hostname}': ${err.message}`)
   }
+}
+
+/**
+ * Re-validate URL immediately before navigation to reduce TOCTOU window.
+ */
+async function revalidateBeforeNavigate(url: string): Promise<void> {
+  await validateUrl(url)
 }
 
 // Configure stealth mode
@@ -165,6 +210,9 @@ export async function captureAriaSnapshot(url: string): Promise<AriaSnapshot> {
   await validateUrl(url)
   const { page, context } = await getPage()
   try {
+    // Re-validate immediately before navigation (mitigate DNS rebinding)
+    await revalidateBeforeNavigate(url)
+
     console.log(`[BROWSER] Navigating to ${url}`)
     await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 })
 
@@ -217,6 +265,9 @@ export async function scrapeWithInterception(options: InterceptionOptions): Prom
   const collected: InterceptedResponse[] = []
 
   try {
+    // Re-validate immediately before navigation (mitigate DNS rebinding)
+    await revalidateBeforeNavigate(url)
+
     // Register response listener before navigation
     page.on('response', async (response) => {
       const respUrl = response.url()

@@ -1,5 +1,14 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { validateUrl } from './browser.js'
+import { lookup as dnsLookup } from 'node:dns/promises'
+
+vi.mock('node:dns/promises', () => ({
+    lookup: vi.fn(async (hostname: string, options: any) => {
+        // Use dynamic import to access the real resolver
+        const { lookup } = await vi.importActual<typeof import('node:dns/promises')>('node:dns/promises')
+        return lookup(hostname, options)
+    }),
+}))
 
 describe('validateUrl (SSRF protection)', () => {
 
@@ -50,6 +59,29 @@ describe('validateUrl (SSRF protection)', () => {
         await expect(validateUrl('http://172.15.0.1')).resolves.toBeUndefined()
     })
 
+    it('should block 0.0.0.0', async () => {
+        await expect(validateUrl('http://0.0.0.0')).rejects.toThrow('Blocked private/reserved IP')
+    })
+
+    it('should block 100.64.0.0/10 (Carrier-Grade NAT)', async () => {
+        await expect(validateUrl('http://100.64.0.1')).rejects.toThrow('Blocked private/reserved IP')
+        await expect(validateUrl('http://100.127.255.255')).rejects.toThrow('Blocked private/reserved IP')
+    })
+
+    it('should block 198.18.0.0/15 (Benchmark)', async () => {
+        await expect(validateUrl('http://198.18.0.1')).rejects.toThrow('Blocked private/reserved IP')
+        await expect(validateUrl('http://198.19.255.255')).rejects.toThrow('Blocked private/reserved IP')
+    })
+
+    it('should block 240.0.0.0/4 (Reserved)', async () => {
+        await expect(validateUrl('http://240.0.0.1')).rejects.toThrow('Blocked private/reserved IP')
+        await expect(validateUrl('http://255.255.255.254')).rejects.toThrow('Blocked private/reserved IP')
+    })
+
+    it('should block 255.255.255.255 (Broadcast)', async () => {
+        await expect(validateUrl('http://255.255.255.255')).rejects.toThrow('Blocked private/reserved IP')
+    })
+
     it('should block 169.254.169.254 (cloud metadata)', async () => {
         await expect(validateUrl('http://169.254.169.254/latest/meta-data')).rejects.toThrow('Blocked private/reserved IP')
     })
@@ -60,9 +92,38 @@ describe('validateUrl (SSRF protection)', () => {
         await expect(validateUrl('http://metadata.google.internal')).rejects.toThrow('Blocked metadata endpoint')
     })
 
+    it('should block metadata.internal', async () => {
+        await expect(validateUrl('http://metadata.internal')).rejects.toThrow('Blocked metadata endpoint')
+    })
+
     // ── Should block: private IPv6 ────────────────────────────────
 
     it('should block ::1 (IPv6 loopback)', async () => {
         await expect(validateUrl('http://[::1]')).rejects.toThrow('Blocked private/reserved IP')
+    })
+
+    it('should block :: (IPv6 unspecified)', async () => {
+        await expect(validateUrl('http://[::]')).rejects.toThrow('Blocked private/reserved IP')
+    })
+
+    it('should block ::ffff:127.0.0.1 (IPv4-mapped IPv6 bypass)', async () => {
+        await expect(validateUrl('http://[::ffff:127.0.0.1]')).rejects.toThrow('Blocked private/reserved IP')
+    })
+
+    it('should block 0:0:0:0:0:ffff:127.0.0.1 (Expanded IPv4-mapped IPv6)', async () => {
+        await expect(validateUrl('http://[0:0:0:0:0:ffff:127.0.0.1]')).rejects.toThrow('Blocked private/reserved IP')
+    })
+
+    it('should block fd00::1 (IPv6 ULA)', async () => {
+        await expect(validateUrl('http://[fd00::1]')).rejects.toThrow('Blocked private/reserved IP')
+    })
+
+    // ── Should block: DNS-resolved private IPs ────────────────────
+
+    it('should block hostnames that resolve to private IPs', async () => {
+        const mockedLookup = vi.mocked(dnsLookup)
+        mockedLookup.mockResolvedValueOnce([{ address: '127.0.0.1', family: 4 }] as any)
+
+        await expect(validateUrl('http://evil-rebind.attacker.com')).rejects.toThrow('resolves to blocked IP')
     })
 })
