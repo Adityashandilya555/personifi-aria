@@ -40,7 +40,7 @@ export async function getWeather(params: WeatherParams): Promise<ToolExecutionRe
             success: true,
             data: {
                 formatted: `Current weather in ${data.name}, ${data.sys.country}:\n` +
-                    `- **${temp}°C** (Feels like ${feelsLike}°C)\n` +
+                    `- <b>${temp}°C</b> (Feels like ${feelsLike}°C)\n` +
                     `- ${desc.charAt(0).toUpperCase() + desc.slice(1)}\n` +
                     `- Humidity: ${humidity}%\n` +
                     `- Wind: ${wind} km/h`,

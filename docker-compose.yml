@@ -39,6 +39,24 @@ services:
       - BROWSER_SCRAPING_ENABLED=${BROWSER_SCRAPING_ENABLED:-true}
       # Identity
       - LINK_CODE_EXPIRY_MINUTES=${LINK_CODE_EXPIRY_MINUTES:-10}
+      # Travel tools
+      - AMADEUS_API_KEY=${AMADEUS_API_KEY}
+      - AMADEUS_API_SECRET=${AMADEUS_API_SECRET}
+      - SERPAPI_KEY=${SERPAPI_KEY}
+      - RAPIDAPI_KEY=${RAPIDAPI_KEY}
+      - OPENWEATHERMAP_API_KEY=${OPENWEATHERMAP_API_KEY}
+      # Food/Grocery defaults
+      - DEFAULT_LAT=${DEFAULT_LAT:-12.9716}
+      - DEFAULT_LNG=${DEFAULT_LNG:-77.5946}
+      - DEFAULT_CACHE_LOCATION=${DEFAULT_CACHE_LOCATION:-Bengaluru}
+      # Swiggy MCP (run npm run setup:mcp locally to get these)
+      - SWIGGY_MCP_TOKEN=${SWIGGY_MCP_TOKEN}
+      - SWIGGY_MCP_REFRESH_TOKEN=${SWIGGY_MCP_REFRESH_TOKEN}
+      # Zomato MCP
+      - ZOMATO_MCP_CLIENT_ID=${ZOMATO_MCP_CLIENT_ID}
+      - ZOMATO_MCP_CLIENT_SECRET=${ZOMATO_MCP_CLIENT_SECRET}
+      - ZOMATO_MCP_TOKEN=${ZOMATO_MCP_TOKEN}
+      - ZOMATO_MCP_REFRESH_TOKEN=${ZOMATO_MCP_REFRESH_TOKEN}
     # Playwright needs more shared memory
     shm_size: 1gb
     healthcheck:

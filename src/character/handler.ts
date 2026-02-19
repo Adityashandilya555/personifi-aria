@@ -112,20 +112,41 @@ export interface MessageResponse {
 }
 
 /**
- * Extract dish/restaurant images from tool raw data for sending as media.
- * Currently supports food comparison tool results (Swiggy dish images).
+ * Extract images from tool raw data for sending as Telegram photos.
+ * Supports:
+ *   - Food comparison (Swiggy dish images via raw[].items[].imageUrl)
+ *   - Grocery comparison (Blinkit/Instamart/Zepto via data.images[])
+ *   - Single-platform food search (raw[].items[].imageUrl)
  */
 function extractMediaFromToolResult(rawData: unknown): MessageResponse['media'] | undefined {
   if (!rawData || typeof rawData !== 'object') return undefined
 
   const data = rawData as any
-  // Food comparison results have raw[] with items containing imageUrl
+
+  // Grocery comparison: has a top-level images[] array with {url, caption}
+  if (Array.isArray(data?.images)) {
+    const media = data.images
+      .filter((img: any) => img?.url)
+      .slice(0, 6)
+      .map((img: any) => ({
+        type: 'photo' as const,
+        url: img.url,
+        caption: img.caption,
+      }))
+    if (media.length > 0) return media
+  }
+
+  // Food comparison: raw[] contains restaurant objects with items[].imageUrl
   const results = data?.raw ?? data
   if (!Array.isArray(results)) return undefined
 
   const media: { type: 'photo'; url: string; caption?: string }[] = []
 
   for (const r of results) {
+    // Restaurant-level image
+    if (r?.restaurantImageUrl && media.length === 0) {
+      // Only add restaurant image if no dish images yet
+    }
     if (!r?.items || !Array.isArray(r.items)) continue
     for (const item of r.items) {
       if (item.imageUrl && media.length < 5) {

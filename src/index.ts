@@ -8,6 +8,7 @@ import cors from '@fastify/cors'
 import { handleMessage, initDatabase, registerBrainHooks } from './character/index.js'
 import { brainHooks } from './brain/index.js'
 import { initScheduler } from './scheduler.js'
+import { initMCPTokenStore } from './tools/mcp-client.js'
 import { initBrowser, closeBrowser } from './browser.js'
 import './tools/index.js'  // Register body hooks (DEV 2 tools)
 import { verifySlackSignature } from './slack-verify.js'
@@ -184,6 +185,9 @@ const start = async () => {
     }
     initDatabase(dbUrl)
 
+    // Load persisted MCP tokens from DB into process.env (survives container restarts)
+    await initMCPTokenStore(dbUrl)
+
     // Register Brain Hooks (Dev 1)
     registerBrainHooks(brainHooks)
 
@@ -212,6 +216,12 @@ const start = async () => {
 
 // Graceful shutdown
 process.on('SIGTERM', async () => {
+  await closeBrowser()
+  await server.close()
+  process.exit(0)
+})
+
+process.on('SIGINT', async () => {
   await closeBrowser()
   await server.close()
   process.exit(0)

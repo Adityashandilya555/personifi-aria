@@ -98,7 +98,7 @@ export async function searchHotels(params: HotelSearchParams): Promise<ToolExecu
             const address = h.address || h.district || ''
             const url = h.url
 
-            return `- **${name}** ${stars}\n  Price: ${currencyCode} ${price}\n  Rating: ${score}/10\n  Address: ${address}\n  [Book Now](${url})`
+            return `- <b>${name}</b> ${stars}\n  Price: ${currencyCode} ${price}\n  Rating: ${score}/10\n  Address: ${address}\n  <a href="${url}">Book Now</a>`
         }).join('\n\n')
 
         return {

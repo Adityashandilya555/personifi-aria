@@ -68,14 +68,20 @@ Keep the response very concise. This is internal reasoning, not the actual respo
 
 // ─── Classifier Prompt (Slim — tool schemas are passed via native tools[]) ───
 
-const CLASSIFIER_PROMPT = `You are a travel chatbot message router. Decide how to handle the user's message.
+const CLASSIFIER_PROMPT = `You are a travel and food chatbot message router. Decide how to handle the user's message.
 
-If the user needs real-time data (flights, hotels, weather, places, currency, transport), call the appropriate tool.
+Call the appropriate tool when the user needs real-time data:
+- Flights, hotels, weather, places, currency, transport → use those tools
+- Food delivery comparison (Swiggy vs Zomato, which restaurant, dish prices, coupons) → compare_food_prices
+- Grocery prices (milk, eggs, vegetables, snacks, any product) or quick delivery apps (Blinkit, Instamart, Zepto) → compare_grocery_prices
+- Swiggy-specific restaurant search or Swiggy offers → search_swiggy_food
+- Table booking, dine-out, restaurant for sitting → search_dineout
+
 If no tool is needed, respond with a short classification only.
 
 When NOT calling a tool, reply with JSON:
 {"c":"simple"} — for greetings, farewells, yes/no, thanks
-{"c":"moderate"} — for general travel chat, opinions, follow-ups
+{"c":"moderate"} — for general travel/food chat, opinions, follow-ups
 {"c":"complex"} — for complex questions that need memory/context but no tool`
 
 // ─── Public API ─────────────────────────────────────────────────────────────

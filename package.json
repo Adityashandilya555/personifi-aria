@@ -9,7 +9,11 @@
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "setup:swiggy": "npx tsx src/setup-swiggy.ts",
+    "setup:mcp": "npx tsx src/setup-mcp.ts",
+    "setup:mcp:swiggy": "npx tsx src/setup-mcp.ts swiggy",
+    "setup:mcp:zomato": "npx tsx src/setup-mcp.ts zomato"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.0",
