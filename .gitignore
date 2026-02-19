@@ -1,4 +1,52 @@
+# ─── Dependencies ────────────────────────────────────────────────────────────
 node_modules/
+
+# ─── Build Output ────────────────────────────────────────────────────────────
 dist/
+build/
+out/
+
+# ─── Environment & Secrets ───────────────────────────────────────────────────
 .env
+.env.*
+!.env.example
+
+# ─── Logs ────────────────────────────────────────────────────────────────────
+logs/
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ─── TypeScript ──────────────────────────────────────────────────────────────
+*.tsbuildinfo
+
+# ─── Test & Coverage ─────────────────────────────────────────────────────────
+coverage/
+.nyc_output/
+
+# ─── Cache ───────────────────────────────────────────────────────────────────
+.cache/
+.turbo/
+.vitest/
+.eslintcache
+.parcel-cache/
+
+# ─── OS Files ────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Editor / IDE ────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ─── Playwright ──────────────────────────────────────────────────────────────
+playwright-report/
+test-results/
