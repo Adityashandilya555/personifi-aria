@@ -196,10 +196,21 @@ const start = async () => {
       await initBrowser()
     }
 
-    // Initialize proactive scheduler
-    initScheduler(dbUrl, async (chatId: string, text: string) => {
-      // Default to Telegram for proactive messages
-      await sendChannelMessage('telegram', chatId, text)
+    // Initialize proactive scheduler with rich send functions (text, photo, keyboard)
+    initScheduler(dbUrl, {
+      text: async (chatId, text) => {
+        await sendChannelMessage('telegram', chatId, text)
+      },
+      photo: async (chatId, media) => {
+        if (channels.telegram.isEnabled() && channels.telegram.sendMedia) {
+          await channels.telegram.sendMedia(chatId, media)
+        }
+      },
+      keyboard: async (chatId, text, buttons) => {
+        if (channels.telegram.isEnabled() && channels.telegram.sendMessageWithKeyboard) {
+          await channels.telegram.sendMessageWithKeyboard(chatId, text, buttons)
+        }
+      },
     })
 
     // Start server
