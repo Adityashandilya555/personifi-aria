@@ -11,6 +11,7 @@ import { initScheduler } from './scheduler.js'
 import { initBrowser, closeBrowser } from './browser.js'
 import './tools/index.js'  // Register body hooks (DEV 2 tools)
 import { verifySlackSignature } from './slack-verify.js'
+import { createHash, timingSafeEqual } from 'node:crypto'
 import {
   channels,
   getEnabledChannels,
@@ -76,7 +77,13 @@ server.post('/webhook/telegram', async (request, reply) => {
   const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET
   if (webhookSecret) {
     const headerSecret = request.headers['x-telegram-bot-api-secret-token']
-    if (headerSecret !== webhookSecret) {
+    const incomingToken = Array.isArray(headerSecret) ? headerSecret[0] : (headerSecret || '')
+
+    // Compute SHA-256 digests for timing-safe comparison
+    const expectedDigest = createHash('sha256').update(webhookSecret).digest()
+    const actualDigest = createHash('sha256').update(incomingToken).digest()
+
+    if (!timingSafeEqual(expectedDigest, actualDigest)) {
       server.log.warn('Telegram webhook: invalid secret token')
       return reply.code(403).send({ ok: false, error: 'Forbidden' })
     }
