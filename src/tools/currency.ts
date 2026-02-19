@@ -38,7 +38,7 @@ export async function convertCurrency(params: CurrencyParams): Promise<ToolExecu
 
         return {
             success: true,
-            data: { formatted: `${amount} ${fromCode} = **${result} ${toCode}** (Rate: ${rate})`, raw: { rate, result } },
+            data: { formatted: `${amount} ${fromCode} = <b>${result} ${toCode}</b> (Rate: ${rate})`, raw: { rate, result } },
         }
 
     } catch (error: any) {

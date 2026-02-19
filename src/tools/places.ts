@@ -1,3 +1,4 @@
+
 import type { ToolExecutionResult } from '../hooks.js'
 
 interface PlaceSearchParams {
@@ -83,7 +84,7 @@ export async function searchPlaces(params: PlaceSearchParams): Promise<ToolExecu
             const price = place.priceLevel ? `(Price: ${place.priceLevel})` : ''
             const type = place.primaryType ? `[${place.primaryType}]` : ''
 
-            return `- **${name}** ${type}\n  ${rating} ${price}\n  ${address}\n  [View on Maps](${link})`
+            return `- <b>${name}</b> ${type}\n  ${rating} ${price}\n  ${address}\n  <a href="${link}">View on Maps</a>`
         }).join('\n\n')
 
         return {

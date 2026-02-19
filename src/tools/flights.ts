@@ -68,7 +68,7 @@ export async function searchFlights(params: FlightSearchParams): Promise<ToolExe
         // Format results
         const offers = response.data.map((offer: any) => {
             if (!offer.itineraries || offer.itineraries.length === 0) {
-                return `- **${offer.price?.currency || ''} ${offer.price?.total || 'N/A'}**: (no itinerary data)`
+                return `- <b>${offer.price?.currency || ''} ${offer.price?.total || 'N/A'}</b>: (no itinerary data)`
             }
             const itinerary = offer.itineraries[0]
             const duration = itinerary.duration.replace('PT', '').toLowerCase()
@@ -78,7 +78,7 @@ export async function searchFlights(params: FlightSearchParams): Promise<ToolExe
 
             const price = `${offer.price.currency} ${offer.price.total}`
 
-            return `- **${price}**: ${segments} (Duration: ${duration})`
+            return `- <b>${price}</b>: ${segments} (Duration: ${duration})`
         }).join('\n')
 
         return {
@@ -180,7 +180,7 @@ function formatSerpApiFlights(flights: any[], origin: string, destination: strin
         }).join(', ')
 
         const priceDisplay = price != null ? `$${price}` : 'N/A'
-        return `- **${priceDisplay}**: ${airline} ${flightNumbers} (${times}) [${duration}]`
+        return `- <b>${priceDisplay}</b>: ${airline} ${flightNumbers} (${times}) [${duration}]`
     }).join('\n')
 
     return {

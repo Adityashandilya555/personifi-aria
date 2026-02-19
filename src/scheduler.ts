@@ -10,6 +10,9 @@ import Groq from 'groq-sdk'
 import { processEmbeddingQueue } from './embeddings.js'
 import { searchFlights } from './tools/flights.js'
 import { scrapeTravelDeals } from './browser.js'
+import { compareFoodPrices } from './tools/food-compare.js'
+import { compareGroceryPrices } from './tools/grocery-compare.js'
+import { refreshAllMCPTokens } from './tools/mcp-client.js'
 
 let pool: Pool | null = null
 
@@ -28,6 +31,20 @@ export function initScheduler(databaseUrl: string, sendMessage: SendMessageFn) {
 
   // Weekly travel deals scrape on Sundays at 10 AM
   cron.schedule('0 10 * * 0', () => scrapeAndNotifyDeals(sendMessage))
+
+  // Food + Grocery cache pre-warming every 45 minutes
+  // Warms popular queries so users get instant responses instead of 8-15s scrape times
+  cron.schedule('*/45 * * * *', () => warmFoodGroceryCache())
+
+  // Proactive MCP token refresh every 6 hours
+  // Keeps Swiggy + Zomato tokens alive 24/7 without waiting for a 401
+  cron.schedule('0 */6 * * *', async () => {
+    try {
+      await refreshAllMCPTokens()
+    } catch (err) {
+      console.error('[SCHEDULER] MCP token refresh failed:', err)
+    }
+  })
 
   // DEV 3: Batch process pending embeddings every 5 minutes
   cron.schedule('*/5 * * * *', async () => {
@@ -265,6 +282,54 @@ async function checkPriceAlerts(sendMessage: SendMessageFn) {
   }
 }
 
+/**
+ * Pre-warm food and grocery caches with popular queries in Bengaluru.
+ * Runs every 45 minutes via cron so users get instant results on common queries.
+ * Runs in small parallel batches to avoid hammering the scrapers.
+ */
+async function warmFoodGroceryCache(): Promise<void> {
+  const FOOD_QUERIES = ['biryani', 'pizza', 'burger', 'noodles', 'chicken', 'paneer']
+  const GROCERY_QUERIES = ['milk', 'eggs', 'bread', 'rice', 'dal', 'maggi', 'coffee']
+  const LOCATION = process.env.DEFAULT_CACHE_LOCATION || 'Bengaluru'
+
+  console.log('[SCHEDULER] Starting food/grocery cache warm...')
+  const start = Date.now()
+  let foodHits = 0
+  let groceryHits = 0
+
+  // Food queries — 2 at a time
+  for (let i = 0; i < FOOD_QUERIES.length; i += 2) {
+    const batch = FOOD_QUERIES.slice(i, i + 2)
+    await Promise.allSettled(
+      batch.map(async (q) => {
+        try {
+          const r = await compareFoodPrices({ query: q, location: LOCATION })
+          if (r.success) foodHits++
+        } catch { /* non-fatal */ }
+      })
+    )
+    // Small jitter between batches to avoid bot detection
+    await new Promise(r => setTimeout(r, 1500 + Math.random() * 1000))
+  }
+
+  // Grocery queries — 2 at a time
+  for (let i = 0; i < GROCERY_QUERIES.length; i += 2) {
+    const batch = GROCERY_QUERIES.slice(i, i + 2)
+    await Promise.allSettled(
+      batch.map(async (q) => {
+        try {
+          const r = await compareGroceryPrices({ query: q })
+          if (r.success) groceryHits++
+        } catch { /* non-fatal */ }
+      })
+    )
+    await new Promise(r => setTimeout(r, 1500 + Math.random() * 1000))
+  }
+
+  const elapsed = Math.round((Date.now() - start) / 1000)
+  console.log(`[SCHEDULER] Cache warm done: ${foodHits}/${FOOD_QUERIES.length} food, ${groceryHits}/${GROCERY_QUERIES.length} grocery — ${elapsed}s`)
+}
+
 // Export for manual triggering
-export { checkInactiveUsers, sendDailyTips, scrapeAndNotifyDeals, checkPriceAlerts }
+export { checkInactiveUsers, sendDailyTips, scrapeAndNotifyDeals, checkPriceAlerts, warmFoodGroceryCache }
 

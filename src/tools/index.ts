@@ -1,7 +1,7 @@
 /**
  * Tool Registry — BodyHooks implementation (DEV 2)
- * Aggregates all travel tools and registers them with the hook system.
- * Exports Groq-compatible tool definitions for native function calling.
+ * Aggregates all travel + food + grocery tools and registers them with the hook system.
+ * Exports Groq-compatible tool definitions for native function calling on the 8B classifier.
  */
 
 import type Groq from 'groq-sdk'
@@ -15,6 +15,8 @@ import { searchPlaces, placeToolDefinition } from './places.js'
 import { convertCurrency, currencyToolDefinition } from './currency.js'
 import { getTransportEstimate, compareToolDefinition } from './compare.js'
 import { compareFoodPrices, foodCompareDefinition } from './food-compare.js'
+import { compareGroceryPrices, groceryCompareDefinition } from './grocery-compare.js'
+import { searchSwiggyFood, searchInstamartMCP, searchDineout, searchZomatoMCP, swiggyFoodDefinition, dineoutDefinition, zomatoDefinition } from './swiggy-mcp.js'
 
 const bodyHooks: BodyHooks = {
     async executeTool(name: string, params: Record<string, unknown>): Promise<ToolExecutionResult> {
@@ -33,6 +35,16 @@ const bodyHooks: BodyHooks = {
                 return getTransportEstimate(params as any)
             case 'compare_food_prices':
                 return compareFoodPrices(params as any)
+            case 'compare_grocery_prices':
+                return compareGroceryPrices(params as any)
+            case 'search_swiggy_food':
+                return searchSwiggyFood(params as any)
+            case 'search_instamart':
+                return searchInstamartMCP(params as any)
+            case 'search_dineout':
+                return searchDineout(params as any)
+            case 'search_zomato':
+                return searchZomatoMCP(params as any)
             default:
                 return { success: false, data: null, error: `Unknown tool: ${name}` }
         }
@@ -47,6 +59,10 @@ const bodyHooks: BodyHooks = {
             currencyToolDefinition,
             compareToolDefinition,
             foodCompareDefinition,
+            groceryCompareDefinition,
+            swiggyFoodDefinition,
+            zomatoDefinition,
+            dineoutDefinition,
         ]
     },
 }
@@ -56,7 +72,7 @@ console.log(`[Tools] Registered ${bodyHooks.getAvailableTools().length} tools`)
 
 /**
  * Convert our ToolDefinition[] to Groq's ChatCompletionTool[] format
- * for native function calling on the 70B model.
+ * for native function calling on the 8B classifier.
  */
 export function getGroqTools(): Groq.Chat.Completions.ChatCompletionTool[] {
     return bodyHooks.getAvailableTools().map(tool => ({

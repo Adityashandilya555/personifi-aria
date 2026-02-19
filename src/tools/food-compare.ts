@@ -34,8 +34,8 @@ export async function compareFoodPrices(params: FoodCompareParams): Promise<Tool
 
     // Scrape both platforms in parallel — partial success is fine
     const [swiggyResult, zomatoResult] = await Promise.allSettled([
-        scrapeSwiggy({ query, location }),
-        scrapeZomato({ query, location }),
+        scrapeSwiggy({ query, location: location || undefined }),
+        scrapeZomato({ query, location: location || undefined }),
     ])
 
     const swiggyData: SwiggyResult[] = swiggyResult.status === 'fulfilled' ? swiggyResult.value : []
@@ -77,9 +77,9 @@ function formatComparison(
     const lines: string[] = [`Food results for "${query}" in ${location}:\n`]
 
     if (swiggy.length > 0) {
-        lines.push('**Swiggy:**')
+        lines.push('<b>Swiggy:</b>')
         for (const r of swiggy) {
-            let header = `- **${r.restaurant}**`
+            let header = `- <b>${r.restaurant}</b>`
             if (r.areaName) header += ` (${r.areaName})`
             header += '\n'
             if (r.cuisine) header += `  Cuisine: ${r.cuisine}\n`
@@ -106,13 +106,13 @@ function formatComparison(
             lines.push('')
         }
     } else {
-        lines.push('**Swiggy:** No results found\n')
+        lines.push('<b>Swiggy:</b> No results found\n')
     }
 
     if (zomato.length > 0) {
-        lines.push('**Zomato:**')
+        lines.push('<b>Zomato:</b>')
         for (const r of zomato) {
-            let header = `- **${r.restaurant}**\n`
+            let header = `- <b>${r.restaurant}</b>\n`
             if (r.cuisine) header += `  Cuisine: ${r.cuisine}\n`
             if (r.rating) header += `  Rating: ⭐ ${r.rating}`
             if (r.deliveryTime !== 'N/A') header += ` | ${r.deliveryTime}`
@@ -131,7 +131,7 @@ function formatComparison(
             lines.push('')
         }
     } else {
-        lines.push('**Zomato:** No results found')
+        lines.push('<b>Zomato:</b> No results found')
     }
 
     return lines.join('\n')

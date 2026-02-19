@@ -98,6 +98,45 @@ if [ -n "$SLACK_SECRET" ]; then
     sed -i.bak "s|SLACK_SIGNING_SECRET=.*|SLACK_SIGNING_SECRET=$SLACK_SECRET|" .env
 fi
 
+# ─── MCP Tokens (Swiggy + Zomato) ─────────────────────────────────────────
+
+echo ""
+echo "🍽️  Food/Grocery MCP Tokens:"
+echo "   (Run 'npm run setup:mcp' locally first to get these tokens)"
+echo ""
+
+read -p "🟠 Swiggy MCP Token (SWIGGY_MCP_TOKEN): " SWIGGY_TOKEN
+if [ -n "$SWIGGY_TOKEN" ]; then
+    sed -i.bak "s|SWIGGY_MCP_TOKEN=.*|SWIGGY_MCP_TOKEN=$SWIGGY_TOKEN|" .env
+    echo "   ✅ Swiggy MCP token configured"
+fi
+
+read -p "🟠 Swiggy MCP Refresh Token: " SWIGGY_REFRESH
+if [ -n "$SWIGGY_REFRESH" ]; then
+    sed -i.bak "s|SWIGGY_MCP_REFRESH_TOKEN=.*|SWIGGY_MCP_REFRESH_TOKEN=$SWIGGY_REFRESH|" .env
+fi
+
+read -p "🔴 Zomato MCP Client ID: " ZOMATO_CLIENT_ID
+if [ -n "$ZOMATO_CLIENT_ID" ]; then
+    sed -i.bak "s|ZOMATO_MCP_CLIENT_ID=.*|ZOMATO_MCP_CLIENT_ID=$ZOMATO_CLIENT_ID|" .env
+fi
+
+read -p "🔴 Zomato MCP Client Secret: " ZOMATO_CLIENT_SECRET
+if [ -n "$ZOMATO_CLIENT_SECRET" ]; then
+    sed -i.bak "s|ZOMATO_MCP_CLIENT_SECRET=.*|ZOMATO_MCP_CLIENT_SECRET=$ZOMATO_CLIENT_SECRET|" .env
+fi
+
+read -p "🔴 Zomato MCP Token: " ZOMATO_TOKEN
+if [ -n "$ZOMATO_TOKEN" ]; then
+    sed -i.bak "s|ZOMATO_MCP_TOKEN=.*|ZOMATO_MCP_TOKEN=$ZOMATO_TOKEN|" .env
+    echo "   ✅ Zomato MCP token configured"
+fi
+
+read -p "🔴 Zomato MCP Refresh Token: " ZOMATO_REFRESH
+if [ -n "$ZOMATO_REFRESH" ]; then
+    sed -i.bak "s|ZOMATO_MCP_REFRESH_TOKEN=.*|ZOMATO_MCP_REFRESH_TOKEN=$ZOMATO_REFRESH|" .env
+fi
+
 # ─── Feature Toggles ──────────────────────────────────────────────────────
 
 echo ""

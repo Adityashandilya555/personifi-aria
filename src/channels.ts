@@ -55,15 +55,26 @@ export const telegramAdapter: ChannelAdapter = {
   
   sendMessage: async (chatId: string, text: string) => {
     const token = process.env.TELEGRAM_BOT_TOKEN
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    const resp = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         chat_id: chatId,
         text,
-        parse_mode: 'Markdown',
+        parse_mode: 'HTML',
       }),
     })
+    if (!resp.ok) {
+      // HTML parse error (e.g. unclosed tag from LLM output) — retry as plain text
+      const err = await resp.json().catch(() => ({}))
+      if ((err as any)?.description?.includes('parse')) {
+        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chatId, text }),
+        })
+      }
+    }
   },
 
   sendMedia: async (chatId: string, media: MediaItem[]) => {
@@ -72,33 +83,48 @@ export const telegramAdapter: ChannelAdapter = {
 
     if (media.length === 1) {
       // Single photo — use sendPhoto for cleaner UX
-      await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
+      const resp = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chat_id: chatId,
           photo: media[0].url,
           caption: media[0].caption || '',
-          parse_mode: 'Markdown',
+          parse_mode: 'HTML',
         }),
       })
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}))
+        console.error('[Telegram] sendPhoto failed:', (err as any)?.description, 'url:', media[0].url)
+      }
     } else {
-      // Multiple photos — use sendMediaGroup (album)
+      // Multiple photos — sendMediaGroup (album). Only first item gets caption (Telegram limit).
       const mediaGroup = media.slice(0, 10).map((item, i) => ({
         type: 'photo' as const,
         media: item.url,
-        caption: i === 0 ? (item.caption || '') : '', // Only first item gets caption
-        parse_mode: 'Markdown' as const,
+        ...(i === 0 && item.caption ? { caption: item.caption, parse_mode: 'HTML' as const } : {}),
       }))
 
-      await fetch(`https://api.telegram.org/bot${token}/sendMediaGroup`, {
+      const resp = await fetch(`https://api.telegram.org/bot${token}/sendMediaGroup`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: chatId,
-          media: mediaGroup,
-        }),
+        body: JSON.stringify({ chat_id: chatId, media: mediaGroup }),
       })
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}))
+        console.error('[Telegram] sendMediaGroup failed:', (err as any)?.description)
+        // Fallback: send only the first photo individually
+        await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: chatId,
+            photo: media[0].url,
+            caption: media[0].caption || '',
+            parse_mode: 'HTML',
+          }),
+        }).catch(() => {})
+      }
     }
   },
 }
