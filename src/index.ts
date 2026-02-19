@@ -71,6 +71,17 @@ server.post('/webhook/telegram', async (request, reply) => {
   if (!channels.telegram.isEnabled()) {
     return { ok: false, error: 'Telegram not configured' }
   }
+
+  // Verify webhook secret token (set via Telegram setWebhook API)
+  const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET
+  if (webhookSecret) {
+    const headerSecret = request.headers['x-telegram-bot-api-secret-token']
+    if (headerSecret !== webhookSecret) {
+      server.log.warn('Telegram webhook: invalid secret token')
+      return reply.code(403).send({ ok: false, error: 'Forbidden' })
+    }
+  }
+
   return handleChannelMessage(channels.telegram, request.body)
 })
 
@@ -122,8 +133,7 @@ server.addHook('preParsing', async (request, reply, payload) => {
 server.post('/webhook/slack', async (request, reply) => {
   const body = request.body as any
 
-  // Handle Slack URL verification first — must come before signature
-  // verification because Slack sends this during initial app setup.
+  // Handle Slack URL verification 
   if (body?.type === 'url_verification') {
     return { challenge: body.challenge }
   }
