@@ -2,7 +2,7 @@
  * Character module barrel export
  */
 
-export { handleMessage, resetUserSession, type MessageResponse } from './handler.js'
+export { handleMessage, resetUserSession, saveUserLocation, type MessageResponse } from './handler.js'
 export { initDatabase, closeDatabase } from './session-store.js'
 export { sanitizeInput, isPotentialAttack } from './sanitize.js'
 export { filterOutput, needsHumanReview } from './output-filter.js'

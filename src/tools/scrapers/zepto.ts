@@ -32,13 +32,37 @@ export async function scrapeZepto({ query, lat, lng }: ZeptoSearchParams): Promi
     const useLat = lat || coords.lat
     const useLng = lng || coords.lng
 
-    return withRetry(
-        () => scrapeZeptoPlaywright(query, useLat, useLng),
-        2, 2000, 'Zepto'
-    ).catch(e => {
-        console.error('[Zepto] Scraping failed:', e)
+    // Primary: Playwright interception
+    try {
+        const results = await withRetry(
+            () => scrapeZeptoPlaywright(query, useLat, useLng),
+            2, 2000, 'Zepto'
+        )
+        if (results.length > 0) return results
+    } catch (e) {
+        console.warn('[Zepto] Playwright failed, trying SerpAPI fallback:', e)
+    }
+
+    // Fallback: SerpAPI Google Shopping
+    try {
+        const { searchGoogleShopping } = await import('./serpapi-shopping.js')
+        const serpResults = await searchGoogleShopping(query)
+        return serpResults.map(r => ({
+            product: r.product,
+            brand: r.seller,
+            price: r.price,
+            mrp: r.price,
+            discountPct: 0,
+            unit: r.unit,
+            imageUrl: '',
+            deliveryTime: '8 min',
+            inStock: true,
+            platform: 'zepto' as const,
+        }))
+    } catch (e) {
+        console.error('[Zepto] SerpAPI fallback failed:', e)
         return []
-    })
+    }
 }
 
 async function scrapeZeptoPlaywright(query: string, _lat: string, _lng: string): Promise<ZeptoResult[]> {

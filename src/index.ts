@@ -5,7 +5,7 @@
 
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
-import { handleMessage, initDatabase, registerBrainHooks } from './character/index.js'
+import { handleMessage, initDatabase, registerBrainHooks, saveUserLocation } from './character/index.js'
 import { brainHooks } from './brain/index.js'
 import { initScheduler } from './scheduler.js'
 import { initMCPTokenStore } from './tools/mcp-client.js'
@@ -18,6 +18,7 @@ import {
   type ChannelAdapter,
   type ChannelMessage
 } from './channels.js'
+import { pendingLocationStore, reverseGeocode } from './location.js'
 
 // Type augmentation for raw body on Slack requests
 declare module 'fastify' {
@@ -65,6 +66,33 @@ async function handleChannelMessage(adapter: ChannelAdapter, body: unknown) {
 }
 
 // ============================================
+// Telegram helpers
+// ============================================
+
+/**
+ * Send a Telegram message with an inline keyboard.
+ * Used to present the "Share Location" button.
+ */
+async function sendTelegramWithKeyboard(
+  chatId: string,
+  text: string,
+  keyboard: object
+): Promise<void> {
+  const token = process.env.TELEGRAM_BOT_TOKEN
+  if (!token) return
+  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text,
+      reply_markup: keyboard,
+      parse_mode: 'HTML',
+    }),
+  })
+}
+
+// ============================================
 // Telegram Webhook
 // ============================================
 
@@ -72,7 +100,74 @@ server.post('/webhook/telegram', async (request, reply) => {
   if (!channels.telegram.isEnabled()) {
     return { ok: false, error: 'Telegram not configured' }
   }
-  return handleChannelMessage(channels.telegram, request.body)
+
+  const body = request.body as any
+  const message = body?.message
+
+  // Handle GPS location share
+  if (message?.location) {
+    const userId = message.from?.id?.toString()
+    const chatId = message.chat?.id?.toString()
+    if (!userId || !chatId) return { ok: true }
+
+    const { latitude, longitude } = message.location
+
+    try {
+      const address = await reverseGeocode(latitude, longitude)
+      await saveUserLocation(`telegram:${userId}`, address)
+      pendingLocationStore.delete(userId)
+
+      // Confirm and re-run any parked tool via a natural message
+      await channels.telegram.sendMessage(
+        chatId,
+        `📍 Got it — I'll use <b>${address}</b> as your location. Give me a moment to look that up for you!`
+      )
+
+      // Re-trigger the original query with the saved location context
+      const response = await handleMessage('telegram', userId, `near ${address}`)
+      if (response.media?.length && channels.telegram.sendMedia) {
+        await channels.telegram.sendMedia(chatId, response.media)
+      }
+      await channels.telegram.sendMessage(chatId, response.text)
+    } catch (err) {
+      server.log.error(err, 'Failed to handle Telegram location message')
+      await channels.telegram.sendMessage(chatId, "Sorry, I had trouble reading your location. Try typing your area name instead!")
+    }
+    return { ok: true }
+  }
+
+  // Normal text message — use generic handler
+  const adapter = channels.telegram
+  const parsedMessage = adapter.parseWebhook(body)
+  if (!parsedMessage) return { ok: true }
+
+  try {
+    const response = await handleMessage(parsedMessage.channel, parsedMessage.userId, parsedMessage.text)
+
+    // Send media before text
+    if (response.media?.length && adapter.sendMedia) {
+      await adapter.sendMedia(parsedMessage.chatId, response.media)
+    }
+
+    // If Aria wants location, attach a keyboard with the location button
+    if (response.requestLocation) {
+      await sendTelegramWithKeyboard(parsedMessage.chatId, response.text, {
+        keyboard: [[{ text: '📍 Share my location', request_location: true }]],
+        resize_keyboard: true,
+        one_time_keyboard: true,
+      })
+      // Track the pending request so we know which tool to resume
+      pendingLocationStore.set(parsedMessage.userId, {
+        toolHint: 'food_grocery',
+        chatId: parsedMessage.chatId,
+      })
+    } else {
+      await adapter.sendMessage(parsedMessage.chatId, response.text)
+    }
+  } catch (error) {
+    server.log.error(error, 'Failed to handle Telegram message')
+  }
+  return { ok: true }
 })
 
 // ============================================
