@@ -25,6 +25,12 @@ export interface ClassifierResult {
     skip_graph: boolean
     /** Skip cognitive pre-analysis */
     skip_cognitive: boolean
+    /**
+     * Cognitive pre-analysis fused into the classifier response.
+     * Set for non-simple, non-tool paths — eliminates a second 8B API call.
+     * For tool calls, a sensible default is injected (no LLM needed).
+     */
+    cognitiveState?: CognitiveState
 }
 
 // ─── Emotional + Cognitive Types ─────────────────────────────────────────────

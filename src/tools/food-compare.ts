@@ -78,7 +78,7 @@ function formatComparison(
 
     if (swiggy.length > 0) {
         lines.push('<b>Swiggy:</b>')
-        for (const r of swiggy) {
+        for (const r of swiggy.slice(0, 3)) {
             let header = `- <b>${r.restaurant}</b>`
             if (r.areaName) header += ` (${r.areaName})`
             header += '\n'
@@ -89,19 +89,19 @@ function formatComparison(
             lines.push(header)
 
             if (r.items.length > 0) {
-                for (const item of r.items) {
+                for (const item of r.items.slice(0, 3)) {
                     let itemLine = `    • ${item.name} — ₹${item.price}`
                     if (item.isBestseller) itemLine += ' 🏷️ BESTSELLER'
                     if (item.dishRating) itemLine += ` (${item.dishRating}⭐, ${item.ratingCount} ratings)`
                     lines.push(itemLine)
                     if (item.description) {
-                        lines.push(`      ${item.description.substring(0, 100)}${item.description.length > 100 ? '...' : ''}`)
+                        lines.push(`      ${item.description.substring(0, 60)}${item.description.length > 60 ? '...' : ''}`)
                     }
                 }
             }
 
             if (r.offers.length > 0) {
-                lines.push(`  🎟️ Offers: ${r.offers.join(' | ')}`)
+                lines.push(`  🎟️ Offers: ${r.offers.slice(0, 1).join(' | ')}`)
             }
             lines.push('')
         }
@@ -111,7 +111,7 @@ function formatComparison(
 
     if (zomato.length > 0) {
         lines.push('<b>Zomato:</b>')
-        for (const r of zomato) {
+        for (const r of zomato.slice(0, 3)) {
             let header = `- <b>${r.restaurant}</b>\n`
             if (r.cuisine) header += `  Cuisine: ${r.cuisine}\n`
             if (r.rating) header += `  Rating: ⭐ ${r.rating}`
@@ -120,13 +120,13 @@ function formatComparison(
             lines.push(header)
 
             if (r.items.length > 0) {
-                for (const item of r.items) {
+                for (const item of r.items.slice(0, 3)) {
                     lines.push(`    • ${item.name} — ₹${item.price}`)
                 }
             }
 
             if (r.offers.length > 0) {
-                lines.push(`  🎟️ Offers: ${r.offers.join(' | ')}`)
+                lines.push(`  🎟️ Offers: ${r.offers.slice(0, 1).join(' | ')}`)
             }
             lines.push('')
         }

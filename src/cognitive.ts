@@ -17,6 +17,7 @@ import type {
     CognitiveState,
     EmotionalState,
     ConversationGoal,
+    MessageComplexity,
     ToneDirective,
     ConversationGoalRecord,
     ClassifierResult,
@@ -68,21 +69,24 @@ Keep the response very concise. This is internal reasoning, not the actual respo
 
 // ─── Classifier Prompt (Slim — tool schemas are passed via native tools[]) ───
 
-const CLASSIFIER_PROMPT = `You are a travel and food chatbot message router. Decide how to handle the user's message.
+const CLASSIFIER_PROMPT = `You are a travel and food chatbot message router for Aria, an AI travel companion.
 
-Call the appropriate tool when the user needs real-time data:
-- Flights, hotels, weather, places, currency, transport → use those tools
-- Food delivery comparison (Swiggy vs Zomato, which restaurant, dish prices, coupons) → compare_food_prices
-- Grocery prices (milk, eggs, vegetables, snacks, any product) or quick delivery apps (Blinkit, Instamart, Zepto) → compare_grocery_prices
-- Swiggy-specific restaurant search or Swiggy offers → search_swiggy_food
-- Table booking, dine-out, restaurant for sitting → search_dineout
+STEP 1 — Call a tool if the user needs real-time data:
+- Flights, hotels, weather, places, currency, transport → those tools
+- "Best deal", "compare platforms", "order or go out?", "which app is cheaper" → compare_prices_proactive
+- Food delivery comparison (Swiggy vs Zomato, restaurant prices, coupons) → compare_food_prices
+- Grocery prices, quick delivery apps in general → compare_grocery_prices
+- Blinkit specifically → search_blinkit | Zepto specifically → search_zepto
+- Swiggy restaurant search → search_swiggy_food | Dine-out, table booking → search_dineout
 
-If no tool is needed, respond with a short classification only.
+STEP 2 — If NO tool needed, reply with ONLY this JSON (nothing else):
+{"c":"simple"} — greetings, farewells, yes/no, thanks, one-word replies
+{"c":"moderate","m":"...","e":"...","g":"..."} — general travel/food chat, opinions, follow-ups
+{"c":"complex","m":"...","e":"...","g":"..."} — multi-part questions needing memory or planning
 
-When NOT calling a tool, reply with JSON:
-{"c":"simple"} — for greetings, farewells, yes/no, thanks
-{"c":"moderate"} — for general travel/food chat, opinions, follow-ups
-{"c":"complex"} — for complex questions that need memory/context but no tool`
+m = Aria's 1-sentence private reasoning (e.g. "User wants Bali tips, mention the visa trick they'll love")
+e = user emotion: excited|frustrated|curious|neutral|anxious|grateful|nostalgic|overwhelmed
+g = Aria's goal: inform|recommend|clarify|empathize|redirect|upsell|plan|reassure`
 
 // ─── Public API ─────────────────────────────────────────────────────────────
 
@@ -137,6 +141,8 @@ export async function classifyMessage(
         const message = choice?.message
 
         // ── Path A: Model decided to call a tool ──
+        // Cognitive analysis is skipped — tool result + Aria personality is enough.
+        // A sensible default cognitive state is injected so handler needs zero extra 8B calls.
         if (choice?.finish_reason === 'tool_calls' && message?.tool_calls?.length) {
             const toolCall = message.tool_calls[0]
             const toolName = toolCall.function.name
@@ -155,37 +161,45 @@ export async function classifyMessage(
                 tool_args: toolArgs,
                 skip_memory: false,
                 skip_graph: false,
-                skip_cognitive: false,
+                skip_cognitive: true, // cognitive not needed — tool data drives the response
+                cognitiveState: {
+                    internalMonologue: 'User needs real-time data. Deliver it clearly in Aria\'s voice.',
+                    emotionalState: 'curious',
+                    conversationGoal: 'inform',
+                    relevantMemories: [],
+                },
             }
         }
 
-        // ── Path B: No tool call — parse text classification ──
+        // ── Path B: No tool call — parse text classification + extract fused cognitive ──
         const content = message?.content
         if (content) {
             try {
                 const parsed = JSON.parse(content)
-                const complexity = parsed.c || parsed.message_complexity || 'moderate'
+                const complexity: MessageComplexity = parsed.c || parsed.message_complexity || 'moderate'
 
                 if (complexity === 'simple') return getSimpleClassification()
-                if (complexity === 'complex') return {
-                    message_complexity: 'complex',
-                    needs_tool: false,
-                    tool_hint: null,
-                    tool_args: {},
-                    skip_memory: false,
-                    skip_graph: false,
-                    skip_cognitive: false,
-                }
 
-                // moderate (default)
+                // Extract cognitive fields fused into the classifier response.
+                // This eliminates the separate internalMonologue() 8B call.
+                const cognitiveState = (parsed.m && parsed.e && parsed.g)
+                    ? {
+                        internalMonologue: String(parsed.m),
+                        emotionalState: parsed.e as EmotionalState,
+                        conversationGoal: parsed.g as ConversationGoal,
+                        relevantMemories: [] as string[],
+                    }
+                    : undefined
+
                 return {
-                    message_complexity: 'moderate',
+                    message_complexity: complexity,
                     needs_tool: false,
                     tool_hint: null,
                     tool_args: {},
                     skip_memory: false,
-                    skip_graph: true,
-                    skip_cognitive: false,
+                    skip_graph: complexity === 'moderate', // moderate skips graph (cheaper)
+                    skip_cognitive: true, // cognitive already done above
+                    cognitiveState,
                 }
             } catch {
                 // If content isn't valid JSON, fall through to default
