@@ -233,7 +233,7 @@ async function searchGraphRecursive(
        SELECT source_entity, relationship, destination_entity,
               1 - (source_embedding <=> $1::vector) AS similarity,
               1 AS depth,
-              ARRAY[source_entity]::varchar(200)[] AS path
+              ARRAY[source_entity]::varchar[] AS path
        FROM entity_relations
        WHERE user_id = ANY($2::uuid[])
          AND source_embedding IS NOT NULL
@@ -313,7 +313,7 @@ async function searchGraphByText(
     const result = await pool.query(
         `WITH RECURSIVE graph_walk AS (
        SELECT source_entity, relationship, destination_entity, 1 AS depth,
-              ARRAY[source_entity]::varchar(200)[] AS path
+              ARRAY[source_entity]::varchar[] AS path
        FROM entity_relations
        WHERE user_id = $1
          AND (LOWER(source_entity) = LOWER($2) OR LOWER(destination_entity) = LOWER($2))

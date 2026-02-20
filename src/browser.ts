@@ -16,6 +16,17 @@ chromium.use(stealthPlugin())
 
 let browser: Browser | null = null
 
+// Safety net: prevent unhandled Playwright CDP errors from crashing the process
+process.on('unhandledRejection', (reason: any) => {
+  const msg = String(reason?.message || reason || '')
+  if (msg.includes('cdpSession') || msg.includes('Target page') || msg.includes('browser has been closed')) {
+    console.warn('[BROWSER] Suppressed Playwright cdpSession error:', msg)
+    return // swallow — the context is already dead
+  }
+  // Re-log non-Playwright unhandled rejections (don't crash)
+  console.error('[UNHANDLED REJECTION]', reason)
+})
+
 /**
  * Initialize the browser instance
  */
@@ -87,7 +98,7 @@ export async function captureAriaSnapshot(url: string): Promise<AriaSnapshot> {
     console.error(`[BROWSER] Snapshot failed for ${url}:`, error)
     return { title: 'Error', url, content: '' }
   } finally {
-    await context.close()
+    try { await context.close() } catch { /* context may already be dead */ }
   }
 }
 
@@ -96,17 +107,17 @@ export async function captureAriaSnapshot(url: string): Promise<AriaSnapshot> {
 // ============================================
 
 export interface InterceptedResponse {
-    url: string
-    body: any
+  url: string
+  body: any
 }
 
 interface InterceptionOptions {
-    /** URL to navigate to */
-    url: string
-    /** URL substrings to match against intercepted responses */
-    urlPatterns: string[]
-    /** Max time to wait for intercepted responses (ms) */
-    timeout?: number
+  /** URL to navigate to */
+  url: string
+  /** URL substrings to match against intercepted responses */
+  urlPatterns: string[]
+  /** Max time to wait for intercepted responses (ms) */
+  timeout?: number
 }
 
 /**
@@ -114,42 +125,42 @@ interface InterceptionOptions {
  * Returns collected JSON payloads. Context is closed after scraping.
  */
 export async function scrapeWithInterception(options: InterceptionOptions): Promise<InterceptedResponse[]> {
-    const { url, urlPatterns, timeout = 15000 } = options
-    const { page, context } = await getPage()
-    const collected: InterceptedResponse[] = []
+  const { url, urlPatterns, timeout = 15000 } = options
+  const { page, context } = await getPage()
+  const collected: InterceptedResponse[] = []
 
-    try {
-        // Register response listener before navigation
-        page.on('response', async (response) => {
-            const respUrl = response.url()
-            const matches = urlPatterns.some(pattern => respUrl.includes(pattern))
-            if (!matches) return
+  try {
+    // Register response listener before navigation
+    page.on('response', async (response) => {
+      const respUrl = response.url()
+      const matches = urlPatterns.some(pattern => respUrl.includes(pattern))
+      if (!matches) return
 
-            try {
-                const body = await response.json()
-                collected.push({ url: respUrl, body })
-            } catch {
-                // Not JSON or response already disposed — skip
-            }
-        })
+      try {
+        const body = await response.json()
+        collected.push({ url: respUrl, body })
+      } catch {
+        // Not JSON or response already disposed — skip
+      }
+    })
 
-        console.log(`[BROWSER] Scraping ${url}`)
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout })
+    console.log(`[BROWSER] Scraping ${url}`)
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout })
 
-        // Wait for API responses to arrive
-        await page.waitForTimeout(Math.min(timeout / 2, 5000))
+    // Wait for API responses to arrive
+    await page.waitForTimeout(Math.min(timeout / 2, 5000))
 
-        // If nothing intercepted yet, wait a bit more
-        if (collected.length === 0) {
-            await page.waitForTimeout(3000)
-        }
-    } catch (error) {
-        console.error(`[BROWSER] Interception scrape failed for ${url}:`, error)
-    } finally {
-        await context.close()
+    // If nothing intercepted yet, wait a bit more
+    if (collected.length === 0) {
+      await page.waitForTimeout(3000)
     }
+  } catch (error) {
+    console.error(`[BROWSER] Interception scrape failed for ${url}:`, error)
+  } finally {
+    try { await context.close() } catch { /* context may already be dead */ }
+  }
 
-    return collected
+  return collected
 }
 
 // ============================================
@@ -198,7 +209,7 @@ export async function scrapeFlightDeals(
   } catch (error) {
     console.error('[BROWSER] Error scraping flights:', error)
   } finally {
-    await context.close()
+    try { await context.close() } catch { /* context may already be dead */ }
   }
 
   return deals
@@ -241,7 +252,7 @@ export async function scrapeTravelDeals(): Promise<TravelDeal[]> {
   } catch (error) {
     console.error('[BROWSER] Error scraping deals:', error)
   } finally {
-    await context.close()
+    try { await context.close() } catch { /* context may already be dead */ }
   }
 
   return deals
