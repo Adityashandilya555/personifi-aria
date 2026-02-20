@@ -350,37 +350,22 @@ export async function updateConversationGoal(
             return null
         }
 
-        // UPSERT: insert new goal or update existing active one
-        const result = await pool.query(
+        // Update-then-insert: avoids needing a partial unique index
+        const updated = await pool.query(
+            `UPDATE conversation_goals SET goal = $1, context = $2, updated_at = NOW()
+             WHERE user_id = $3 AND session_id = $4 AND status = 'active'
+             RETURNING *`,
+            [newGoal.trim(), JSON.stringify(context), userId, sessionId]
+        )
+        if (updated.rows.length > 0) return updated.rows[0]
+
+        const inserted = await pool.query(
             `INSERT INTO conversation_goals (user_id, session_id, goal, status, context)
              VALUES ($1, $2, $3, 'active', $4)
-             ON CONFLICT (session_id) WHERE status = 'active'
-             DO UPDATE SET goal = EXCLUDED.goal, context = EXCLUDED.context, updated_at = NOW()
              RETURNING *`,
             [userId, sessionId, newGoal.trim(), JSON.stringify(context)]
         )
-
-        // Fallback: if ON CONFLICT doesn't match (no partial unique index),
-        // try a simple update-then-insert approach
-        if (result.rows.length === 0) {
-            const updated = await pool.query(
-                `UPDATE conversation_goals SET goal = $1, context = $2, updated_at = NOW()
-                 WHERE user_id = $3 AND session_id = $4 AND status = 'active'
-                 RETURNING *`,
-                [newGoal.trim(), JSON.stringify(context), userId, sessionId]
-            )
-            if (updated.rows.length > 0) return updated.rows[0]
-
-            const inserted = await pool.query(
-                `INSERT INTO conversation_goals (user_id, session_id, goal, status, context)
-                 VALUES ($1, $2, $3, 'active', $4)
-                 RETURNING *`,
-                [userId, sessionId, newGoal.trim(), JSON.stringify(context)]
-            )
-            return inserted.rows[0] || null
-        }
-
-        return result.rows[0]
+        return inserted.rows[0] || null
     } catch (error) {
         console.error('[cognitive] Goal update failed:', error)
         return null
