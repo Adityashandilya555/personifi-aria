@@ -52,6 +52,9 @@ import { generateLinkCode, redeemLinkCode, getLinkedUserIds } from '../identity.
 import { getBrainHooks } from '../hook-registry.js'
 import type { RouteContext } from '../hooks.js'
 
+// Location utilities
+import { shouldRequestLocation } from '../location.js'
+
 // Initialize Groq client
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
@@ -110,6 +113,39 @@ function buildMessages(
 export interface MessageResponse {
   text: string
   media?: { type: 'photo'; url: string; caption?: string }[]
+  /** When true, the channel layer should send a location-request keyboard */
+  requestLocation?: boolean
+}
+
+// ─── Confirmation / Location Gate ────────────────────────────────────────────
+
+/**
+ * Parked tool routes waiting for the user to confirm or share location.
+ * Key: userId — only one pending action per user at a time.
+ */
+const pendingToolStore = new Map<string, { toolName: string; toolParams: Record<string, unknown> }>()
+
+/** Tools expensive enough that we ask for confirmation before scraping. */
+const TOOLS_REQUIRING_CONFIRM = new Set([
+  'compare_food_prices',
+  'compare_grocery_prices',
+])
+
+/** Is this a short affirmative reply? */
+function isConfirmatoryMessage(msg: string): boolean {
+  return /^(yes|yeah|sure|ok|okay|yep|go ahead|do it|please|confirm|y)\b/i.test(msg.trim())
+}
+
+/** Does the message explicitly name a delivery platform? */
+function isExplicitPlatformRequest(msg: string): boolean {
+  return /\b(swiggy|zomato|blinkit|zepto|instamart)\b/i.test(msg)
+}
+
+// ─── Exported helper ──────────────────────────────────────────────────────────
+
+/** Save a resolved location as the user's homeLocation. */
+export async function saveUserLocation(userId: string, location: string): Promise<void> {
+  await updateUserProfile(userId, undefined, location)
 }
 
 /**
@@ -302,6 +338,46 @@ export async function handleMessage(
 
     const routeDecision = await brainHooks.routeMessage(routeContext)
 
+    // ─── Step 7.5: Location check — ask before running location-dependent tools ─
+    if (routeDecision.useTool && routeDecision.toolName &&
+        shouldRequestLocation(userMessage, user.homeLocation, routeDecision.toolName)) {
+      // Park the tool so we can execute it once the user shares their location
+      pendingToolStore.set(user.userId, {
+        toolName: routeDecision.toolName,
+        toolParams: routeDecision.toolParams,
+      })
+      return {
+        text: "📍 To find the best results near you, could you share your location? Tap the button below, or just type your area/neighbourhood name!",
+        requestLocation: true,
+      }
+    }
+
+    // ─── Step 7.6: Confirmation gate for expensive scraping tools ─────────────
+    if (routeDecision.useTool && routeDecision.toolName &&
+        TOOLS_REQUIRING_CONFIRM.has(routeDecision.toolName) &&
+        !isConfirmatoryMessage(userMessage) &&
+        !isExplicitPlatformRequest(userMessage)) {
+      // Only gate if this is an ambiguous first-time request (not already a confirmation)
+      const pending = pendingToolStore.get(user.userId)
+      if (!pending || pending.toolName !== routeDecision.toolName) {
+        pendingToolStore.set(user.userId, {
+          toolName: routeDecision.toolName,
+          toolParams: routeDecision.toolParams,
+        })
+        const toolLabel = routeDecision.toolName === 'compare_food_prices'
+          ? 'food prices on Swiggy & Zomato'
+          : 'grocery prices on Blinkit, Instamart & Zepto'
+        return {
+          text: `Want me to check ${toolLabel}? It takes a few seconds — shall I go ahead?`,
+        }
+      }
+    }
+
+    // Clear any pending entry once the tool is about to run
+    if (routeDecision.useTool && routeDecision.toolName) {
+      pendingToolStore.delete(user.userId)
+    }
+
     // ─── Step 8: Execute tool pipeline if needed (Dev 1) ──────────
     let toolResultStr: string | undefined
     let toolRawData: unknown = null
@@ -330,8 +406,15 @@ export async function handleMessage(
       toolResultStr += '\n\n[ARIA HINT: The user found places nearby. Naturally offer to check delivery prices on Swiggy or Zomato if they seem interested in food, or compare grocery apps if it is a grocery query. Keep it conversational — do not make it sound like an ad.]'
     }
 
-    // ─── Step 9: Compose dynamic system prompt ────────────────────
+    // ─── Step 8d: New user onboarding hint ────────────────────────
+    // On the very first message, nudge Aria to collect name + location
     const isFirstMessage = session.messages.length === 0
+    if (isFirstMessage && !user.displayName) {
+      const onboardingHint = '\n\n[ARIA HINT: This is the user\'s first message. Warmly greet them, ask their name, and gently mention you\'d love to know their city so you can give local food & travel recommendations. Keep it natural and friendly — one question at a time.]'
+      toolResultStr = toolResultStr ? toolResultStr + onboardingHint : onboardingHint
+    }
+
+    // ─── Step 9: Compose dynamic system prompt ────────────────────
     let systemPromptComposed: string
     try {
       systemPromptComposed = composeSystemPrompt({

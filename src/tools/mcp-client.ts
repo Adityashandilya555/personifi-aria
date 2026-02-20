@@ -36,6 +36,29 @@ export async function initMCPTokenStore(databaseUrl: string): Promise<void> {
             process.env[row.key] = row.value
         }
         console.log(`[MCP] Loaded ${rows.length} token(s) from DB`)
+
+        // Fresh deployment: seed DB from env vars so tokens survive next restart
+        if (rows.length === 0) {
+            const keysToSeed = [
+                'SWIGGY_MCP_TOKEN',
+                'SWIGGY_MCP_REFRESH_TOKEN',
+                'ZOMATO_MCP_TOKEN',
+                'ZOMATO_MCP_REFRESH_TOKEN',
+                'ZOMATO_MCP_CLIENT_ID',
+                'ZOMATO_MCP_CLIENT_SECRET',
+            ]
+            for (const key of keysToSeed) {
+                if (process.env[key]) {
+                    await dbPool.query(
+                        `INSERT INTO mcp_tokens (key, value, updated_at)
+                         VALUES ($1, $2, NOW())
+                         ON CONFLICT (key) DO NOTHING`,
+                        [key, process.env[key]]
+                    ).catch(err => console.warn(`[MCP] Could not seed ${key}:`, err.message))
+                }
+            }
+            console.log('[MCP] Seeded tokens from env vars into DB')
+        }
     } catch (err) {
         // Non-fatal — falls back to env vars from docker-compose
         console.warn('[MCP] Could not load tokens from DB:', (err as Error).message)

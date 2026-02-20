@@ -1,10 +1,10 @@
 /**
  * Blinkit scraper — quick-commerce grocery prices.
  *
- * Primary: Playwright interception of /v6/search/products or /v1/layout
- * Fallback: Direct fetch to Blinkit's internal search API
- *
- * Blinkit uses anti-bot, so Playwright interception is more reliable.
+ * Strategy order:
+ * 1. Playwright interception of /v6/search/products or /v1/layout
+ * 2. Direct fetch to Blinkit's internal search API
+ * 3. SerpAPI Google Shopping fallback (when SERPAPI_KEY is set)
  */
 
 import { scrapeWithInterception } from '../../browser.js'
@@ -47,7 +47,7 @@ export async function scrapeBlinkit({ query, lat, lng }: BlinkitSearchParams): P
     const useLat = lat || coords.lat
     const useLng = lng || coords.lng
 
-    // Try Playwright interception first (more reliable against anti-bot)
+    // 1. Playwright interception (most reliable against anti-bot)
     try {
         const results = await withRetry(
             () => scrapeBlinkitPlaywright(query, useLat, useLng),
@@ -58,14 +58,41 @@ export async function scrapeBlinkit({ query, lat, lng }: BlinkitSearchParams): P
         console.warn('[Blinkit] Playwright failed, trying direct API:', e)
     }
 
-    // Fallback: direct API call
-    return withRetry(
-        () => fetchBlinkitApi(query, useLat, useLng),
-        2, 2000, 'Blinkit-API'
-    ).catch(e => {
-        console.error('[Blinkit] All strategies failed:', e)
-        return []
-    })
+    // 2. Direct API fallback
+    try {
+        const results = await withRetry(
+            () => fetchBlinkitApi(query, useLat, useLng),
+            2, 2000, 'Blinkit-API'
+        )
+        if (results.length > 0) return results
+    } catch (e) {
+        console.error('[Blinkit] Direct API failed:', e)
+    }
+
+    // 3. SerpAPI Google Shopping fallback
+    try {
+        const { searchGoogleShopping } = await import('./serpapi-shopping.js')
+        const serpResults = await searchGoogleShopping(`${query} quick delivery`)
+        if (serpResults.length > 0) {
+            console.log(`[Blinkit] SerpAPI fallback: ${serpResults.length} results`)
+            return serpResults.map(r => ({
+                product: r.product,
+                brand: '',
+                price: r.price,
+                mrp: r.price,
+                discountPct: 0,
+                unit: r.unit,
+                imageUrl: '',
+                deliveryTime: '10-15 min',
+                inStock: true,
+                platform: 'blinkit' as const,
+            }))
+        }
+    } catch (e) {
+        console.error('[Blinkit] SerpAPI fallback failed:', e)
+    }
+
+    return []
 }
 
 async function scrapeBlinkitPlaywright(query: string, lat: string, lng: string): Promise<BlinkitResult[]> {
@@ -88,7 +115,6 @@ async function scrapeBlinkitPlaywright(query: string, lat: string, lng: string):
 }
 
 async function fetchBlinkitApi(query: string, lat: string, lng: string): Promise<BlinkitResult[]> {
-    // Try Blinkit's internal search API
     const response = await fetch('https://blinkit.com/v6/search/products', {
         method: 'POST',
         headers: {
@@ -117,7 +143,6 @@ async function fetchBlinkitApi(query: string, lat: string, lng: string): Promise
 
 function buildBlinkitImageUrl(imageId: string): string {
     if (!imageId) return ''
-    // Blinkit uses Grofers CDN
     if (imageId.startsWith('http')) return imageId
     return `${BLINKIT_IMG_BASE}${imageId}`
 }
@@ -125,7 +150,6 @@ function buildBlinkitImageUrl(imageId: string): string {
 function parseBlinkitResponse(json: any, _lat: string, _lng: string): BlinkitResult[] {
     if (!json) return []
 
-    // Various response shapes from Blinkit's APIs
     const products: any[] = json?.objects
         ?? json?.products
         ?? json?.data?.products
@@ -134,7 +158,6 @@ function parseBlinkitResponse(json: any, _lat: string, _lng: string): BlinkitRes
         ?? []
 
     if (!Array.isArray(products) || products.length === 0) {
-        // Try nested layout response
         const widgets = json?.data?.widgets ?? json?.widgets ?? []
         for (const widget of widgets) {
             const items = widget?.data?.items ?? widget?.items ?? []
@@ -186,7 +209,6 @@ async function scrapeBlinkitDOM(query: string, _lat: string, _lng: string): Prom
         await sleep(4000)
 
         const items = await page.evaluate(() => {
-            // Blinkit product cards typically have data attributes
             const cards = Array.from(document.querySelectorAll('[data-test-id="product-card"], [class*="Product"], [class*="product"]'))
             return cards.slice(0, 15).map((card: any) => ({
                 name: card.querySelector('[class*="Name"], [class*="name"], h3, h4')?.textContent?.trim() || '',

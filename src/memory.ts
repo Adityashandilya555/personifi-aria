@@ -1,13 +1,9 @@
 /**
  * Memory & Personalization System for Aria
  * DEV 3: Complete independent implementation
- * 
- * Adapted from:
- * - letta-ai/letta: Memory blocks and semantic storage patterns
- * - openclaw/openclaw: Memory search and extraction patterns
- * 
+ *
  * Features:
- * - LLM-based preference extraction using Groq Llama 3.1 8B
+ * - LLM-based preference extraction using Groq Llama 3.1 8B with JSON mode
  * - Confidence scoring system (0.50 to 0.95)
  * - UPSERT pattern with automatic confidence adjustment
  * - Handles contradictions gracefully
@@ -41,64 +37,51 @@ function getGroqClient(): Groq {
   return groq
 }
 
-// Model for preference extraction (using fast, free Llama 3.1 8B)
+// Model for preference extraction (fast, free Llama 3.1 8B)
 const EXTRACTION_MODEL = 'llama-3.1-8b-instant'
 
 // Confidence score thresholds
 const CONFIDENCE = {
-  TENTATIVE: 0.50, // "I might like...", "Maybe..."
-  UNCERTAIN: 0.60, // "I usually...", "I tend to..."
-  MODERATE: 0.70, // "I prefer...", "I like..."
-  STRONG: 0.85, // "I love...", "I always..."
-  DIRECT: 0.95, // "I'm vegetarian", "I have allergies"
+  TENTATIVE: 0.50,
+  UNCERTAIN: 0.60,
+  MODERATE: 0.70,
+  STRONG: 0.85,
+  DIRECT: 0.95,
 } as const
 
-const CONFIDENCE_BOOST_REPEAT = 0.10 // Boost on repeat mention
-const CONFIDENCE_REDUCE_CONTRADICTION = 0.20 // Reduce on contradiction
+const CONFIDENCE_BOOST_REPEAT = 0.10
+const CONFIDENCE_REDUCE_CONTRADICTION = 0.20
 
 /**
- * Extract preferences from user message using LLM
- * Returns structured preferences or null if none found
+ * Extract preferences from a single user message using LLM with JSON mode.
+ * Returns structured preferences or null if none found.
+ *
+ * Uses response_format: json_object to prevent the model from responding
+ * conversationally. Only the user message is passed — no conversation history.
  */
 export async function extractPreferences(
   userMessage: string,
-  existingPrefs: Partial<PreferencesMap> = {}
+  _existingPrefs: Partial<PreferencesMap> = {}
 ): Promise<ExtractedPreferences | null> {
   try {
     const groqClient = getGroqClient()
 
-    const systemPrompt = `You are a preference extraction system. Analyze user messages to identify travel preferences.
+    const systemPrompt = `You are a preference extraction engine. Extract user preferences from the single message below.
 
-Extract ONLY explicitly stated preferences in these categories:
-- dietary: Food restrictions or preferences (vegetarian, vegan, allergies, etc.)
-- budget: Spending preferences (budget, moderate, luxury)
-- travel_style: Travel approach (adventure, relaxation, culture, party, family)
-- accommodation: Hotel preferences (hostel, budget, mid-range, luxury)
-- interests: Activities they enjoy (hiking, museums, food, nightlife, etc.)
-- dislikes: Things they want to avoid
-- allergies: Medical allergies
-- preferred_airlines: Airline preferences
-- preferred_currency: Currency they prefer
-- home_timezone: Their timezone
-- language: Preferred language
-- accessibility: Accessibility needs
+Return ONLY valid JSON in this exact format:
+{ "preferences": {}, "found": false }
 
-Return ONLY valid JSON or the word "none" if no preferences found.
-
-Format: {"category": "value", ...}
+If you find any preferences, set found to true and add them to preferences using these keys:
+dietary, budget, travel_style, accommodation, interests, dislikes, allergies, preferred_airlines, preferred_currency, home_timezone, language, accessibility
 
 Examples:
-User: "I'm vegetarian and love spicy food"
-Output: {"dietary": "vegetarian", "interests": "spicy food"}
+Message: "I'm vegetarian and love budget travel"
+Output: { "preferences": { "dietary": "vegetarian", "budget": "budget" }, "found": true }
 
-User: "I prefer budget hostels"
-Output: {"budget": "budget", "accommodation": "hostels"}
+Message: "What's the weather?"
+Output: { "preferences": {}, "found": false }
 
-User: "What's the weather like?"
-Output: none
-
-Current known preferences: ${JSON.stringify(existingPrefs)}
-Only extract NEW or UPDATED preferences.`
+Only extract explicitly stated preferences. Do not infer. Return valid JSON only.`
 
     const completion = await groqClient.chat.completions.create({
       model: EXTRACTION_MODEL,
@@ -106,24 +89,32 @@ Only extract NEW or UPDATED preferences.`
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userMessage },
       ],
-      temperature: 0.3, // Low temperature for consistent extraction
-      max_tokens: 200,
+      response_format: { type: 'json_object' },
+      temperature: 0.1,
+      max_tokens: 150,
     })
 
-    const response = completion.choices[0]?.message?.content?.trim() || ''
+    const raw = completion.choices[0]?.message?.content?.trim() || ''
+    if (!raw) return null
 
-    // Check if no preferences found
-    if (response.toLowerCase() === 'none' || !response) {
-      return null
-    }
-
-    // Parse JSON response
     try {
-      const parsed = JSON.parse(response)
-      return parsed as ExtractedPreferences
+      const parsed = JSON.parse(raw) as { preferences: Record<string, unknown>; found: boolean }
+
+      if (!parsed.found || !parsed.preferences || typeof parsed.preferences !== 'object') {
+        return null
+      }
+
+      // Filter out null / empty values before returning
+      const clean: Record<string, string> = {}
+      for (const [k, v] of Object.entries(parsed.preferences)) {
+        if (v !== null && v !== undefined && v !== '') {
+          clean[k] = String(v)
+        }
+      }
+
+      return Object.keys(clean).length > 0 ? clean : null
     } catch {
-      // LLM might return malformed JSON, try to extract
-      console.warn('[MEMORY] Failed to parse preference extraction:', response)
+      console.warn('[MEMORY] Failed to parse preference extraction:', raw.slice(0, 200))
       return null
     }
   } catch (error) {
@@ -133,18 +124,16 @@ Only extract NEW or UPDATED preferences.`
 }
 
 /**
- * Score confidence based on message context and existing data
- * Uses cognitive depth analysis from letta-ai patterns
+ * Score confidence based on message context and existing data.
  */
 export function scoreConfidence(params: ConfidenceScoreParams): ConfidenceScoreResult {
   const { value, message, existingPreference } = params
   const lowerMessage = message.toLowerCase()
   const lowerValue = value.toLowerCase()
 
-  let confidence: number = CONFIDENCE.MODERATE // Default
+  let confidence: number = CONFIDENCE.MODERATE
   let reasoning = 'moderate confidence from preference statement'
 
-  // Check for direct statements (highest confidence)
   const directPatterns = [
     /i am (a |an )?/i,
     /i'm (a |an )?/i,
@@ -156,36 +145,28 @@ export function scoreConfidence(params: ConfidenceScoreParams): ConfidenceScoreR
   if (directPatterns.some((pattern) => lowerMessage.match(pattern))) {
     confidence = CONFIDENCE.DIRECT
     reasoning = 'direct statement about identity or condition'
-  }
-  // Check for strong preferences
-  else if (
+  } else if (
     lowerMessage.includes('i love') ||
     lowerMessage.includes('i always') ||
     lowerMessage.includes('i never')
   ) {
     confidence = CONFIDENCE.STRONG
     reasoning = 'strong preference indicated'
-  }
-  // Check for moderate preferences
-  else if (
+  } else if (
     lowerMessage.includes('i prefer') ||
     lowerMessage.includes('i like') ||
     lowerMessage.includes('i enjoy')
   ) {
     confidence = CONFIDENCE.MODERATE
     reasoning = 'clear preference stated'
-  }
-  // Check for uncertain preferences
-  else if (
+  } else if (
     lowerMessage.includes('i usually') ||
     lowerMessage.includes('i tend to') ||
     lowerMessage.includes('i often')
   ) {
     confidence = CONFIDENCE.UNCERTAIN
     reasoning = 'habitual preference'
-  }
-  // Check for tentative preferences
-  else if (
+  } else if (
     lowerMessage.includes('i might') ||
     lowerMessage.includes('maybe') ||
     lowerMessage.includes('i think')
@@ -194,9 +175,7 @@ export function scoreConfidence(params: ConfidenceScoreParams): ConfidenceScoreR
     reasoning = 'tentative preference'
   }
 
-  // Adjust based on existing preference
   if (existingPreference) {
-    // Repeat mention - boost confidence
     if (existingPreference.value.toLowerCase() === lowerValue) {
       const newConfidence = Math.min(
         CONFIDENCE.DIRECT,
@@ -206,9 +185,7 @@ export function scoreConfidence(params: ConfidenceScoreParams): ConfidenceScoreR
         confidence: newConfidence,
         reasoning: `${reasoning}, boosted from repeat mention`,
       }
-    }
-    // Contradiction - start fresh with reduced confidence
-    else {
+    } else {
       const newConfidence = Math.max(
         CONFIDENCE.TENTATIVE,
         confidence - CONFIDENCE_REDUCE_CONTRADICTION
@@ -224,8 +201,7 @@ export function scoreConfidence(params: ConfidenceScoreParams): ConfidenceScoreR
 }
 
 /**
- * Save preferences to database with UPSERT pattern
- * Handles confidence adjustment and mention tracking
+ * Save preferences to database with UPSERT pattern.
  */
 export async function savePreferences(
   pool: Pool,
@@ -239,21 +215,19 @@ export async function savePreferences(
     await client.query('BEGIN')
 
     for (const pref of preferences) {
-      // Get existing preference if any
       const existing = await client.query<{
         value: string
         confidence: number
         mention_count: number
       }>(
-        `SELECT value, confidence, mention_count 
-         FROM user_preferences 
+        `SELECT value, confidence, mention_count
+         FROM user_preferences
          WHERE user_id = $1 AND category = $2`,
         [userId, pref.category]
       )
 
       const existingPref = existing.rows[0]
 
-      // Calculate confidence
       const scoreResult = scoreConfidence({
         value: pref.value,
         message: sourceMessage,
@@ -268,9 +242,8 @@ export async function savePreferences(
 
       const confidence = pref.confidence || scoreResult.confidence
 
-      // UPSERT preference
       await client.query(
-        `INSERT INTO user_preferences 
+        `INSERT INTO user_preferences
          (user_id, category, value, confidence, mention_count, source_message, last_mentioned)
          VALUES ($1, $2, $3, $4, 1, $5, NOW())
          ON CONFLICT (user_id, category)
@@ -300,8 +273,7 @@ export async function savePreferences(
 }
 
 /**
- * Load all preferences for a user
- * Returns as a convenient Record for prompt injection
+ * Load all preferences for a user.
  */
 export async function loadPreferences(
   pool: Pool,
@@ -312,8 +284,8 @@ export async function loadPreferences(
       category: PreferenceCategory
       value: string
     }>(
-      `SELECT category, value 
-       FROM user_preferences 
+      `SELECT category, value
+       FROM user_preferences
        WHERE user_id = $1
        ORDER BY confidence DESC`,
       [userId]
@@ -332,8 +304,7 @@ export async function loadPreferences(
 }
 
 /**
- * Format preferences for system prompt injection
- * Returns human-readable context
+ * Format preferences for system prompt injection.
  */
 export function formatPreferencesForPrompt(prefs: Partial<PreferencesMap>): string {
   const entries = Object.entries(prefs)
@@ -350,8 +321,8 @@ export function formatPreferencesForPrompt(prefs: Partial<PreferencesMap>): stri
 }
 
 /**
- * Main workflow: Extract and save preferences from conversation
- * Call this after each user message (async, non-blocking)
+ * Main workflow: Extract and save preferences from conversation.
+ * Call this after each user message (async, non-blocking).
  */
 export async function processUserMessage(
   pool: Pool,
@@ -359,19 +330,16 @@ export async function processUserMessage(
   userMessage: string
 ): Promise<void> {
   try {
-    // Load existing preferences
-    const existingPrefs = await loadPreferences(pool, userId)
+    // Extract preferences — passes ONLY the user message, no history
+    const extracted = await extractPreferences(userMessage)
 
-    // Extract new preferences
-    const extracted = await extractPreferences(userMessage, existingPrefs)
-
+    // Guard: found must be true and there must be at least one non-null field
     if (!extracted || Object.keys(extracted).length === 0) {
-      return // No new preferences found
+      return
     }
 
-    // Convert to PreferenceInput array
     const preferences: PreferenceInput[] = Object.entries(extracted)
-      .filter(([, value]) => value) // Filter out null/undefined values
+      .filter(([, value]) => value !== null && value !== undefined && value !== '')
       .map(([category, value]) => ({
         category: category as PreferenceCategory,
         value: value as string,
@@ -382,12 +350,9 @@ export async function processUserMessage(
       return
     }
 
-    // Save to database
     await savePreferences(pool, userId, preferences, userMessage)
-
     console.log(`[MEMORY] Processed ${preferences.length} preferences for user ${userId}`)
   } catch (error) {
-    // Non-blocking - log error but don't fail the main conversation flow
     console.error('[MEMORY] Error processing user message for preferences:', error)
   }
 }

@@ -8,8 +8,18 @@
  * Fallback: Playwright network interception (captures same API in-browser).
  */
 
+import { randomUUID } from 'node:crypto'
 import { scrapeWithInterception, type InterceptedResponse } from '../../browser.js'
 import { withRetry, getDefaultCoords, sleep } from './retry.js'
+
+let swiggyDeviceId: string | null = null
+
+function getSwiggyDeviceId(): string {
+    if (!swiggyDeviceId) {
+        swiggyDeviceId = randomUUID()
+    }
+    return swiggyDeviceId
+}
 
 const SWIGGY_IMG_BASE = 'https://media-assets.swiggy.com/swiggy/image/upload/fl_lossy,f_auto,q_auto'
 
@@ -78,17 +88,29 @@ export async function scrapeSwiggy({ query, location: _location, lat, lng }: Swi
  */
 async function fetchSwiggyApi(query: string, lat: string, lng: string): Promise<SwiggyResult[]> {
     const encodedQuery = encodeURIComponent(query)
-    const url = `https://www.swiggy.com/dapi/restaurants/search/v3?lat=${lat}&lng=${lng}&str=${encodedQuery}&trackingId=&submitAction=SUGGESTION&queryUniqueId=`
+    const trackingId = randomUUID()
+    const queryUniqueId = randomUUID()
+    const url = `https://www.swiggy.com/dapi/restaurants/search/v3?lat=${lat}&lng=${lng}&str=${encodedQuery}&trackingId=${trackingId}&submitAction=SUGGESTION&queryUniqueId=${queryUniqueId}`
 
+    const deviceId = getSwiggyDeviceId()
     const response = await fetch(url, {
         headers: {
             'Accept': 'application/json, text/plain, */*',
-            'Accept-Language': 'en-GB,en-US;q=0.9,en;q=0.8',
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-IN,en-US;q=0.9,en;q=0.8',
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36',
             'Referer': 'https://www.swiggy.com/',
             'Origin': 'https://www.swiggy.com',
+            'Cookie': `deviceId=${deviceId}; sid=; _device_id=${deviceId}`,
+            'x-build-version': '4.60.1',
         },
     })
+
+    if (response.status === 403) {
+        swiggyDeviceId = null  // Reset so next attempt gets a fresh device ID
+        const err: any = new Error('Swiggy API blocked (403) — device ID rotated')
+        err.status = 403
+        throw err
+    }
 
     if (response.status === 429) {
         const err: any = new Error('Rate limited by Swiggy API')
