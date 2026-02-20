@@ -39,7 +39,7 @@ import { filterOutput, needsHumanReview } from './output-filter.js'
 // DEV 3: The Soul — memory, cognition, personality
 import { searchMemories, addMemories } from '../memory-store.js'
 import { searchGraph, addToGraph } from '../graph-memory.js'
-import { classifyMessage, internalMonologue } from '../cognitive.js'
+import { classifyMessage } from '../cognitive.js'
 import { getActiveGoal, updateConversationGoal } from '../cognitive.js'
 import { composeSystemPrompt, getRawSoulPrompt } from '../personality.js'
 import { loadPreferences, processUserMessage } from '../memory.js'
@@ -70,6 +70,7 @@ function buildMessages(
   composedSystemPrompt: string,
   sessionMessages: Message[],
   userMessage: string,
+  historyLimit: number = 12,
 ): Groq.Chat.ChatCompletionMessageParam[] {
   const messages: Groq.Chat.ChatCompletionMessageParam[] = []
 
@@ -79,8 +80,8 @@ function buildMessages(
     content: composedSystemPrompt,
   })
 
-  // Add conversation history (limit to last 10 exchanges)
-  const recentHistory = sessionMessages.slice(-20)
+  // Add conversation history — trimmed per complexity (simple=6, else=12)
+  const recentHistory = sessionMessages.slice(-historyLimit)
   for (const msg of recentHistory) {
     messages.push({
       role: msg.role === 'user' ? 'user' : 'assistant',
@@ -163,6 +164,21 @@ function extractMediaFromToolResult(rawData: unknown): MessageResponse['media'] 
   return media.length > 0 ? media : undefined
 }
 
+/**
+ * Compact formatter for compare_prices_proactive results.
+ * Keeps tool context under 400 tokens so the 70B model stays within budget.
+ */
+function formatProactiveForPrompt(rawData: unknown): string {
+  if (!rawData || typeof rawData !== 'object') return ''
+  const data = rawData as Record<string, unknown>
+  const formatted = data.formatted
+  if (typeof formatted === 'string' && formatted.length > 0) {
+    // Strip HTML tags for the prompt context (70B doesn't need them here)
+    return formatted.replace(/<[^>]+>/g, '').substring(0, 1200)
+  }
+  return ''
+}
+
 export async function handleMessage(
   channel: string,
   channelUserId: string,
@@ -223,7 +239,8 @@ export async function handleMessage(
     const pool = getPool()
     let memories: Awaited<ReturnType<typeof searchMemories>> = []
     let graphContext: Awaited<ReturnType<typeof searchGraph>> = []
-    let cognitiveState: Awaited<ReturnType<typeof internalMonologue>> = {
+    // Cognitive state is fused into the classifier result — no separate 8B call needed.
+    let cognitiveState = classification.cognitiveState ?? {
       internalMonologue: 'No specific reasoning available.',
       emotionalState: 'neutral' as const,
       conversationGoal: 'inform' as const,
@@ -235,7 +252,8 @@ export async function handleMessage(
     const isSimple = classification.message_complexity === 'simple'
 
     if (!isSimple) {
-      // Full pipeline for moderate/complex messages
+      // 4-way parallel pipeline: memory, graph, preferences, active goal.
+      // Cognitive is already resolved from the classifier — no 5th call.
       const pipelineResults = await Promise.all([
         // Memory search (skip if classifier says so)
         classification.skip_memory
@@ -251,28 +269,6 @@ export async function handleMessage(
               console.error('[handler] Graph search failed:', err)
               return [] as Awaited<ReturnType<typeof searchGraph>>
             }),
-        // Cognitive pre-analysis (skip if classifier says so)
-        classification.skip_cognitive
-          ? Promise.resolve({
-              internalMonologue: 'Simple message — no deep analysis needed.',
-              emotionalState: 'neutral' as const,
-              conversationGoal: 'inform' as const,
-              relevantMemories: [] as string[],
-            })
-          : internalMonologue(
-              userMessage,
-              session.messages.slice(-6),
-              [],
-              []
-            ).catch(err => {
-              console.error('[handler] Cognitive analysis failed:', err)
-              return {
-                internalMonologue: 'No specific reasoning available.',
-                emotionalState: 'neutral' as const,
-                conversationGoal: 'inform' as const,
-                relevantMemories: [] as string[],
-              }
-            }),
         // Load user preferences
         loadPreferences(pool, user.userId).catch(err => {
           console.error('[handler] Preferences load failed:', err)
@@ -287,9 +283,8 @@ export async function handleMessage(
 
       memories = pipelineResults[0]
       graphContext = pipelineResults[1]
-      cognitiveState = pipelineResults[2]
-      preferences = pipelineResults[3]
-      activeGoal = pipelineResults[4]
+      preferences = pipelineResults[2]
+      activeGoal = pipelineResults[3]
     }
 
     // ─── Step 7: Brain hooks — route message (Dev 1) ──────────────
@@ -323,6 +318,16 @@ export async function handleMessage(
       toolResultStr = toolResultStr
         ? `${toolResultStr}\n\n${routeDecision.additionalContext}`
         : routeDecision.additionalContext
+    }
+
+    // ─── Step 8b: Compact proactive formatter (keeps token budget) ─
+    if (routeDecision.toolName === 'compare_prices_proactive' && toolRawData) {
+      toolResultStr = formatProactiveForPrompt(toolRawData)
+    }
+
+    // ─── Step 8c: Proactive offer hint after places search ─────────
+    if (routeDecision.toolName === 'search_places' && toolResultStr) {
+      toolResultStr += '\n\n[ARIA HINT: The user found places nearby. Naturally offer to check delivery prices on Swiggy or Zomato if they seem interested in food, or compare grocery apps if it is a grocery query. Keep it conversational — do not make it sound like an ad.]'
     }
 
     // ─── Step 9: Compose dynamic system prompt ────────────────────
@@ -362,10 +367,14 @@ export async function handleMessage(
     })
 
     // ─── Step 10: Build messages for Groq ─────────────────────────
+    // Simple: 6 messages (3 exchanges) — no context needed for "hi", "ok", "thanks"
+    // Non-simple: 12 messages (6 exchanges) — enough for continuity without bloating 70B
+    const historyLimit = isSimple ? 6 : 12
     const messages = buildMessages(
       systemPromptComposed,
       session.messages,
       userMessage,
+      historyLimit,
     )
 
     // ─── Step 11: Call Groq 70B (personality response) ────────────

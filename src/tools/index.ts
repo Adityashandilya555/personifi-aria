@@ -17,6 +17,9 @@ import { getTransportEstimate, compareToolDefinition } from './compare.js'
 import { compareFoodPrices, foodCompareDefinition } from './food-compare.js'
 import { compareGroceryPrices, groceryCompareDefinition } from './grocery-compare.js'
 import { searchSwiggyFood, searchInstamartMCP, searchDineout, searchZomatoMCP, swiggyFoodDefinition, dineoutDefinition, zomatoDefinition } from './swiggy-mcp.js'
+import { compareProactive, compareProactiveDefinition } from './proactive-compare.js'
+import { searchBlinkit, blinkitDefinition } from './blinkit-mcp.js'
+import { searchZepto, zeptoDefinition } from './zepto-mcp.js'
 
 const bodyHooks: BodyHooks = {
     async executeTool(name: string, params: Record<string, unknown>): Promise<ToolExecutionResult> {
@@ -45,6 +48,12 @@ const bodyHooks: BodyHooks = {
                 return searchDineout(params as any)
             case 'search_zomato':
                 return searchZomatoMCP(params as any)
+            case 'compare_prices_proactive':
+                return compareProactive(params as any)
+            case 'search_blinkit':
+                return searchBlinkit(params as any)
+            case 'search_zepto':
+                return searchZepto(params as any)
             default:
                 return { success: false, data: null, error: `Unknown tool: ${name}` }
         }
@@ -63,6 +72,9 @@ const bodyHooks: BodyHooks = {
             swiggyFoodDefinition,
             zomatoDefinition,
             dineoutDefinition,
+            compareProactiveDefinition,
+            blinkitDefinition,
+            zeptoDefinition,
         ]
     },
 }
