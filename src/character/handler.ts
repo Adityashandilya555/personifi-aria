@@ -259,16 +259,16 @@ export async function handleMessage(
         classification.skip_memory
           ? Promise.resolve([])
           : searchMemories(searchUserIds.length > 1 ? searchUserIds : user.userId, userMessage, 5).catch(err => {
-              console.error('[handler] Memory search failed:', err)
-              return [] as Awaited<ReturnType<typeof searchMemories>>
-            }),
+            console.error('[handler] Memory search failed:', err)
+            return [] as Awaited<ReturnType<typeof searchMemories>>
+          }),
         // Graph search (skip if classifier says so)
         classification.skip_graph
           ? Promise.resolve([])
           : searchGraph(searchUserIds.length > 1 ? searchUserIds : user.userId, userMessage, 2, 10).catch(err => {
-              console.error('[handler] Graph search failed:', err)
-              return [] as Awaited<ReturnType<typeof searchGraph>>
-            }),
+            console.error('[handler] Graph search failed:', err)
+            return [] as Awaited<ReturnType<typeof searchGraph>>
+          }),
         // Load user preferences
         loadPreferences(pool, user.userId).catch(err => {
           console.error('[handler] Preferences load failed:', err)
@@ -369,13 +369,57 @@ export async function handleMessage(
     // ─── Step 10: Build messages for Groq ─────────────────────────
     // Simple: 6 messages (3 exchanges) — no context needed for "hi", "ok", "thanks"
     // Non-simple: 12 messages (6 exchanges) — enough for continuity without bloating 70B
-    const historyLimit = isSimple ? 6 : 12
-    const messages = buildMessages(
+    let historyLimit = isSimple ? 6 : 12
+    let messages = buildMessages(
       systemPromptComposed,
       session.messages,
       userMessage,
       historyLimit,
     )
+
+    // ─── Step 10b: Token budget guard ─────────────────────────────
+    // Estimate tokens as total chars / 4. Groq free tier = 12k TPM.
+    // We target ≤ 9,500 prompt tokens so 2,500 remain for completion + overhead.
+    const MAX_PROMPT_TOKENS = 9500
+    const estimateTokens = (msgs: typeof messages) =>
+      msgs.reduce((sum, m) => sum + (typeof m.content === 'string' ? m.content.length : 0), 0) / 4
+
+    let estimatedTokens = estimateTokens(messages)
+
+    if (estimatedTokens > MAX_PROMPT_TOKENS) {
+      console.warn(`[handler] Prompt too large (~${Math.round(estimatedTokens)} tokens). Truncating...`)
+
+      // Strategy 1: Truncate tool results in the system prompt (biggest offender)
+      if (toolResultStr && toolResultStr.length > 800) {
+        toolResultStr = toolResultStr.substring(0, 800) + '\n…[truncated for brevity]'
+        try {
+          systemPromptComposed = composeSystemPrompt({
+            userMessage, isAuthenticated: !!(user.displayName && user.homeLocation),
+            displayName: user.displayName, homeLocation: user.homeLocation,
+            memories, graphContext, cognitiveState, preferences, activeGoal,
+            isFirstMessage, isSimpleMessage: isSimple, toolResults: toolResultStr,
+          })
+        } catch { /* keep existing composed prompt */ }
+        messages = buildMessages(systemPromptComposed, session.messages, userMessage, historyLimit)
+        estimatedTokens = estimateTokens(messages)
+      }
+
+      // Strategy 2: Reduce history window
+      if (estimatedTokens > MAX_PROMPT_TOKENS) {
+        historyLimit = Math.max(2, Math.floor(historyLimit / 2))
+        messages = buildMessages(systemPromptComposed, session.messages, userMessage, historyLimit)
+        estimatedTokens = estimateTokens(messages)
+      }
+
+      // Strategy 3: Hard-truncate the system prompt itself
+      if (estimatedTokens > MAX_PROMPT_TOKENS && messages[0]?.content) {
+        const maxSysChars = Math.max(2000, (MAX_PROMPT_TOKENS * 4) - (estimatedTokens * 4 - (messages[0].content as string).length))
+        messages[0] = { ...messages[0], content: (messages[0].content as string).substring(0, maxSysChars) + '\n…[prompt truncated]' }
+        estimatedTokens = estimateTokens(messages)
+      }
+
+      console.log(`[handler] After truncation: ~${Math.round(estimatedTokens)} tokens, history=${historyLimit}`)
+    }
 
     // ─── Step 11: Call Groq 70B (personality response) ────────────
     const completion = await groq.chat.completions.create({
