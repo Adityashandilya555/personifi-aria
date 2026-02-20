@@ -207,7 +207,34 @@ export async function classifyMessage(
         }
 
         return getDefaultClassification()
-    } catch (error) {
+    } catch (error: any) {
+        // ── Path C: Groq 400 — Llama sometimes emits <function=name>{args} instead of proper tool_calls ──
+        // Parse the failed_generation to recover the tool call rather than losing it entirely.
+        const failedGen = error?.error?.error?.failed_generation as string | undefined
+        if (failedGen && typeof failedGen === 'string') {
+            const match = failedGen.match(/^<function=(\w+)>\s*(\{.*\})\s*$/s)
+            if (match) {
+                const toolName = match[1]
+                let toolArgs: Record<string, unknown> = {}
+                try { toolArgs = JSON.parse(match[2]) } catch { /* best effort */ }
+                console.log(`[cognitive] Recovered tool call from failed_generation: ${toolName}`, toolArgs)
+                return {
+                    message_complexity: 'complex',
+                    needs_tool: true,
+                    tool_hint: toolName,
+                    tool_args: toolArgs,
+                    skip_memory: false,
+                    skip_graph: false,
+                    skip_cognitive: true,
+                    cognitiveState: {
+                        internalMonologue: 'User needs real-time data. Deliver it clearly in Aria\'s voice.',
+                        emotionalState: 'curious',
+                        conversationGoal: 'inform',
+                        relevantMemories: [],
+                    },
+                }
+            }
+        }
         console.error('[cognitive] Classification failed, using defaults:', error)
         return getDefaultClassification()
     }
