@@ -14,7 +14,7 @@ export interface ResolvedLocation {
  * Set when Aria asks the user for their location.
  * Cleared when the user sends their GPS coordinates.
  */
-export const pendingLocationStore = new Map<string, { toolHint: string; chatId: string }>()
+export const pendingLocationStore = new Map<string, { toolHint: string; chatId: string; originalMessage?: string }>()
 
 /**
  * Reverse geocode lat/lng to a human-readable address.
