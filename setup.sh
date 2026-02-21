@@ -162,7 +162,7 @@ print_category() {
             masked=$(mask_value "$val")
             echo -e "    ${CHECK}  ${BOLD}${key}${RESET}"
             echo -e "       ${DIM}${desc} → ${GREEN}${masked}${RESET}"
-            ((set_count++))
+            set_count=$((set_count + 1))
         else
             if [ "$importance" = "required" ]; then
                 echo -e "    ${CROSS}  ${BOLD}${key}${RESET}  ${RED}(REQUIRED)${RESET}"
@@ -200,12 +200,12 @@ show_dashboard() {
         local val
         val=$(get_env_value "$key")
         if is_key_set "$val"; then
-            ((total_set++))
+            total_set=$((total_set + 1))
         fi
         if [ "$importance" = "required" ]; then
-            ((total_required++))
+            total_required=$((total_required + 1))
             if is_key_set "$val"; then
-                ((required_set++))
+                required_set=$((required_set + 1))
             fi
         fi
     done
@@ -232,7 +232,7 @@ prompt_missing_keys() {
         local val
         val=$(get_env_value "$key")
         if ! is_key_set "$val"; then
-            ((missing_count++))
+            missing_count=$((missing_count + 1))
         fi
     done
 
@@ -293,7 +293,7 @@ set_specific_key() {
         fi
         printf "  ${status}  %2d) %-30s ${DIM}%s${RESET}\n" "$i" "$key" "$desc"
         key_names+=("$entry")
-        ((i++))
+        i=$((i + 1))
     done
 
     echo ""
@@ -351,14 +351,14 @@ validate_keys() {
             "https://api.groq.com/openai/v1/models" 2>/dev/null)
         if [ "$groq_resp" = "200" ]; then
             echo -e "${CHECK} Working (HTTP ${groq_resp})"
-            ((pass_count++))
+            pass_count=$((pass_count + 1))
         else
             echo -e "${CROSS} Failed (HTTP ${groq_resp})"
-            ((fail_count++))
+            fail_count=$((fail_count + 1))
         fi
     else
         echo -e "  ${GRAY}⬚  Groq API — not configured, skipped${RESET}"
-        ((skip_count++))
+        skip_count=$((skip_count + 1))
     fi
 
     # --- Database ---
@@ -373,10 +373,10 @@ validate_keys() {
             db_port=$(echo "$db_url" | sed -n 's|.*:\([0-9]*\)/.*|\1|p')
             if pg_isready -h "$db_host" -p "${db_port:-5432}" -t 5 &>/dev/null; then
                 echo -e "${CHECK} Reachable"
-                ((pass_count++))
+                pass_count=$((pass_count + 1))
             else
                 echo -e "${CROSS} Unreachable (host: ${db_host}:${db_port:-5432})"
-                ((fail_count++))
+                fail_count=$((fail_count + 1))
             fi
         else
             # Fallback: try a simple connection via node if available
@@ -389,19 +389,19 @@ validate_keys() {
                 " 2>/dev/null || echo "fail:node error")
                 if echo "$db_test" | grep -q "^ok"; then
                     echo -e "${CHECK} Connected"
-                    ((pass_count++))
+                    pass_count=$((pass_count + 1))
                 else
                     echo -e "${CROSS} Connection failed"
-                    ((fail_count++))
+                    fail_count=$((fail_count + 1))
                 fi
             else
                 echo -e "${WARN} Cannot test (no pg_isready or node available)"
-                ((skip_count++))
+                skip_count=$((skip_count + 1))
             fi
         fi
     else
         echo -e "  ${GRAY}⬚  PostgreSQL — not configured, skipped${RESET}"
-        ((skip_count++))
+        skip_count=$((skip_count + 1))
     fi
 
     # --- Google Places ---
@@ -418,14 +418,14 @@ validate_keys() {
             -d '{"textQuery":"coffee","maxResultCount":1}' 2>/dev/null)
         if [ "$gp_resp" = "200" ]; then
             echo -e "${CHECK} Working (HTTP ${gp_resp})"
-            ((pass_count++))
+            pass_count=$((pass_count + 1))
         else
             echo -e "${CROSS} Failed (HTTP ${gp_resp})"
-            ((fail_count++))
+            fail_count=$((fail_count + 1))
         fi
     else
         echo -e "  ${GRAY}⬚  Google Places — not configured, skipped${RESET}"
-        ((skip_count++))
+        skip_count=$((skip_count + 1))
     fi
 
     # --- OpenWeatherMap ---
@@ -438,14 +438,14 @@ validate_keys() {
             "https://api.openweathermap.org/data/2.5/weather?q=London&units=metric&appid=${owm_key}" 2>/dev/null)
         if [ "$owm_resp" = "200" ]; then
             echo -e "${CHECK} Working (HTTP ${owm_resp})"
-            ((pass_count++))
+            pass_count=$((pass_count + 1))
         else
             echo -e "${CROSS} Failed (HTTP ${owm_resp})"
-            ((fail_count++))
+            fail_count=$((fail_count + 1))
         fi
     else
         echo -e "  ${GRAY}⬚  OpenWeatherMap — not configured, skipped${RESET}"
-        ((skip_count++))
+        skip_count=$((skip_count + 1))
     fi
 
     # --- Jina Embeddings ---
@@ -461,14 +461,14 @@ validate_keys() {
             -d '{"model":"jina-embeddings-v3","input":["test"],"dimensions":768}' 2>/dev/null)
         if [ "$jina_resp" = "200" ]; then
             echo -e "${CHECK} Working (HTTP ${jina_resp})"
-            ((pass_count++))
+            pass_count=$((pass_count + 1))
         else
             echo -e "${CROSS} Failed (HTTP ${jina_resp})"
-            ((fail_count++))
+            fail_count=$((fail_count + 1))
         fi
     else
         echo -e "  ${GRAY}⬚  Jina Embeddings — not configured, skipped${RESET}"
-        ((skip_count++))
+        skip_count=$((skip_count + 1))
     fi
 
     # --- Amadeus ---
@@ -483,14 +483,14 @@ validate_keys() {
             -d "grant_type=client_credentials&client_id=${amadeus_key}&client_secret=${amadeus_secret}" 2>/dev/null)
         if [ "$amadeus_resp" = "200" ]; then
             echo -e "${CHECK} Working (HTTP ${amadeus_resp})"
-            ((pass_count++))
+            pass_count=$((pass_count + 1))
         else
             echo -e "${CROSS} Failed (HTTP ${amadeus_resp})"
-            ((fail_count++))
+            fail_count=$((fail_count + 1))
         fi
     else
         echo -e "  ${GRAY}⬚  Amadeus Flights — not configured, skipped${RESET}"
-        ((skip_count++))
+        skip_count=$((skip_count + 1))
     fi
 
     # --- SerpAPI ---
@@ -503,14 +503,14 @@ validate_keys() {
             "https://serpapi.com/account.json?api_key=${serp_key}" 2>/dev/null)
         if [ "$serp_resp" = "200" ]; then
             echo -e "${CHECK} Working (HTTP ${serp_resp})"
-            ((pass_count++))
+            pass_count=$((pass_count + 1))
         else
             echo -e "${CROSS} Failed (HTTP ${serp_resp})"
-            ((fail_count++))
+            fail_count=$((fail_count + 1))
         fi
     else
         echo -e "  ${GRAY}⬚  SerpAPI — not configured, skipped${RESET}"
-        ((skip_count++))
+        skip_count=$((skip_count + 1))
     fi
 
     # --- RapidAPI ---
@@ -521,14 +521,14 @@ validate_keys() {
         # Just check if the key format looks valid (starts with expected prefix)
         if [ ${#rapid_key} -ge 10 ]; then
             echo -e "${WARN} Key set (${#rapid_key} chars) — no free validation endpoint"
-            ((skip_count++))
+            skip_count=$((skip_count + 1))
         else
             echo -e "${CROSS} Key looks too short (${#rapid_key} chars)"
-            ((fail_count++))
+            fail_count=$((fail_count + 1))
         fi
     else
         echo -e "  ${GRAY}⬚  RapidAPI — not configured, skipped${RESET}"
-        ((skip_count++))
+        skip_count=$((skip_count + 1))
     fi
 
     echo ""
