@@ -275,6 +275,77 @@ export function registerProactiveUser(userId: string, chatId: string): void {
 }
 
 /**
+ * Load all authenticated Telegram users from DB into activeUsers.
+ * Call once on startup so the in-memory list is populated after a restart.
+ */
+export async function loadUsersFromDB(): Promise<void> {
+    try {
+        const { getPool } = await import('../character/session-store.js')
+        const pool = getPool()
+        const { rows } = await pool.query<{ channel_user_id: string }>(
+            `SELECT channel_user_id FROM users
+             WHERE channel = 'telegram' AND authenticated = TRUE
+             ORDER BY updated_at DESC`
+        )
+        for (const row of rows) {
+            registerProactiveUser(row.channel_user_id, row.channel_user_id)
+        }
+        console.log(`[Proactive] Loaded ${rows.length} users from DB`)
+    } catch (err: any) {
+        console.warn('[Proactive] Could not load users from DB:', err?.message)
+    }
+}
+
+/**
+ * Force-send a reel to every active user right now, bypassing time/cooldown gates.
+ * Use for manual blasts or testing. Pass a hashtag to search.
+ */
+export async function blastReelsToAllUsers(hashtag = 'bangalorefood'): Promise<void> {
+    const users = activeUsers.length > 0
+        ? activeUsers
+        : await (async () => {
+            await loadUsersFromDB()
+            return activeUsers
+        })()
+
+    if (users.length === 0) {
+        console.warn('[Proactive] No users to blast')
+        return
+    }
+
+    console.log(`[Proactive] Blasting #${hashtag} reels to ${users.length} users`)
+
+    for (const { userId, chatId } of users) {
+        try {
+            const reels = await fetchReels(hashtag, userId, 5)
+            if (reels.length === 0) {
+                console.warn(`[Proactive] No reels for ${userId}`)
+                continue
+            }
+            const best = await pickBestReel(reels, userId)
+            if (!best) {
+                console.warn(`[Proactive] All URLs invalid for ${userId}`)
+                continue
+            }
+            const sent = await sendMediaViaPipeline(chatId, {
+                id: best.id,
+                source: best.source,
+                videoUrl: best.videoUrl,
+                thumbnailUrl: best.thumbnailUrl,
+                type: best.type,
+            }, 'macha check this out 🔥')
+            console.log(`[Proactive] Blast → ${userId}: sent=${sent}`)
+            if (sent) markMediaSent(best.id).catch(() => {})
+        } catch (err: any) {
+            console.error(`[Proactive] Blast failed for ${userId}:`, err?.message)
+        }
+        await sleep(1000)
+    }
+
+    console.log('[Proactive] Blast complete')
+}
+
+/**
  * Handle negative feedback on proactive content.
  * Cools the category for 6 hours.
  */
