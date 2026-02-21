@@ -95,8 +95,16 @@ Guidelines:
 Keep the response very concise. This is internal reasoning, not the actual response.`
 
 // ─── Classifier Prompt (Slim — tool schemas are passed via native tools[]) ───
+// Built as a function so we can inject today's date dynamically on every call.
+// This lets the 8B model resolve relative dates ("next Friday") → YYYY-MM-DD.
 
-const CLASSIFIER_PROMPT = `You are a travel and food chatbot message router for Aria, an AI travel companion.
+function buildClassifierPrompt(): string {
+    const now = new Date()
+    const today = now.toISOString().split('T')[0]
+    const dayName = now.toLocaleDateString('en-US', { weekday: 'long' })
+
+    return `You are a travel and food chatbot message router for Aria, an AI travel companion.
+Today is ${today} (${dayName}). Always convert relative dates ("next Friday", "tomorrow", "in 3 days") to YYYY-MM-DD format when calling tools.
 
 STEP 1 — Call a tool if the user needs real-time data:
 - Flights, hotels, weather, places, currency, transport → those tools
@@ -114,6 +122,7 @@ STEP 2 — If NO tool needed, reply with ONLY this JSON (nothing else):
 m = Aria's 1-sentence private reasoning (e.g. "User wants Bali tips, mention the visa trick they'll love")
 e = user emotion: excited|frustrated|curious|neutral|anxious|grateful|nostalgic|overwhelmed
 g = Aria's goal: inform|recommend|clarify|empathize|redirect|upsell|plan|reassure`
+}
 
 // ─── Public API ─────────────────────────────────────────────────────────────
 
@@ -150,7 +159,7 @@ export async function classifyMessage(
         const response = await client.chat.completions.create({
             model: COGNITIVE_MODEL,
             messages: [
-                { role: 'system', content: CLASSIFIER_PROMPT },
+                { role: 'system', content: buildClassifierPrompt() },
                 {
                     role: 'user',
                     content: historyStr

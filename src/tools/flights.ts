@@ -24,10 +24,36 @@ interface FlightSearchParams {
 }
 
 /**
+ * Ensure departureDate is YYYY-MM-DD. If the 8B model sent a relative
+ * date string ("next Friday") that slipped through, default to tomorrow.
+ */
+function resolveDate(dateStr: string): string {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+        // Already YYYY-MM-DD — but ensure it's not in the past
+        const d = new Date(dateStr + 'T00:00:00')
+        const today = new Date()
+        today.setHours(0, 0, 0, 0)
+        if (d >= today) return dateStr
+        // Date is in the past — push to next year same date as a reasonable guess
+        d.setFullYear(d.getFullYear() + 1)
+        const resolved = d.toISOString().split('T')[0]
+        console.log(`[Flight Tool] Date ${dateStr} is in the past, using ${resolved}`)
+        return resolved
+    }
+    // Not a valid date format — default to tomorrow
+    const tomorrow = new Date()
+    tomorrow.setDate(tomorrow.getDate() + 1)
+    const fallback = tomorrow.toISOString().split('T')[0]
+    console.log(`[Flight Tool] Could not parse date "${dateStr}", defaulting to ${fallback}`)
+    return fallback
+}
+
+/**
  * Search for flights using Amadeus API
  */
 export async function searchFlights(params: FlightSearchParams): Promise<ToolExecutionResult> {
-    const { origin, destination, departureDate, returnDate, adults = 1, currency = 'USD' } = params
+    const { origin, destination, departureDate: rawDate, returnDate, adults = 1, currency = 'USD' } = params
+    const departureDate = resolveDate(rawDate)
 
     // Check if API keys are set
     const client = getAmadeusClient()
@@ -130,9 +156,9 @@ export async function searchFlightsFallback(params: FlightSearchParams): Promise
 
         if (returnDate) {
             queryParams.append('return_date', returnDate)
-            queryParams.append('type', '2') // Round trip
+            queryParams.append('type', '1') // 1 = Round trip per SerpAPI docs
         } else {
-            queryParams.append('type', '1') // One way
+            queryParams.append('type', '2') // 2 = One way per SerpAPI docs
         }
 
         const response = await fetch(`https://serpapi.com/search?${queryParams.toString()}`)
