@@ -1,4 +1,5 @@
 import type { ToolExecutionResult } from '../hooks.js'
+import { rapidGet } from './rapidapi-client.js'
 
 interface HotelSearchParams {
     location: string
@@ -8,8 +9,6 @@ interface HotelSearchParams {
     rooms?: number
     currency?: string
 }
-
-const RAPIDAPI_HOST = 'booking-com.p.rapidapi.com'
 
 /**
  * Search for hotels using Booking.com via RapidAPI
@@ -28,23 +27,12 @@ export async function searchHotels(params: HotelSearchParams): Promise<ToolExecu
         }
     }
 
-    const headers = {
-        'X-RapidAPI-Key': process.env.RAPIDAPI_KEY,
-        'X-RapidAPI-Host': RAPIDAPI_HOST,
-    }
-
     try {
         // Step 1: Get Destination ID
-        const locUrl = `https://${RAPIDAPI_HOST}/v1/hotels/locations?name=${encodeURIComponent(location)}&locale=en-gb`
-        const locRes = await fetch(locUrl, { headers })
-        if (!locRes.ok) {
-            return {
-                success: false,
-                data: null,
-                error: `Hotel location API error: ${locRes.status} ${locRes.statusText}`,
-            }
-        }
-        const locData = await locRes.json()
+        const locData = await rapidGet('booking', '/v1/hotels/locations', {
+            name: location,
+            locale: 'en-gb',
+        }, { label: 'hotel-location' })
 
         if (!locData || locData.length === 0) {
             return {
@@ -59,27 +47,18 @@ export async function searchHotels(params: HotelSearchParams): Promise<ToolExecu
         const destType = dest.dest_type
 
         // Step 2: Search Hotels
-        const searchUrl = new URL(`https://${RAPIDAPI_HOST}/v1/hotels/search`)
-        searchUrl.searchParams.append('checkout_date', checkOutDate)
-        searchUrl.searchParams.append('units', 'metric')
-        searchUrl.searchParams.append('dest_id', destId)
-        searchUrl.searchParams.append('dest_type', destType)
-        searchUrl.searchParams.append('locale', 'en-gb')
-        searchUrl.searchParams.append('adults_number', adults.toString())
-        searchUrl.searchParams.append('order_by', 'popularity')
-        searchUrl.searchParams.append('room_number', rooms.toString())
-        searchUrl.searchParams.append('checkin_date', checkInDate)
-        searchUrl.searchParams.append('currency', currency)
-
-        const searchRes = await fetch(searchUrl.toString(), { headers })
-        if (!searchRes.ok) {
-            return {
-                success: false,
-                data: null,
-                error: `Hotel search API error: ${searchRes.status} ${searchRes.statusText}`,
-            }
-        }
-        const searchData = await searchRes.json()
+        const searchData = await rapidGet('booking', '/v1/hotels/search', {
+            checkout_date: checkOutDate,
+            units: 'metric',
+            dest_id: destId,
+            dest_type: destType,
+            locale: 'en-gb',
+            adults_number: adults.toString(),
+            order_by: 'popularity',
+            room_number: rooms.toString(),
+            checkin_date: checkInDate,
+            currency,
+        }, { label: 'hotel-search' })
 
         if (!searchData || !searchData.result || searchData.result.length === 0) {
             return {
