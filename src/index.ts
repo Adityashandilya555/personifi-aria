@@ -6,6 +6,7 @@
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import { handleMessage, initDatabase, registerBrainHooks, saveUserLocation } from './character/index.js'
+import { getOrCreateUser } from './character/session-store.js'
 import { brainHooks } from './brain/index.js'
 import { initScheduler } from './scheduler.js'
 import { initMCPTokenStore } from './tools/mcp-client.js'
@@ -114,7 +115,10 @@ server.post('/webhook/telegram', async (request, reply) => {
 
     try {
       const address = await reverseGeocode(latitude, longitude)
-      await saveUserLocation(`telegram:${userId}`, address)
+
+      // Resolve the internal UUID — saveUserLocation needs a UUID, not "telegram:123"
+      const user = await getOrCreateUser('telegram', userId)
+      await saveUserLocation(user.userId, address)
       pendingLocationStore.delete(userId)
 
       // Confirm and re-run any parked tool via a natural message
