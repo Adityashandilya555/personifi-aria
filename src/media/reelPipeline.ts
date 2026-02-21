@@ -134,9 +134,9 @@ export async function markMediaSent(itemId: string, telegramFileId?: string): Pr
 
 // ─── Instagram Scraper ──────────────────────────────────────────────────────
 // Uses instagram120 API (user's subscribed API)
-// Endpoints: GET /v1/search (hashtag search), POST /api/instagram/posts (user posts)
+// Only working endpoint: POST /api/instagram/posts → { result: { edges: [{ node: {...} }] } }
 
-// Bangalore foodie accounts to pull reels from when hashtag search fails
+// Bangalore foodie accounts — rotated through to get varied content
 const BANGALORE_FOOD_ACCOUNTS = [
     'bangalorefoodie', 'bangalorefoodguide', 'zabornak',
     'thegreatindianfoodie', 'dloopfoods', 'bangalore_foodie_trails',
@@ -151,156 +151,87 @@ async function searchInstagramReels(opts: SearchOptions): Promise<ReelResult[]> 
         return cached
     }
 
-    // Strategy 1: Search by hashtag via /v1/search
-    try {
-        const data = await rapidGet('instagram120', '/v1/search', {
-            query: opts.hashtag,
-            type: 'hashtag',
-        }, { label: 'ig-search' })
+    // Try accounts in random order until we get enough results
+    const accounts = [...BANGALORE_FOOD_ACCOUNTS].sort(() => Math.random() - 0.5)
+    for (const account of accounts) {
+        try {
+            const data = await rapidPost('instagram120', '/api/instagram/posts', {
+                username: account,
+                maxId: '',
+            }, { label: 'ig-posts', retries: 1 })
 
-        const results = parseInstagramSearchResponse(data, opts.hashtag, maxResults)
-        if (results.length > 0) {
-            console.log(`[ReelPipeline] Instagram search: ${results.length} results for #${opts.hashtag}`)
-            cacheSet(cacheK, results, 30 * 60 * 1000)
-            return results
+            const results = parseInstagramPostsResponse(data, opts.hashtag, maxResults)
+            if (results.length > 0) {
+                console.log(`[ReelPipeline] Instagram posts from @${account}: ${results.length} results`)
+                cacheSet(cacheK, results, 30 * 60 * 1000)
+                return results
+            }
+        } catch (err: any) {
+            console.warn(`[ReelPipeline] Instagram @${account} failed:`, err?.message)
         }
-    } catch (err: any) {
-        console.warn(`[ReelPipeline] Instagram search failed:`, err?.message)
-    }
-
-    // Strategy 2: Get posts from relevant Bangalore accounts
-    const relevantAccount = BANGALORE_FOOD_ACCOUNTS[Math.floor(Math.random() * BANGALORE_FOOD_ACCOUNTS.length)]
-    try {
-        const data = await rapidPost('instagram120', '/api/instagram/posts', {
-            username: relevantAccount,
-            maxId: '',
-        }, { label: 'ig-posts' })
-
-        const results = parseInstagramPostsResponse(data, opts.hashtag, maxResults)
-        if (results.length > 0) {
-            console.log(`[ReelPipeline] Instagram posts from @${relevantAccount}: ${results.length} results`)
-            cacheSet(cacheK, results, 30 * 60 * 1000)
-            return results
-        }
-    } catch (err: any) {
-        console.warn(`[ReelPipeline] Instagram posts failed:`, err?.message)
     }
 
     console.warn(`[ReelPipeline] Instagram failed for #${opts.hashtag}`)
     return []
 }
 
-function parseInstagramSearchResponse(data: any, hashtag: string, maxResults: number): ReelResult[] {
+function parseInstagramPostsResponse(data: any, hashtag: string, maxResults: number): ReelResult[] {
     const results: ReelResult[] = []
 
-    // Handle various response structures from /v1/search
-    const items = data?.data?.items
-        || data?.items
-        || data?.medias
-        || data?.data?.medias
-        || data?.result?.items
-        || []
+    // POST /api/instagram/posts → { result: { edges: [{ node: {...} }] } }
+    // Also handle flat arrays for forward-compatibility
+    const edges: any[] = data?.result?.edges || []
+    const items: any[] = edges.length > 0
+        ? edges.map((e: any) => e?.node).filter(Boolean)
+        : (data?.data?.items || data?.items || data?.result?.items || [])
 
     for (const item of items) {
         if (results.length >= maxResults) break
 
-        const isVideo = item?.media_type === 2
-            || item?.video_url
-            || item?.video_versions?.length > 0
-            || item?.is_video
-            || item?.type === 'video'
+        // GraphQL-style: __typename === 'GraphVideo', or private-API: media_type === 2 / is_video
+        const isVideo = item?.__typename === 'GraphVideo'
+            || item?.is_video === true
+            || item?.media_type === 2
+            || !!item?.video_url
+            || !!item?.video_resources?.length
 
         let videoUrl: string | null = null
         let thumbnailUrl: string | null = null
 
         if (isVideo) {
             videoUrl = item?.video_url
+                || item?.video_resources?.[0]?.src
                 || item?.video_versions?.[0]?.url
-                || item?.video_url_hd
-                || item?.url
                 || null
-            thumbnailUrl = item?.image_versions2?.candidates?.[0]?.url
+            thumbnailUrl = item?.display_url
+                || item?.thumbnail_src
+                || item?.image_versions2?.candidates?.[0]?.url
                 || item?.thumbnail_url
-                || item?.display_url
-                || item?.thumbnail
                 || null
         } else {
-            thumbnailUrl = item?.image_versions2?.candidates?.[0]?.url
+            thumbnailUrl = item?.display_url
+                || item?.thumbnail_src
+                || item?.image_versions2?.candidates?.[0]?.url
                 || item?.thumbnail_url
-                || item?.display_url
-                || item?.url
-                || item?.thumbnail
                 || null
         }
 
-        const caption = item?.caption?.text || item?.accessibility_caption || item?.title || ''
-        const author = item?.user?.username || item?.owner?.username || item?.username || 'unknown'
-        const likes = item?.like_count || item?.likes_count || item?.likes || 0
-        const id = item?.pk || item?.id || item?.code || `ig_${Date.now()}_${results.length}`
+        // Caption: GraphQL uses edge_media_to_caption, private API uses caption.text
+        const caption = item?.edge_media_to_caption?.edges?.[0]?.node?.text
+            || item?.caption?.text
+            || item?.accessibility_caption
+            || ''
 
-        if (!videoUrl && !thumbnailUrl) continue
+        const author = item?.owner?.username
+            || item?.user?.username
+            || 'unknown'
 
-        results.push({
-            id: String(id),
-            source: 'instagram',
-            videoUrl,
-            thumbnailUrl,
-            caption: caption.slice(0, 300),
-            author,
-            likes,
-            type: videoUrl ? 'video' : 'image',
-            hashtag,
-        })
-    }
+        const likes = item?.edge_liked_by?.count
+            || item?.edge_media_preview_like?.count
+            || item?.like_count
+            || item?.likes_count
+            || 0
 
-    return results
-}
-
-function parseInstagramPostsResponse(data: any, hashtag: string, maxResults: number): ReelResult[] {
-    const results: ReelResult[] = []
-
-    // POST /api/instagram/posts returns items in various structures
-    const items = data?.data?.items
-        || data?.items
-        || data?.result?.items
-        || data?.data
-        || []
-
-    const itemList = Array.isArray(items) ? items : []
-
-    for (const item of itemList) {
-        if (results.length >= maxResults) break
-
-        const isVideo = item?.media_type === 2
-            || item?.video_url
-            || item?.video_versions?.length > 0
-            || item?.is_video
-            || item?.type === 'video'
-
-        let videoUrl: string | null = null
-        let thumbnailUrl: string | null = null
-
-        if (isVideo) {
-            videoUrl = item?.video_url
-                || item?.video_versions?.[0]?.url
-                || item?.url
-                || null
-            thumbnailUrl = item?.image_versions2?.candidates?.[0]?.url
-                || item?.thumbnail_url
-                || item?.thumbnail
-                || null
-        } else {
-            thumbnailUrl = item?.image_versions2?.candidates?.[0]?.url
-                || item?.thumbnail_url
-                || item?.display_url
-                || item?.url
-                || item?.thumbnail
-                || null
-        }
-
-        const caption = item?.caption?.text || item?.accessibility_caption || item?.title || ''
-        const author = item?.user?.username || item?.owner?.username || 'unknown'
-        const likes = item?.like_count || item?.likes_count || item?.likes || 0
         const id = item?.pk || item?.id || item?.code || `ig_${Date.now()}_${results.length}`
 
         if (!videoUrl && !thumbnailUrl) continue
