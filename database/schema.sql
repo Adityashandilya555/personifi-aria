@@ -98,3 +98,25 @@ CREATE TABLE price_alerts (
 CREATE INDEX idx_price_alerts_user ON price_alerts(user_id);
 CREATE INDEX idx_price_alerts_active ON price_alerts(is_active);
 
+-- Scraped media from Instagram/TikTok (media cron)
+CREATE TABLE IF NOT EXISTS scraped_media (
+    id SERIAL PRIMARY KEY,
+    item_id TEXT UNIQUE NOT NULL,
+    platform TEXT NOT NULL,
+    media_type TEXT NOT NULL,
+    keyword TEXT NOT NULL,
+    title TEXT,
+    author TEXT,
+    thumbnail_url TEXT,
+    media_url TEXT NOT NULL,
+    telegram_file_id TEXT,
+    duration_secs INTEGER,
+    url_expires_at TIMESTAMPTZ,
+    scraped_at TIMESTAMPTZ DEFAULT NOW(),
+    sent_count INTEGER DEFAULT 0
+);
+
+CREATE INDEX idx_scraped_media_keyword ON scraped_media(keyword);
+CREATE INDEX idx_scraped_media_platform ON scraped_media(platform);
+CREATE INDEX idx_scraped_media_expires ON scraped_media(url_expires_at);
+

@@ -1,17 +1,18 @@
 /**
  * Reel Pipeline — Full content scraping + delivery pipeline
  *
- * Fetches real reels/videos/images from social platforms via RapidAPI.
- * Fallback chain: Instagram → TikTok → YouTube Shorts
+ * Fetches real reels/videos/images from social platforms.
+ * Fallback chain: scraped_media DB → Instagram → TikTok → YouTube Shorts
  *
- * This is how Aria shares content proactively — replicating what a real
- * person would do: forward interesting reels, share food pics, etc.
+ * The DB layer is populated by the media-cron (headless browser, free).
+ * RapidAPI is only hit when the DB has no fresh content for a hashtag.
  *
  * Environment variables:
  *   RAPIDAPI_KEY — shared across all RapidAPI hosts
  */
 
-import { withRetry, sleep } from '../tools/scrapers/retry.js'
+import { rapidGet, rapidPost } from '../tools/rapidapi-client.js'
+import { sleep } from '../tools/scrapers/retry.js'
 import { cacheGet, cacheSet, cacheKey } from '../tools/scrapers/cache.js'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -56,64 +57,84 @@ export function markReelSent(userId: string, reelId: string): void {
     }
 }
 
-// ─── RapidAPI Helpers ───────────────────────────────────────────────────────
+// ─── DB Layer (scraped_media) ───────────────────────────────────────────────
 
-function getApiKey(): string {
-    const key = process.env.RAPIDAPI_KEY
-    if (!key) throw new Error('RAPIDAPI_KEY not set')
-    return key
+/**
+ * Query pre-scraped content from the scraped_media table.
+ * Returns items whose URLs haven't expired and that match the keyword.
+ * Sorted by freshness (most recently scraped first), least-sent first.
+ */
+async function queryScrapedMedia(hashtag: string, maxResults: number): Promise<ReelResult[]> {
+    try {
+        // Dynamic import to avoid circular dependency — session-store may not
+        // be initialised yet during module loading.
+        const { getPool } = await import('../character/session-store.js')
+        const pool = getPool()
+
+        const { rows } = await pool.query<{
+            item_id: string
+            platform: string
+            media_type: string
+            keyword: string
+            title: string | null
+            author: string | null
+            thumbnail_url: string | null
+            media_url: string
+            duration_secs: number | null
+            telegram_file_id: string | null
+            sent_count: number
+        }>(
+            `SELECT item_id, platform, media_type, keyword, title, author,
+                    thumbnail_url, media_url, duration_secs, telegram_file_id, sent_count
+             FROM scraped_media
+             WHERE keyword ILIKE $1
+               AND (url_expires_at IS NULL OR url_expires_at > NOW())
+             ORDER BY sent_count ASC, scraped_at DESC
+             LIMIT $2`,
+            [`%${hashtag}%`, maxResults]
+        )
+
+        return rows.map((r) => ({
+            id: r.item_id,
+            source: (r.platform === 'tiktok' ? 'tiktok' : 'instagram') as 'instagram' | 'tiktok',
+            videoUrl: r.media_type === 'image' ? null : r.media_url,
+            thumbnailUrl: r.thumbnail_url,
+            caption: r.title || '',
+            author: r.author || 'unknown',
+            likes: 0, // DB doesn't track likes
+            type: (r.media_type === 'image' ? 'image' : 'video') as 'video' | 'image',
+            hashtag: r.keyword,
+        }))
+    } catch (err: any) {
+        // DB not available (e.g. schema not migrated yet) — silently skip
+        console.warn(`[ReelPipeline] DB query failed (non-fatal):`, err?.message)
+        return []
+    }
 }
 
-async function rapidApiGet(host: string, path: string, params: Record<string, string>): Promise<any> {
-    const url = new URL(`https://${host}${path}`)
-    for (const [k, v] of Object.entries(params)) {
-        url.searchParams.set(k, v)
+/**
+ * After a successful Telegram send, write back the telegram_file_id and
+ * bump sent_count so the item is deprioritised for future sends.
+ */
+export async function markMediaSent(itemId: string, telegramFileId?: string): Promise<void> {
+    try {
+        const { getPool } = await import('../character/session-store.js')
+        const pool = getPool()
+        await pool.query(
+            `UPDATE scraped_media
+             SET sent_count = sent_count + 1,
+                 telegram_file_id = COALESCE($2, telegram_file_id)
+             WHERE item_id = $1`,
+            [itemId, telegramFileId || null]
+        )
+    } catch {
+        // best-effort — don't crash if DB is unavailable
     }
-
-    const resp = await fetch(url.toString(), {
-        method: 'GET',
-        headers: {
-            'X-RapidAPI-Key': getApiKey(),
-            'X-RapidAPI-Host': host,
-        },
-    })
-
-    if (!resp.ok) {
-        const err: any = new Error(`RapidAPI ${host} ${resp.status}`)
-        err.status = resp.status
-        throw err
-    }
-
-    return resp.json()
-}
-
-async function rapidApiPost(host: string, path: string, body: Record<string, any>): Promise<any> {
-    const url = `https://${host}${path}`
-
-    const resp = await fetch(url, {
-        method: 'POST',
-        headers: {
-            'X-RapidAPI-Key': getApiKey(),
-            'X-RapidAPI-Host': host,
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-    })
-
-    if (!resp.ok) {
-        const err: any = new Error(`RapidAPI ${host} ${resp.status}`)
-        err.status = resp.status
-        throw err
-    }
-
-    return resp.json()
 }
 
 // ─── Instagram Scraper ──────────────────────────────────────────────────────
 // Uses instagram120 API (user's subscribed API)
 // Endpoints: GET /v1/search (hashtag search), POST /api/instagram/posts (user posts)
-
-const IG_HOST = 'instagram120.p.rapidapi.com'
 
 // Bangalore foodie accounts to pull reels from when hashtag search fails
 const BANGALORE_FOOD_ACCOUNTS = [
@@ -132,13 +153,10 @@ async function searchInstagramReels(opts: SearchOptions): Promise<ReelResult[]> 
 
     // Strategy 1: Search by hashtag via /v1/search
     try {
-        const data = await withRetry(
-            () => rapidApiGet(IG_HOST, '/v1/search', {
-                query: opts.hashtag,
-                type: 'hashtag',
-            }),
-            2, 1000, 'ig-search'
-        )
+        const data = await rapidGet('instagram120', '/v1/search', {
+            query: opts.hashtag,
+            type: 'hashtag',
+        }, { label: 'ig-search' })
 
         const results = parseInstagramSearchResponse(data, opts.hashtag, maxResults)
         if (results.length > 0) {
@@ -153,13 +171,10 @@ async function searchInstagramReels(opts: SearchOptions): Promise<ReelResult[]> 
     // Strategy 2: Get posts from relevant Bangalore accounts
     const relevantAccount = BANGALORE_FOOD_ACCOUNTS[Math.floor(Math.random() * BANGALORE_FOOD_ACCOUNTS.length)]
     try {
-        const data = await withRetry(
-            () => rapidApiPost(IG_HOST, '/api/instagram/posts', {
-                username: relevantAccount,
-                maxId: '',
-            }),
-            2, 1000, 'ig-posts'
-        )
+        const data = await rapidPost('instagram120', '/api/instagram/posts', {
+            username: relevantAccount,
+            maxId: '',
+        }, { label: 'ig-posts' })
 
         const results = parseInstagramPostsResponse(data, opts.hashtag, maxResults)
         if (results.length > 0) {
@@ -308,9 +323,7 @@ function parseInstagramPostsResponse(data: any, hashtag: string, maxResults: num
 
 // ─── TikTok Scraper (Fallback 1) ────────────────────────────────────────────
 // Uses tiktok-api23 (Lundehund) — user's subscribed API
-// Endpoint: POST /social-media/tiktok-scraper/posts-by-keyword
-
-const TIKTOK_HOST = 'tiktok-api23.p.rapidapi.com'
+// Endpoints: GET /api/search/video (keyword search)
 
 async function searchTikTokReels(opts: SearchOptions): Promise<ReelResult[]> {
     const maxResults = opts.maxResults ?? 10
@@ -322,13 +335,11 @@ async function searchTikTokReels(opts: SearchOptions): Promise<ReelResult[]> {
     }
 
     try {
-        const data = await withRetry(
-            () => rapidApiPost(TIKTOK_HOST, '/social-media/tiktok-scraper/posts-by-keyword', {
-                keyword: `${opts.hashtag} bangalore`,
-                count: maxResults,
-            }),
-            2, 1000, 'tiktok'
-        )
+        const data = await rapidGet('tiktok', '/api/search/video', {
+            keyword: `${opts.hashtag} bangalore`,
+            cursor: '0',
+            search_id: '0',
+        }, { label: 'tiktok' })
 
         const results = parseTikTokResponse(data, opts.hashtag, maxResults)
         if (results.length > 0) {
@@ -344,7 +355,9 @@ async function searchTikTokReels(opts: SearchOptions): Promise<ReelResult[]> {
 
 function parseTikTokResponse(data: any, hashtag: string, maxResults: number): ReelResult[] {
     const results: ReelResult[] = []
-    const items = data?.data?.videos || data?.aweme_list || data?.data?.aweme_list || []
+    // /api/search/video returns { data: [...aweme objects] } or { data: { videos: [...] } }
+    const items = Array.isArray(data?.data) ? data.data
+        : data?.data?.videos || data?.aweme_list || data?.data?.aweme_list || []
 
     for (const item of items) {
         if (results.length >= maxResults) break
@@ -384,8 +397,6 @@ function parseTikTokResponse(data: any, hashtag: string, maxResults: number): Re
 
 // ─── YouTube Shorts Scraper (Fallback 2) ─────────────────────────────────────
 
-const YOUTUBE_HOST = 'youtube-v3-alternative.p.rapidapi.com'
-
 async function searchYouTubeShorts(opts: SearchOptions): Promise<ReelResult[]> {
     const maxResults = opts.maxResults ?? 10
     const cacheK = cacheKey('yt-shorts', { hashtag: opts.hashtag })
@@ -396,15 +407,12 @@ async function searchYouTubeShorts(opts: SearchOptions): Promise<ReelResult[]> {
     }
 
     try {
-        const data = await withRetry(
-            () => rapidApiGet(YOUTUBE_HOST, '/search', {
-                query: `${opts.hashtag} bangalore shorts`,
-                type: 'video',
-                videoDuration: 'short',
-                maxResults: String(maxResults),
-            }),
-            2, 1000, 'youtube'
-        )
+        const data = await rapidGet('youtube', '/search', {
+            query: `${opts.hashtag} bangalore shorts`,
+            type: 'video',
+            videoDuration: 'short',
+            maxResults: String(maxResults),
+        }, { label: 'youtube' })
 
         const results = parseYouTubeResponse(data, opts.hashtag, maxResults)
         if (results.length > 0) {
@@ -449,7 +457,7 @@ function parseYouTubeResponse(data: any, hashtag: string, maxResults: number): R
 
 /**
  * Fetch reels/content for a given hashtag.
- * Tries: Instagram → TikTok → YouTube Shorts
+ * Tries: scraped_media DB → Instagram → TikTok → YouTube Shorts
  *
  * Returns de-duplicated results not previously sent to this user.
  */
@@ -460,17 +468,25 @@ export async function fetchReels(
 ): Promise<ReelResult[]> {
     console.log(`[ReelPipeline] Fetching reels for #${hashtag} (user: ${userId})`)
 
-    // Try Instagram first (best Bangalore content)
-    let results = await searchInstagramReels({ hashtag, maxResults: maxResults * 2 })
+    // 0. Try pre-scraped content from DB first (free, instant)
+    let results = await queryScrapedMedia(hashtag, maxResults * 2)
+    if (results.length > 0) {
+        console.log(`[ReelPipeline] DB hit: ${results.length} pre-scraped items for #${hashtag}`)
+    }
 
-    // Fallback to TikTok
+    // 1. Fallback: Instagram via RapidAPI
+    if (results.length === 0) {
+        results = await searchInstagramReels({ hashtag, maxResults: maxResults * 2 })
+    }
+
+    // 2. Fallback: TikTok via RapidAPI
     if (results.length === 0) {
         console.log(`[ReelPipeline] No IG results → trying TikTok`)
         await sleep(500) // rate limit courtesy
         results = await searchTikTokReels({ hashtag, maxResults: maxResults * 2 })
     }
 
-    // Fallback to YouTube Shorts
+    // 3. Fallback: YouTube Shorts via RapidAPI
     if (results.length === 0) {
         console.log(`[ReelPipeline] No TikTok results → trying YouTube`)
         await sleep(500)

@@ -19,7 +19,7 @@ import {
     getCurrentTimeIST,
     markCategoryCooling,
 } from './contentIntelligence.js'
-import { fetchReels, pickBestReel, type ReelResult } from './reelPipeline.js'
+import { fetchReels, pickBestReel, markMediaSent, type ReelResult } from './reelPipeline.js'
 import { sendMediaViaPipeline } from './mediaDownloader.js'
 import { sendProactiveContent } from '../channels.js'
 import { sleep } from '../tools/scrapers/retry.js'
@@ -243,6 +243,8 @@ async function runProactiveForUser(userId: string, chatId: string): Promise<void
 
     if (sent) {
         console.log(`[Proactive] Successfully delivered ${bestReel.type} to ${userId}`)
+        // Update DB: bump sent_count so this item is deprioritised next time
+        markMediaSent(bestReel.id).catch(() => {})
     } else {
         console.warn(`[Proactive] Media pipeline failed, sending caption as text`)
         await sendProactiveContent(chatId, caption)

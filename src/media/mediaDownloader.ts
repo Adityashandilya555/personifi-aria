@@ -20,7 +20,7 @@
  *   - file_id re-send: no size limit, instant
  */
 
-import { Readable } from 'node:stream'
+import { markMediaSent } from './reelPipeline.js'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -452,6 +452,8 @@ export async function sendMediaViaPipeline(
     // Step 5: Cache the file_id for instant re-sends
     if (result.success && result.fileId) {
         cacheFileId(reel.source, reel.id, result.fileId)
+        // Write telegram_file_id back to scraped_media DB for persistent re-sends
+        markMediaSent(reel.id, result.fileId).catch(() => {})
         console.log(`[MediaPipeline] Cached file_id for ${reel.source}:${reel.id}`)
     }
 
