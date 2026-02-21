@@ -19,7 +19,7 @@ import {
     getCurrentTimeIST,
     markCategoryCooling,
 } from './contentIntelligence.js'
-import { fetchReels, pickBestReel, markMediaSent, markReelSent, type ReelResult } from './reelPipeline.js'
+import { fetchReels, pickBestReel, markMediaSent, markReelSent } from './reelPipeline.js'
 import { sendMediaViaPipeline } from './mediaDownloader.js'
 import { sendProactiveContent } from '../channels.js'
 import { sleep } from '../tools/scrapers/retry.js'
