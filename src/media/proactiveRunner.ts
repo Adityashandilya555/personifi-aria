@@ -19,7 +19,7 @@ import {
     getCurrentTimeIST,
     markCategoryCooling,
 } from './contentIntelligence.js'
-import { fetchReels, pickBestReel, markMediaSent, type ReelResult } from './reelPipeline.js'
+import { fetchReels, pickBestReel, markMediaSent, markReelSent, type ReelResult } from './reelPipeline.js'
 import { sendMediaViaPipeline } from './mediaDownloader.js'
 import { sendProactiveContent } from '../channels.js'
 import { sleep } from '../tools/scrapers/retry.js'
@@ -315,29 +315,34 @@ export async function blastReelsToAllUsers(hashtag = 'bangalorefood'): Promise<v
         return
     }
 
-    console.log(`[Proactive] Blasting #${hashtag} reels to ${users.length} users`)
+    // Fetch a pool large enough to give each user a different reel
+    const poolSize = Math.min(users.length + 5, 20)
+    const pool = await fetchReels(hashtag, '_blast_pool_', poolSize)
+    if (pool.length === 0) {
+        console.warn(`[Proactive] No reels found for #${hashtag}`)
+        return
+    }
+    console.log(`[Proactive] Blasting #${hashtag} reels to ${users.length} users (pool: ${pool.length})`)
 
+    let poolIdx = 0
     for (const { userId, chatId } of users) {
+        // Pick next reel from pool, wrapping around if pool smaller than user count
+        const reel = pool[poolIdx % pool.length]
+        poolIdx++
+
         try {
-            const reels = await fetchReels(hashtag, userId, 5)
-            if (reels.length === 0) {
-                console.warn(`[Proactive] No reels for ${userId}`)
-                continue
-            }
-            const best = await pickBestReel(reels, userId)
-            if (!best) {
-                console.warn(`[Proactive] All URLs invalid for ${userId}`)
-                continue
-            }
             const sent = await sendMediaViaPipeline(chatId, {
-                id: best.id,
-                source: best.source,
-                videoUrl: best.videoUrl,
-                thumbnailUrl: best.thumbnailUrl,
-                type: best.type,
+                id: reel.id,
+                source: reel.source,
+                videoUrl: reel.videoUrl,
+                thumbnailUrl: reel.thumbnailUrl,
+                type: reel.type,
             }, 'macha check this out 🔥')
-            console.log(`[Proactive] Blast → ${userId}: sent=${sent}`)
-            if (sent) markMediaSent(best.id).catch(() => {})
+            console.log(`[Proactive] Blast → ${userId} [${reel.author}]: sent=${sent}`)
+            if (sent) {
+                markReelSent(userId, reel.id)
+                markMediaSent(reel.id).catch(() => {})
+            }
         } catch (err: any) {
             console.error(`[Proactive] Blast failed for ${userId}:`, err?.message)
         }
