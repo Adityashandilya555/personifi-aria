@@ -56,6 +56,36 @@ export function getPool(): Pool {
 }
 
 /**
+ * Run any missing schema migrations. Safe to call on every startup — all
+ * statements use IF NOT EXISTS so they're idempotent.
+ */
+export async function runMigrations(): Promise<void> {
+  const p = getPool()
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS scraped_media (
+      id              SERIAL PRIMARY KEY,
+      item_id         TEXT UNIQUE NOT NULL,
+      platform        TEXT NOT NULL,
+      media_type      TEXT NOT NULL,
+      keyword         TEXT NOT NULL,
+      title           TEXT,
+      author          TEXT,
+      thumbnail_url   TEXT,
+      media_url       TEXT NOT NULL,
+      telegram_file_id TEXT,
+      duration_secs   INTEGER,
+      url_expires_at  TIMESTAMPTZ,
+      scraped_at      TIMESTAMPTZ DEFAULT NOW(),
+      sent_count      INTEGER DEFAULT 0
+    )
+  `)
+  await p.query(`CREATE INDEX IF NOT EXISTS idx_scraped_media_keyword  ON scraped_media(keyword)`)
+  await p.query(`CREATE INDEX IF NOT EXISTS idx_scraped_media_platform ON scraped_media(platform)`)
+  await p.query(`CREATE INDEX IF NOT EXISTS idx_scraped_media_expires  ON scraped_media(url_expires_at)`)
+  console.log('[DB] Migrations complete')
+}
+
+/**
  * Get or create a user based on channel and channel-specific user ID
  */
 export async function getOrCreateUser(
