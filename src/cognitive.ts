@@ -28,6 +28,33 @@ import type { GraphSearchResult } from './graph-memory.js'
 import { getPool } from './character/session-store.js'
 import { getGroqTools } from './tools/index.js'
 
+// ─── Type Coercion Helper ───────────────────────────────────────────────────
+// Groq 8B sometimes emits numbers as strings (e.g. "amount": "100").
+// Coerce values to the types declared in the tool schemas so tools don't break.
+
+function coerceToolArgs(
+    toolName: string,
+    args: Record<string, unknown>
+): Record<string, unknown> {
+    const tools = getGroqTools()
+    const tool = tools.find(t => t.function.name === toolName)
+    if (!tool?.function.parameters) return args
+
+    const props = (tool.function.parameters as any)?.properties
+    if (!props) return args
+
+    const coerced = { ...args }
+    for (const [key, schema] of Object.entries(props) as [string, any][]) {
+        if (key in coerced && schema.type === 'number' && typeof coerced[key] === 'string') {
+            const num = Number(coerced[key])
+            if (!isNaN(num)) {
+                coerced[key] = num
+            }
+        }
+    }
+    return coerced
+}
+
 // ─── Groq Client ────────────────────────────────────────────────────────────
 
 let groq: Groq | null = null
@@ -154,6 +181,8 @@ export async function classifyMessage(
                 console.warn('[cognitive] Failed to parse tool_call arguments:', toolCall.function.arguments)
             }
 
+            toolArgs = coerceToolArgs(toolName, toolArgs)
+
             return {
                 message_complexity: 'complex',
                 needs_tool: true,
@@ -217,6 +246,7 @@ export async function classifyMessage(
                 const toolName = match[1]
                 let toolArgs: Record<string, unknown> = {}
                 try { toolArgs = JSON.parse(match[2]) } catch { /* best effort */ }
+                toolArgs = coerceToolArgs(toolName, toolArgs)
                 console.log(`[cognitive] Recovered tool call from failed_generation: ${toolName}`, toolArgs)
                 return {
                     message_complexity: 'complex',
