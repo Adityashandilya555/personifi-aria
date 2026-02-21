@@ -87,13 +87,38 @@ async function rapidApiGet(host: string, path: string, params: Record<string, st
     return resp.json()
 }
 
-// ─── Instagram Scraper ──────────────────────────────────────────────────────
-// 3 RapidAPI hosts with fallback for reliability
+async function rapidApiPost(host: string, path: string, body: Record<string, any>): Promise<any> {
+    const url = `https://${host}${path}`
 
-const IG_HOSTS = [
-    'instagram-scraper-api2.p.rapidapi.com',
-    'instagram-bulk-profile-scraper.p.rapidapi.com',
-    'instagram-data1.p.rapidapi.com',
+    const resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+            'X-RapidAPI-Key': getApiKey(),
+            'X-RapidAPI-Host': host,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+    })
+
+    if (!resp.ok) {
+        const err: any = new Error(`RapidAPI ${host} ${resp.status}`)
+        err.status = resp.status
+        throw err
+    }
+
+    return resp.json()
+}
+
+// ─── Instagram Scraper ──────────────────────────────────────────────────────
+// Uses instagram120 API (user's subscribed API)
+// Endpoints: GET /v1/search (hashtag search), POST /api/instagram/posts (user posts)
+
+const IG_HOST = 'instagram120.p.rapidapi.com'
+
+// Bangalore foodie accounts to pull reels from when hashtag search fails
+const BANGALORE_FOOD_ACCOUNTS = [
+    'bangalorefoodie', 'bangalorefoodguide', 'zabornak',
+    'thegreatindianfoodie', 'dloopfoods', 'bangalore_foodie_trails',
 ]
 
 async function searchInstagramReels(opts: SearchOptions): Promise<ReelResult[]> {
@@ -105,42 +130,60 @@ async function searchInstagramReels(opts: SearchOptions): Promise<ReelResult[]> 
         return cached
     }
 
-    for (const host of IG_HOSTS) {
-        try {
-            const data = await withRetry(
-                () => rapidApiGet(host, '/v1/hashtag', {
-                    hashtag: opts.hashtag,
-                    // Different hosts may use different param names
-                    // We'll handle parsing below
-                }),
-                2, 1000, `ig-${host.split('.')[0]}`
-            )
+    // Strategy 1: Search by hashtag via /v1/search
+    try {
+        const data = await withRetry(
+            () => rapidApiGet(IG_HOST, '/v1/search', {
+                query: opts.hashtag,
+                type: 'hashtag',
+            }),
+            2, 1000, 'ig-search'
+        )
 
-            const results = parseInstagramResponse(data, opts.hashtag, maxResults)
-            if (results.length > 0) {
-                console.log(`[ReelPipeline] Instagram: ${results.length} results from ${host} for #${opts.hashtag}`)
-                cacheSet(cacheK, results, 30 * 60 * 1000) // cache 30 min
-                return results
-            }
-        } catch (err: any) {
-            console.warn(`[ReelPipeline] Instagram host ${host} failed:`, err?.message)
-            continue
+        const results = parseInstagramSearchResponse(data, opts.hashtag, maxResults)
+        if (results.length > 0) {
+            console.log(`[ReelPipeline] Instagram search: ${results.length} results for #${opts.hashtag}`)
+            cacheSet(cacheK, results, 30 * 60 * 1000)
+            return results
         }
+    } catch (err: any) {
+        console.warn(`[ReelPipeline] Instagram search failed:`, err?.message)
     }
 
-    console.warn(`[ReelPipeline] All Instagram hosts failed for #${opts.hashtag}`)
+    // Strategy 2: Get posts from relevant Bangalore accounts
+    const relevantAccount = BANGALORE_FOOD_ACCOUNTS[Math.floor(Math.random() * BANGALORE_FOOD_ACCOUNTS.length)]
+    try {
+        const data = await withRetry(
+            () => rapidApiPost(IG_HOST, '/api/instagram/posts', {
+                username: relevantAccount,
+                maxId: '',
+            }),
+            2, 1000, 'ig-posts'
+        )
+
+        const results = parseInstagramPostsResponse(data, opts.hashtag, maxResults)
+        if (results.length > 0) {
+            console.log(`[ReelPipeline] Instagram posts from @${relevantAccount}: ${results.length} results`)
+            cacheSet(cacheK, results, 30 * 60 * 1000)
+            return results
+        }
+    } catch (err: any) {
+        console.warn(`[ReelPipeline] Instagram posts failed:`, err?.message)
+    }
+
+    console.warn(`[ReelPipeline] Instagram failed for #${opts.hashtag}`)
     return []
 }
 
-function parseInstagramResponse(data: any, hashtag: string, maxResults: number): ReelResult[] {
+function parseInstagramSearchResponse(data: any, hashtag: string, maxResults: number): ReelResult[] {
     const results: ReelResult[] = []
 
-    // Handle various IG API response structures
+    // Handle various response structures from /v1/search
     const items = data?.data?.items
         || data?.items
         || data?.medias
         || data?.data?.medias
-        || data?.data?.recent?.sections?.flatMap?.((s: any) => s?.layout_content?.medias?.map?.((m: any) => m?.media) || [])
+        || data?.result?.items
         || []
 
     for (const item of items) {
@@ -150,7 +193,7 @@ function parseInstagramResponse(data: any, hashtag: string, maxResults: number):
             || item?.video_url
             || item?.video_versions?.length > 0
             || item?.is_video
-        const isCarousel = item?.media_type === 8
+            || item?.type === 'video'
 
         let videoUrl: string | null = null
         let thumbnailUrl: string | null = null
@@ -159,28 +202,90 @@ function parseInstagramResponse(data: any, hashtag: string, maxResults: number):
             videoUrl = item?.video_url
                 || item?.video_versions?.[0]?.url
                 || item?.video_url_hd
+                || item?.url
                 || null
             thumbnailUrl = item?.image_versions2?.candidates?.[0]?.url
                 || item?.thumbnail_url
                 || item?.display_url
-                || null
-        } else if (isCarousel) {
-            // Pick first image from carousel
-            const firstMedia = item?.carousel_media?.[0] || item?.resources?.[0]
-            thumbnailUrl = firstMedia?.image_versions2?.candidates?.[0]?.url
-                || firstMedia?.thumbnail_url
+                || item?.thumbnail
                 || null
         } else {
-            // Single image
             thumbnailUrl = item?.image_versions2?.candidates?.[0]?.url
                 || item?.thumbnail_url
                 || item?.display_url
+                || item?.url
+                || item?.thumbnail
                 || null
         }
 
-        const caption = item?.caption?.text || item?.accessibility_caption || ''
+        const caption = item?.caption?.text || item?.accessibility_caption || item?.title || ''
+        const author = item?.user?.username || item?.owner?.username || item?.username || 'unknown'
+        const likes = item?.like_count || item?.likes_count || item?.likes || 0
+        const id = item?.pk || item?.id || item?.code || `ig_${Date.now()}_${results.length}`
+
+        if (!videoUrl && !thumbnailUrl) continue
+
+        results.push({
+            id: String(id),
+            source: 'instagram',
+            videoUrl,
+            thumbnailUrl,
+            caption: caption.slice(0, 300),
+            author,
+            likes,
+            type: videoUrl ? 'video' : 'image',
+            hashtag,
+        })
+    }
+
+    return results
+}
+
+function parseInstagramPostsResponse(data: any, hashtag: string, maxResults: number): ReelResult[] {
+    const results: ReelResult[] = []
+
+    // POST /api/instagram/posts returns items in various structures
+    const items = data?.data?.items
+        || data?.items
+        || data?.result?.items
+        || data?.data
+        || []
+
+    const itemList = Array.isArray(items) ? items : []
+
+    for (const item of itemList) {
+        if (results.length >= maxResults) break
+
+        const isVideo = item?.media_type === 2
+            || item?.video_url
+            || item?.video_versions?.length > 0
+            || item?.is_video
+            || item?.type === 'video'
+
+        let videoUrl: string | null = null
+        let thumbnailUrl: string | null = null
+
+        if (isVideo) {
+            videoUrl = item?.video_url
+                || item?.video_versions?.[0]?.url
+                || item?.url
+                || null
+            thumbnailUrl = item?.image_versions2?.candidates?.[0]?.url
+                || item?.thumbnail_url
+                || item?.thumbnail
+                || null
+        } else {
+            thumbnailUrl = item?.image_versions2?.candidates?.[0]?.url
+                || item?.thumbnail_url
+                || item?.display_url
+                || item?.url
+                || item?.thumbnail
+                || null
+        }
+
+        const caption = item?.caption?.text || item?.accessibility_caption || item?.title || ''
         const author = item?.user?.username || item?.owner?.username || 'unknown'
-        const likes = item?.like_count || item?.likes_count || item?.edge_media_preview_like?.count || 0
+        const likes = item?.like_count || item?.likes_count || item?.likes || 0
         const id = item?.pk || item?.id || item?.code || `ig_${Date.now()}_${results.length}`
 
         if (!videoUrl && !thumbnailUrl) continue
@@ -202,8 +307,10 @@ function parseInstagramResponse(data: any, hashtag: string, maxResults: number):
 }
 
 // ─── TikTok Scraper (Fallback 1) ────────────────────────────────────────────
+// Uses tiktok-api23 (Lundehund) — user's subscribed API
+// Endpoint: POST /social-media/tiktok-scraper/posts-by-keyword
 
-const TIKTOK_HOST = 'tiktok-scraper7.p.rapidapi.com'
+const TIKTOK_HOST = 'tiktok-api23.p.rapidapi.com'
 
 async function searchTikTokReels(opts: SearchOptions): Promise<ReelResult[]> {
     const maxResults = opts.maxResults ?? 10
@@ -216,9 +323,9 @@ async function searchTikTokReels(opts: SearchOptions): Promise<ReelResult[]> {
 
     try {
         const data = await withRetry(
-            () => rapidApiGet(TIKTOK_HOST, '/challenge/posts', {
-                challenge_name: opts.hashtag,
-                count: String(maxResults),
+            () => rapidApiPost(TIKTOK_HOST, '/social-media/tiktok-scraper/posts-by-keyword', {
+                keyword: `${opts.hashtag} bangalore`,
+                count: maxResults,
             }),
             2, 1000, 'tiktok'
         )
