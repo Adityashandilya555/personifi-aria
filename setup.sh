@@ -49,6 +49,7 @@ fi
 
 CORE_KEYS=(
     "GROQ_API_KEY|Groq LLM (console.groq.com)|required"
+    "GEMINI_API_KEY|Google Gemini (LLM fallback)|required"
     "DATABASE_URL|PostgreSQL connection URL|required"
     "GOOGLE_PLACES_API_KEY|Google Places API|required"
 )
@@ -70,7 +71,7 @@ TRAVEL_KEYS=(
     "AMADEUS_API_KEY|Amadeus Flights API|optional"
     "AMADEUS_API_SECRET|Amadeus API Secret|optional"
     "SERPAPI_KEY|SerpAPI (Google fallback)|optional"
-    "RAPIDAPI_KEY|RapidAPI (Hotels/Booking)|optional"
+    "RAPIDAPI_KEY|RapidAPI (Hotels/Reels/Scrapers)|required"
     "OPENWEATHERMAP_API_KEY|OpenWeatherMap API|optional"
 )
 
@@ -84,7 +85,7 @@ MCP_KEYS=(
 )
 
 # Known placeholder values (from .env.example defaults that aren't real keys)
-PLACEHOLDER_PATTERNS="^$|^gsk_your_|^your_|^AIzaSy\.\.\.$|^postgresql://user:password@|^hf_your_|^jina_your_|^xoxb-\.\.\.$"
+PLACEHOLDER_PATTERNS="^$|^gsk_your_|^your_|^AIzaSy\.\.\.$|^postgresql://user:password@|^hf_your_|^jina_your_|^xoxb-\.\.\.$|^AIza$"
 
 # ─── Helper Functions ─────────────────────────────────────────────────────────
 
@@ -361,6 +362,26 @@ validate_keys() {
         skip_count=$((skip_count + 1))
     fi
 
+    # --- Gemini ---
+    local gemini_key
+    gemini_key=$(get_env_value "GEMINI_API_KEY")
+    if is_key_set "$gemini_key"; then
+        echo -ne "  ${BULLET} Gemini API ... "
+        local gemini_resp
+        gemini_resp=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://generativelanguage.googleapis.com/v1beta/models?key=${gemini_key}" 2>/dev/null)
+        if [ "$gemini_resp" = "200" ]; then
+            echo -e "${CHECK} Working (HTTP ${gemini_resp})"
+            pass_count=$((pass_count + 1))
+        else
+            echo -e "${CROSS} Failed (HTTP ${gemini_resp})"
+            fail_count=$((fail_count + 1))
+        fi
+    else
+        echo -e "  ${GRAY}⬚  Gemini API — not configured, skipped${RESET}"
+        skip_count=$((skip_count + 1))
+    fi
+
     # --- Database ---
     local db_url
     db_url=$(get_env_value "DATABASE_URL")
@@ -518,22 +539,245 @@ validate_keys() {
     rapid_key=$(get_env_value "RAPIDAPI_KEY")
     if is_key_set "$rapid_key"; then
         echo -ne "  ${BULLET} RapidAPI ... "
-        # Just check if the key format looks valid (starts with expected prefix)
-        if [ ${#rapid_key} -ge 10 ]; then
-            echo -e "${WARN} Key set (${#rapid_key} chars) — no free validation endpoint"
-            skip_count=$((skip_count + 1))
-        else
-            echo -e "${CROSS} Key looks too short (${#rapid_key} chars)"
+        local rapid_resp
+        rapid_resp=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "X-RapidAPI-Key: ${rapid_key}" \
+            -H "X-RapidAPI-Host: instagram-scraper-api2.p.rapidapi.com" \
+            "https://instagram-scraper-api2.p.rapidapi.com/v1/info?username_or_id_or_url=instagram" 2>/dev/null)
+        if [ "$rapid_resp" = "200" ]; then
+            echo -e "${CHECK} Working (HTTP ${rapid_resp})"
+            pass_count=$((pass_count + 1))
+        elif [ "$rapid_resp" = "429" ]; then
+            echo -e "${WARN} Key valid but rate limited (HTTP 429)"
+            pass_count=$((pass_count + 1))
+        elif [ "$rapid_resp" = "403" ] || [ "$rapid_resp" = "401" ]; then
+            echo -e "${CROSS} Invalid key (HTTP ${rapid_resp})"
             fail_count=$((fail_count + 1))
+        else
+            echo -e "${WARN} Key set (${#rapid_key} chars) — HTTP ${rapid_resp}"
+            skip_count=$((skip_count + 1))
         fi
     else
         echo -e "  ${GRAY}⬚  RapidAPI — not configured, skipped${RESET}"
         skip_count=$((skip_count + 1))
     fi
 
+    # --- Telegram Bot ---
+    local tg_token
+    tg_token=$(get_env_value "TELEGRAM_BOT_TOKEN")
+    if is_key_set "$tg_token"; then
+        echo -ne "  ${BULLET} Telegram Bot ... "
+        local tg_resp
+        tg_resp=$(curl -s "https://api.telegram.org/bot${tg_token}/getMe" 2>/dev/null)
+        if echo "$tg_resp" | grep -q '"ok":true'; then
+            local bot_name
+            bot_name=$(echo "$tg_resp" | grep -o '"username":"[^"]*"' | head -1 | sed 's/"username":"//;s/"//')
+            echo -e "${CHECK} Working (@${bot_name})"
+            pass_count=$((pass_count + 1))
+        else
+            echo -e "${CROSS} Invalid token"
+            fail_count=$((fail_count + 1))
+        fi
+    else
+        echo -e "  ${GRAY}⬚  Telegram Bot — not configured, skipped${RESET}"
+        skip_count=$((skip_count + 1))
+    fi
+
     echo ""
     echo -e "  ${BOLD}━━━ Results ━━━${RESET}"
     echo -e "  ${GREEN}Passed: ${pass_count}${RESET}  ${RED}Failed: ${fail_count}${RESET}  ${GRAY}Skipped: ${skip_count}${RESET}"
+    echo ""
+}
+
+# ─── Project Setup ─────────────────────────────────────────────────────────────
+
+install_deps() {
+    echo ""
+    echo -e "  ${BOLD}📦 Installing Dependencies${RESET}"
+    echo ""
+
+    # Check Node.js version
+    if ! command -v node &>/dev/null; then
+        echo -e "  ${CROSS} Node.js not found! Install v20+ from https://nodejs.org"
+        return 1
+    fi
+    local node_ver
+    node_ver=$(node -v | sed 's/v//' | cut -d. -f1)
+    if [ "$node_ver" -lt 20 ]; then
+        echo -e "  ${CROSS} Node.js v${node_ver} detected — need v20+ (for Blob/FormData)"
+        echo -e "  ${DIM}The media pipeline requires Node 20+ for native FormData/Blob support${RESET}"
+        return 1
+    fi
+    echo -e "  ${CHECK} Node.js v$(node -v | sed 's/v//') detected"
+
+    # npm install
+    echo -e "  ${BULLET} Running ${BOLD}npm install${RESET} ..."
+    npm install 2>&1 | tail -3 | sed 's/^/    /'
+    echo -e "  ${CHECK} Dependencies installed"
+
+    # TypeScript build
+    echo -e "  ${BULLET} Running ${BOLD}npm run build${RESET} ..."
+    if npm run build 2>&1 | tail -3 | sed 's/^/    /'; then
+        echo -e "  ${CHECK} TypeScript build successful"
+    else
+        echo -e "  ${CROSS} Build failed — check errors above"
+        return 1
+    fi
+    echo ""
+}
+
+run_migrations() {
+    echo ""
+    echo -e "  ${BOLD}🗄️  Running Database Migrations${RESET}"
+    echo ""
+
+    local db_url
+    db_url=$(get_env_value "DATABASE_URL")
+    if ! is_key_set "$db_url"; then
+        echo -e "  ${CROSS} DATABASE_URL not set — configure it first (menu option 2 or 3)"
+        return 1
+    fi
+
+    # Check if migration file exists
+    if [ -f "src/db/migrate.ts" ]; then
+        echo -e "  ${BULLET} Running ${BOLD}npx tsx src/db/migrate.ts${RESET} ..."
+        npx tsx src/db/migrate.ts 2>&1 | sed 's/^/    /'
+        echo -e "  ${CHECK} Migrations complete"
+    elif [ -f "src/migrate.ts" ]; then
+        echo -e "  ${BULLET} Running ${BOLD}npx tsx src/migrate.ts${RESET} ..."
+        npx tsx src/migrate.ts 2>&1 | sed 's/^/    /'
+        echo -e "  ${CHECK} Migrations complete"
+    else
+        echo -e "  ${WARN} No migration file found (checked src/db/migrate.ts, src/migrate.ts)"
+        echo -e "  ${DIM}If you have a custom migration path, run it manually${RESET}"
+    fi
+    echo ""
+}
+
+start_dev() {
+    echo ""
+    echo -e "  ${BOLD}🚀 Starting Dev Server${RESET}"
+    echo ""
+
+    # Pre-flight checks
+    local groq_key db_url
+    groq_key=$(get_env_value "GROQ_API_KEY")
+    db_url=$(get_env_value "DATABASE_URL")
+    local missing=0
+
+    if ! is_key_set "$groq_key"; then
+        echo -e "  ${CROSS} GROQ_API_KEY not set"
+        missing=1
+    fi
+    if ! is_key_set "$db_url"; then
+        echo -e "  ${CROSS} DATABASE_URL not set"
+        missing=1
+    fi
+    if [ "$missing" -eq 1 ]; then
+        echo -e "  ${DIM}Set required keys first (menu option 2)${RESET}"
+        return 1
+    fi
+
+    echo -e "  ${CHECK} Required env vars present"
+    echo -e "  ${BULLET} Running ${BOLD}npm run dev${RESET} (tsx watch)"
+    echo -e "  ${DIM}Press Ctrl+C to stop${RESET}"
+    echo ""
+    npm run dev
+}
+
+smoke_test_pipeline() {
+    echo ""
+    echo -e "  ${BOLD}🧪 Proactive Pipeline Smoke Test${RESET}"
+    echo -e "  ${DIM}Tests: reel scraping → download → Telegram upload${RESET}"
+    echo ""
+
+    local rapid_key tg_token
+    rapid_key=$(get_env_value "RAPIDAPI_KEY")
+    tg_token=$(get_env_value "TELEGRAM_BOT_TOKEN")
+
+    if ! is_key_set "$rapid_key"; then
+        echo -e "  ${CROSS} RAPIDAPI_KEY not set — needed for reel scraping"
+        return 1
+    fi
+
+    # Step 1: Test reel pipeline
+    echo -e "  ${BULLET} Testing reel pipeline (fetching #bangalorefood) ..."
+    local reel_output
+    reel_output=$(npx tsx -e "
+        import { fetchReels } from './src/media/reelPipeline.js';
+        const reels = await fetchReels('bangalorefood', 'smoke-test', 2);
+        console.log(JSON.stringify({ count: reels.length, sources: reels.map(r => r.source), types: reels.map(r => r.type) }));
+    " 2>/dev/null || echo '{"count":0}')
+
+    local reel_count
+    reel_count=$(echo "$reel_output" | tail -1 | grep -o '"count":[0-9]*' | cut -d: -f2)
+    if [ -n "$reel_count" ] && [ "$reel_count" -gt 0 ]; then
+        echo -e "  ${CHECK} Reel pipeline: ${reel_count} reels found"
+    else
+        echo -e "  ${CROSS} Reel pipeline: no reels found (API may be rate limited)"
+        echo -e "  ${DIM}Output: ${reel_output}${RESET}"
+    fi
+
+    # Step 2: Test media download (public test file)
+    echo -e "  ${BULLET} Testing media download pipeline ..."
+    local dl_output
+    dl_output=$(npx tsx -e "
+        import { downloadMedia } from './src/media/mediaDownloader.js';
+        const m = await downloadMedia('https://www.w3schools.com/html/mov_bbb.mp4', 'instagram');
+        console.log(JSON.stringify({ ok: !!m, size: m?.sizeBytes || 0, mime: m?.mimeType || 'none' }));
+    " 2>/dev/null || echo '{"ok":false}')
+
+    if echo "$dl_output" | tail -1 | grep -q '"ok":true'; then
+        local dl_size
+        dl_size=$(echo "$dl_output" | tail -1 | grep -o '"size":[0-9]*' | cut -d: -f2)
+        echo -e "  ${CHECK} Media download: ${dl_size} bytes downloaded"
+    else
+        echo -e "  ${CROSS} Media download failed"
+    fi
+
+    # Step 3: Test Telegram upload (only if token is set)
+    if is_key_set "$tg_token"; then
+        echo -e "  ${BULLET} Testing Telegram bot connection ..."
+        local tg_resp
+        tg_resp=$(curl -s "https://api.telegram.org/bot${tg_token}/getMe" 2>/dev/null)
+        if echo "$tg_resp" | grep -q '"ok":true'; then
+            local bot_name
+            bot_name=$(echo "$tg_resp" | grep -o '"username":"[^"]*"' | head -1 | sed 's/"username":"//;s/"//')
+            echo -e "  ${CHECK} Telegram bot: @${bot_name} connected"
+            echo -e "  ${DIM}To test full upload, send /start to your bot, note the chat_id, then run:${RESET}"
+            echo -e "  ${DIM}  npx tsx -e \"import {sendMediaViaPipeline} from './src/media/mediaDownloader.js'; ...\"${RESET}"
+        else
+            echo -e "  ${CROSS} Telegram bot: invalid token"
+        fi
+    else
+        echo -e "  ${GRAY}⬚  Telegram upload — TELEGRAM_BOT_TOKEN not set, skipped${RESET}"
+    fi
+
+    # Step 4: Test LLM tier manager
+    local groq_key
+    groq_key=$(get_env_value "GROQ_API_KEY")
+    if is_key_set "$groq_key"; then
+        echo -e "  ${BULLET} Testing LLM tier manager (Groq 70B) ..."
+        local llm_output
+        llm_output=$(npx tsx -e "
+            import { generateResponse } from './src/llm/tierManager.js';
+            const r = await generateResponse([{role:'system',content:'Reply with exactly: OK'},{role:'user',content:'status check'}]);
+            console.log(JSON.stringify({ ok: !!r.text, provider: r.provider, len: r.text.length }));
+        " 2>/dev/null || echo '{"ok":false}')
+
+        if echo "$llm_output" | tail -1 | grep -q '"ok":true'; then
+            local llm_provider
+            llm_provider=$(echo "$llm_output" | tail -1 | grep -o '"provider":"[^"]*"' | sed 's/"provider":"//;s/"//')
+            echo -e "  ${CHECK} LLM tier manager: working (provider: ${llm_provider})"
+        else
+            echo -e "  ${CROSS} LLM tier manager: failed"
+        fi
+    else
+        echo -e "  ${GRAY}⬚  LLM tier manager — GROQ_API_KEY not set, skipped${RESET}"
+    fi
+
+    echo ""
+    echo -e "  ${BOLD}━━━ Smoke Test Complete ━━━${RESET}"
     echo ""
 }
 
@@ -599,25 +843,36 @@ main_menu() {
     while true; do
         echo -e "  ${BOLD}📋 Menu${RESET}"
         echo ""
+        echo -e "  ${DIM}── Keys ──${RESET}"
         echo -e "    ${CYAN}1${RESET})  View key status dashboard"
         echo -e "    ${CYAN}2${RESET})  Set missing keys only"
         echo -e "    ${CYAN}3${RESET})  Set a specific key"
         echo -e "    ${CYAN}4${RESET})  Validate API keys (live tests)"
-        echo -e "    ${CYAN}5${RESET})  🐳 Start Docker containers"
-        echo -e "    ${CYAN}6${RESET})  🐳 Stop Docker containers"
-        echo -e "    ${CYAN}7${RESET})  🐳 Docker container status"
+        echo -e "  ${DIM}── Project ──${RESET}"
+        echo -e "    ${CYAN}5${RESET})  📦 Install deps + build TypeScript"
+        echo -e "    ${CYAN}6${RESET})  🗄️  Run database migrations"
+        echo -e "    ${CYAN}7${RESET})  🚀 Start dev server (tsx watch)"
+        echo -e "    ${CYAN}8${RESET})  🧪 Smoke test pipeline (reels + download + LLM)"
+        echo -e "  ${DIM}── Docker ──${RESET}"
+        echo -e "    ${CYAN}9${RESET})  🐳 Start Docker containers"
+        echo -e "    ${CYAN}10${RESET}) 🐳 Stop Docker containers"
+        echo -e "    ${CYAN}11${RESET}) 🐳 Docker container status"
         echo -e "    ${CYAN}0${RESET})  Exit"
         echo ""
-        read -p "  Choose [0-7]: " choice
+        read -p "  Choose [0-11]: " choice
 
         case $choice in
             1) show_dashboard ;;
             2) prompt_missing_keys ;;
             3) set_specific_key ;;
             4) validate_keys ;;
-            5) docker_start ;;
-            6) docker_stop ;;
-            7) docker_status ;;
+            5) install_deps ;;
+            6) run_migrations ;;
+            7) start_dev ;;
+            8) smoke_test_pipeline ;;
+            9) docker_start ;;
+            10) docker_stop ;;
+            11) docker_status ;;
             0)
                 echo ""
                 echo -e "  ${BOLD}🌍 Happy travels with Aria!${RESET}"

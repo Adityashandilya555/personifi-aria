@@ -305,10 +305,7 @@ const start = async () => {
     }
 
     // Initialize proactive scheduler
-    initScheduler(dbUrl, async (chatId: string, text: string) => {
-      // Default to Telegram for proactive messages
-      await sendChannelMessage('telegram', chatId, text)
-    })
+    initScheduler(dbUrl)
 
     // Start server
     const port = parseInt(process.env.PORT || '3000')

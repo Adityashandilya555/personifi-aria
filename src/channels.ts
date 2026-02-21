@@ -13,7 +13,7 @@ export interface ChannelMessage {
 }
 
 export interface MediaItem {
-  type: 'photo'
+  type: 'photo' | 'video'
   url: string
   caption?: string
 }
@@ -32,13 +32,13 @@ export interface ChannelAdapter {
 
 export const telegramAdapter: ChannelAdapter = {
   name: 'telegram',
-  
+
   isEnabled: () => process.env.TELEGRAM_ENABLED === 'true' && !!process.env.TELEGRAM_BOT_TOKEN,
-  
+
   parseWebhook: (body: any): ChannelMessage | null => {
     const message = body?.message
     if (!message?.text) return null
-    
+
     return {
       channel: 'telegram',
       userId: message.from.id.toString(),
@@ -52,7 +52,7 @@ export const telegramAdapter: ChannelAdapter = {
       },
     }
   },
-  
+
   sendMessage: async (chatId: string, text: string) => {
     const token = process.env.TELEGRAM_BOT_TOKEN
     const resp = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
@@ -81,7 +81,35 @@ export const telegramAdapter: ChannelAdapter = {
     const token = process.env.TELEGRAM_BOT_TOKEN
     if (!token || media.length === 0) return
 
-    if (media.length === 1) {
+    if (media.length === 1 && media[0].type === 'video') {
+      // Single video — use sendVideo
+      const resp = await fetch(`https://api.telegram.org/bot${token}/sendVideo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          video: media[0].url,
+          caption: media[0].caption || '',
+          parse_mode: 'HTML',
+          supports_streaming: true,
+        }),
+      })
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}))
+        console.error('[Telegram] sendVideo failed:', (err as any)?.description, 'url:', media[0].url)
+        // Fallback: send as URL in text message
+        if (media[0].caption) {
+          await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: chatId,
+              text: `${media[0].caption}\n\n${media[0].url}`,
+            }),
+          }).catch(() => { })
+        }
+      }
+    } else if (media.length === 1) {
       // Single photo — use sendPhoto for cleaner UX
       const resp = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
         method: 'POST',
@@ -123,10 +151,93 @@ export const telegramAdapter: ChannelAdapter = {
             caption: media[0].caption || '',
             parse_mode: 'HTML',
           }),
-        }).catch(() => {})
+        }).catch(() => { })
       }
     }
   },
+}
+
+/**
+ * Send proactive content to a Telegram chat.
+ * Uses download-first pipeline for media (CDN URLs expire!).
+ * Falls back gracefully: multipart upload → URL-based → text link.
+ */
+export async function sendProactiveContent(
+  chatId: string,
+  caption: string,
+  media?: { type: 'video' | 'photo'; url: string; source?: 'instagram' | 'tiktok' | 'youtube' }
+): Promise<boolean> {
+  const token = process.env.TELEGRAM_BOT_TOKEN
+  if (!token) {
+    console.error('[Telegram] Cannot send proactive: no bot token')
+    return false
+  }
+
+  try {
+    if (media) {
+      // Try download-first pipeline (multipart upload)
+      const { downloadMedia, uploadVideoToTelegram, uploadPhotoToTelegram } = await import('./media/mediaDownloader.js')
+      const source = media.source || 'instagram'
+
+      const downloaded = await downloadMedia(media.url, source)
+      if (downloaded) {
+        const isVideo = downloaded.mimeType.startsWith('video/') || downloaded.mimeType === 'image/gif'
+        const result = isVideo
+          ? await uploadVideoToTelegram(chatId, downloaded, caption, { supportsStreaming: true })
+          : await uploadPhotoToTelegram(chatId, downloaded, caption)
+
+        if (result.success) return true
+        console.warn('[Telegram] Multipart upload failed, trying URL-based fallback')
+      }
+
+      // Fallback: try URL-based send (may fail for expired CDN URLs)
+      const method = media.type === 'video' ? 'sendVideo' : 'sendPhoto'
+      const field = media.type === 'video' ? 'video' : 'photo'
+
+      const resp = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          [field]: media.url,
+          caption,
+          parse_mode: 'HTML',
+          ...(media.type === 'video' ? { supports_streaming: true } : {}),
+        }),
+      })
+
+      if (resp.ok) return true
+
+      // Final fallback: send URL as text link
+      console.warn('[Telegram] URL-based send failed, sending as text')
+      await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: `${caption}\n\n${media.url}`,
+          disable_web_page_preview: false,
+        }),
+      })
+      return true
+    } else {
+      // Text-only proactive message
+      const resp = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: caption,
+          parse_mode: 'HTML',
+        }),
+      })
+      const data = await resp.json() as any
+      return data.ok === true
+    }
+  } catch (err) {
+    console.error('[Telegram] Proactive send failed:', err)
+    return false
+  }
 }
 
 // ============================================
@@ -135,17 +246,17 @@ export const telegramAdapter: ChannelAdapter = {
 
 export const whatsappAdapter: ChannelAdapter = {
   name: 'whatsapp',
-  
+
   isEnabled: () => process.env.WHATSAPP_ENABLED === 'true' && !!process.env.WHATSAPP_API_TOKEN,
-  
+
   parseWebhook: (body: any): ChannelMessage | null => {
     // WhatsApp Cloud API webhook structure
     const entry = body?.entry?.[0]
     const change = entry?.changes?.[0]
     const message = change?.value?.messages?.[0]
-    
+
     if (!message?.text?.body) return null
-    
+
     return {
       channel: 'whatsapp',
       userId: message.from,  // Phone number
@@ -158,11 +269,11 @@ export const whatsappAdapter: ChannelAdapter = {
       },
     }
   },
-  
+
   sendMessage: async (chatId: string, text: string) => {
     const token = process.env.WHATSAPP_API_TOKEN
     const phoneId = process.env.WHATSAPP_PHONE_ID
-    
+
     await fetch(`https://graph.facebook.com/v18.0/${phoneId}/messages`, {
       method: 'POST',
       headers: {
@@ -185,19 +296,19 @@ export const whatsappAdapter: ChannelAdapter = {
 
 export const slackAdapter: ChannelAdapter = {
   name: 'slack',
-  
+
   isEnabled: () => process.env.SLACK_ENABLED === 'true' && !!process.env.SLACK_BOT_TOKEN,
-  
+
   parseWebhook: (body: any): ChannelMessage | null => {
     // Handle URL verification challenge
     if (body.type === 'url_verification') {
       return null  // Handled separately
     }
-    
+
     const event = body?.event
     if (event?.type !== 'message' || event?.subtype) return null
     if (event?.bot_id) return null  // Ignore bot messages
-    
+
     return {
       channel: 'slack',
       userId: event.user,
@@ -210,10 +321,10 @@ export const slackAdapter: ChannelAdapter = {
       },
     }
   },
-  
+
   sendMessage: async (chatId: string, text: string) => {
     const token = process.env.SLACK_BOT_TOKEN
-    
+
     await fetch('https://slack.com/api/chat.postMessage', {
       method: 'POST',
       headers: {
