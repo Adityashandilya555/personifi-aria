@@ -55,12 +55,18 @@ import type { RouteContext } from '../hooks.js'
 // Location utilities
 import { shouldRequestLocation } from '../location.js'
 
+// Tier 2: LLM with fallback chains
+import { generateResponse, type ChatMessage } from '../llm/tierManager.js'
+
+// Proactive content registration
+import { registerProactiveUser } from '../media/proactiveRunner.js'
+
 // Initialize Groq client
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
 })
 
-// Model configuration
+// Model configuration (kept for reference / 8B classifier in cognitive.ts)
 const MODEL = 'llama-3.3-70b-versatile'
 const MAX_TOKENS = 500
 const TEMPERATURE = 0.8
@@ -242,6 +248,11 @@ export async function handleMessage(
     // ─── Step 2: Get or create user, resolve person_id ────────────
     const user = await getOrCreateUser(channel, channelUserId)
 
+    // Register for proactive content (uses channelUserId as chatId for Telegram DMs)
+    if (channel === 'telegram') {
+      registerProactiveUser(channelUserId, channelUserId)
+    }
+
     // ─── Step 3: Check rate limit ─────────────────────────────────
     const withinLimit = await checkRateLimit(user.userId)
     if (!withinLimit) {
@@ -340,7 +351,7 @@ export async function handleMessage(
 
     // ─── Step 7.5: Location check — ask before running location-dependent tools ─
     if (routeDecision.useTool && routeDecision.toolName &&
-        shouldRequestLocation(userMessage, user.homeLocation, routeDecision.toolName)) {
+      shouldRequestLocation(userMessage, user.homeLocation, routeDecision.toolName)) {
       // Park the tool so we can execute it once the user shares their location
       pendingToolStore.set(user.userId, {
         toolName: routeDecision.toolName,
@@ -354,9 +365,9 @@ export async function handleMessage(
 
     // ─── Step 7.6: Confirmation gate for expensive scraping tools ─────────────
     if (routeDecision.useTool && routeDecision.toolName &&
-        TOOLS_REQUIRING_CONFIRM.has(routeDecision.toolName) &&
-        !isConfirmatoryMessage(userMessage) &&
-        !isExplicitPlatformRequest(userMessage)) {
+      TOOLS_REQUIRING_CONFIRM.has(routeDecision.toolName) &&
+      !isConfirmatoryMessage(userMessage) &&
+      !isExplicitPlatformRequest(userMessage)) {
       // Only gate if this is an ambiguous first-time request (not already a confirmation)
       const pending = pendingToolStore.get(user.userId)
       if (!pending || pending.toolName !== routeDecision.toolName) {
@@ -504,15 +515,22 @@ export async function handleMessage(
       console.log(`[handler] After truncation: ~${Math.round(estimatedTokens)} tokens, history=${historyLimit}`)
     }
 
-    // ─── Step 11: Call Groq 70B (personality response) ────────────
-    const completion = await groq.chat.completions.create({
-      model: routeDecision.modelOverride || MODEL,
-      messages,
-      max_tokens: MAX_TOKENS,
-      temperature: TEMPERATURE,
-    })
+    // ─── Step 11: Call Tier 2 (70B with fallback chain) ───────────
+    const tier2Messages: ChatMessage[] = messages.map(m => ({
+      role: m.role as 'system' | 'user' | 'assistant',
+      content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+    }))
 
-    let rawResponse = completion.choices[0]?.message?.content || ''
+    const { text: tier2Response, provider: tier2Provider } = await generateResponse(
+      tier2Messages,
+      {
+        maxTokens: MAX_TOKENS,
+        temperature: TEMPERATURE,
+      }
+    )
+    console.log(`[handler] Tier 2 response from ${tier2Provider}`)
+
+    let rawResponse = tier2Response
 
     // ─── Step 12: Optional brainHooks.formatResponse() ────────────
     // Reuse toolResult from Step 8 — do NOT re-execute the tool pipeline
@@ -541,17 +559,17 @@ export async function handleMessage(
     // ─── Step 15: Trim history if needed ──────────────────────────
     await trimSessionHistory(session.sessionId)
 
-    // ─── Step 16: Track usage ─────────────────────────────────────
-    const usage = completion.usage
-    if (usage) {
-      await trackUsage(
-        user.userId,
-        channel,
-        usage.prompt_tokens,
-        usage.completion_tokens,
-        0
-      )
-    }
+    // ─── Step 16: Track usage (estimated) ──────────────────────────
+    // Tier manager abstracts the completion object; use estimates
+    const estPromptTokens = Math.round(estimateTokens(messages))
+    const estCompletionTokens = Math.round(rawResponse.length / 4)
+    await trackUsage(
+      user.userId,
+      channel,
+      estPromptTokens,
+      estCompletionTokens,
+      0
+    )
 
     // ─── Step 17: Extract auth info (existing) ────────────────────
     await extractAndSaveUserInfo(user.userId, userMessage, user)
