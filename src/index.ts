@@ -119,6 +119,9 @@ server.post('/webhook/telegram', async (request, reply) => {
       // Resolve the internal UUID — saveUserLocation needs a UUID, not "telegram:123"
       const user = await getOrCreateUser('telegram', userId)
       await saveUserLocation(user.userId, address)
+
+      // Retrieve the original message the user sent before sharing location
+      const pending = pendingLocationStore.get(userId)
       pendingLocationStore.delete(userId)
 
       // Confirm and re-run any parked tool via a natural message
@@ -127,8 +130,13 @@ server.post('/webhook/telegram', async (request, reply) => {
         `📍 Got it — I'll use <b>${address}</b> as your location. Give me a moment to look that up for you!`
       )
 
-      // Re-trigger the original query with the saved location context
-      const response = await handleMessage('telegram', userId, `near ${address}`)
+      // Re-trigger with the original query + location context
+      // e.g. "Search restaurants on Zomato near Koramangala, Bengaluru"
+      const originalQuery = pending?.originalMessage || ''
+      const retriggerMsg = originalQuery
+        ? `${originalQuery.replace(/near\s+me/i, '').trim()} near ${address}`
+        : `near ${address}`
+      const response = await handleMessage('telegram', userId, retriggerMsg)
       if (response.media?.length && channels.telegram.sendMedia) {
         await channels.telegram.sendMedia(chatId, response.media)
       }
@@ -164,6 +172,7 @@ server.post('/webhook/telegram', async (request, reply) => {
       pendingLocationStore.set(parsedMessage.userId, {
         toolHint: 'food_grocery',
         chatId: parsedMessage.chatId,
+        originalMessage: parsedMessage.text,
       })
     } else {
       await adapter.sendMessage(parsedMessage.chatId, response.text)
