@@ -280,7 +280,9 @@ export function registerProactiveUser(userId: string, chatId: string): void {
  */
 export async function loadUsersFromDB(): Promise<void> {
     try {
-        const { getPool } = await import('../character/session-store.js')
+        const { getPool, initDatabase } = await import('../character/session-store.js')
+        const dbUrl = process.env.DATABASE_URL
+        if (dbUrl) initDatabase(dbUrl)
         const pool = getPool()
         const { rows } = await pool.query<{ channel_user_id: string }>(
             `SELECT channel_user_id FROM users
