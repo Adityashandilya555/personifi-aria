@@ -13,7 +13,7 @@
 
 // @ts-ignore - node-cron has no types
 import cron from 'node-cron'
-import { runProactiveForAllUsers } from './media/proactiveRunner.js'
+import { runProactiveForAllUsers, loadUsersFromDB } from './media/proactiveRunner.js'
 import { registerMediaCron } from './cron/media-cron.js'
 
 // ─── Core scheduler ────────────────────────────────────────────────────────
@@ -37,6 +37,11 @@ export function initScheduler(_databaseUrl: string) {
 
   // ── 3. Media scraping cron — every 6 hours ────────────────────────────
   registerMediaCron()
+
+  // ── 4. Load active users from DB on startup ────────────────────────────
+  setTimeout(() => {
+    loadUsersFromDB().catch(err => console.error('[SCHEDULER] loadUsersFromDB failed:', err))
+  }, 8000) // after DB is ready
 
   console.log('[SCHEDULER] Initialized — heartbeat (30s) + proactive pipeline (*/10) + media cron (*/6h)')
 }
