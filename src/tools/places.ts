@@ -8,14 +8,61 @@ interface PlaceSearchParams {
     minRating?: number
 }
 
+// ─── Defaults (Bengaluru) ───────────────────────────────────────────────────
+
+const DEFAULT_LAT = parseFloat(process.env.DEFAULT_LAT || '12.9716')
+const DEFAULT_LNG = parseFloat(process.env.DEFAULT_LNG || '77.5946')
+const DEFAULT_RADIUS = 25000.0 // 25 km
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+/** Map Google priceLevel enum to ₹ symbols */
+function formatPrice(priceLevel?: string): string {
+    switch (priceLevel) {
+        case 'PRICE_LEVEL_FREE': return '🆓 Free'
+        case 'PRICE_LEVEL_INEXPENSIVE': return '💰 ₹'
+        case 'PRICE_LEVEL_MODERATE': return '💰 ₹₹'
+        case 'PRICE_LEVEL_EXPENSIVE': return '💰 ₹₹₹'
+        case 'PRICE_LEVEL_VERY_EXPENSIVE': return '💰 ₹₹₹₹'
+        default: return ''
+    }
+}
+
+/** Build a human-readable opening-hours string */
+function formatHours(openingHours?: any): string {
+    if (!openingHours) return ''
+    if (openingHours.openNow === true) {
+        // Try to find today's closing time
+        const today = new Date().toLocaleDateString('en-US', { weekday: 'long' })
+        const todayPeriod = openingHours.weekdayDescriptions?.find(
+            (d: string) => d.startsWith(today)
+        )
+        if (todayPeriod) {
+            const match = todayPeriod.match(/–\s*(.+)/)
+            if (match) return `Open now (closes ${match[1].trim()})`
+        }
+        return 'Open now'
+    }
+    if (openingHours.openNow === false) return 'Closed now'
+    return ''
+}
+
+/** Construct a Google Places photo media URL (returns a redirect to the image) */
+function buildPhotoUrl(photoName: string, apiKey: string, maxHeightPx = 400): string {
+    return `https://places.googleapis.com/v1/${photoName}/media?maxHeightPx=${maxHeightPx}&key=${apiKey}`
+}
+
+// ─── Main ───────────────────────────────────────────────────────────────────
+
 /**
  * Search for places using Google Places API (New Text Search)
  * https://places.googleapis.com/v1/places:searchText
  */
 export async function searchPlaces(params: PlaceSearchParams): Promise<ToolExecutionResult> {
     const { query, location, openNow = false, minRating = 0 } = params
+    const apiKey = process.env.GOOGLE_PLACES_API_KEY
 
-    if (!process.env.GOOGLE_PLACES_API_KEY) {
+    if (!apiKey) {
         return {
             success: false,
             data: null,
@@ -23,18 +70,38 @@ export async function searchPlaces(params: PlaceSearchParams): Promise<ToolExecu
         }
     }
 
-    // Refine query with location if provided as name (not lat/lng)
+    // Refine query with location if provided as a name (not lat/lng)
     let textQuery = query
     if (location && !location.includes(',')) {
         textQuery = `${query} in ${location}`
+    } else if (!location) {
+        // Default to Bengaluru context
+        textQuery = `${query} in Bengaluru`
+    }
+
+    // Determine location bias center
+    let biasLat = DEFAULT_LAT
+    let biasLng = DEFAULT_LNG
+    if (location && location.includes(',')) {
+        const [lat, lng] = location.split(',').map(Number)
+        if (!isNaN(lat) && !isNaN(lng)) {
+            biasLat = lat
+            biasLng = lng
+        }
     }
 
     try {
         const url = 'https://places.googleapis.com/v1/places:searchText'
 
         const requestBody: any = {
-            textQuery: textQuery,
+            textQuery,
             maxResultCount: 5,
+            locationBias: {
+                circle: {
+                    center: { latitude: biasLat, longitude: biasLng },
+                    radius: DEFAULT_RADIUS,
+                },
+            },
         }
 
         if (openNow) {
@@ -45,25 +112,34 @@ export async function searchPlaces(params: PlaceSearchParams): Promise<ToolExecu
             requestBody.minRating = minRating
         }
 
-        // If location is lat,lng, we can bias the search (basic implementation)
-        // For proper bias, we need `locationBias` object with Circle/Rectangle
-        // Skipping complex bias for now to keep it simple, textQuery usually works well
-
         const response = await fetch(url, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'X-Goog-Api-Key': process.env.GOOGLE_PLACES_API_KEY,
-                'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.googleMapsUri,places.priceLevel,places.primaryType',
+                'X-Goog-Api-Key': apiKey,
+                'X-Goog-FieldMask': [
+                    'places.displayName',
+                    'places.formattedAddress',
+                    'places.rating',
+                    'places.userRatingCount',
+                    'places.googleMapsUri',
+                    'places.priceLevel',
+                    'places.primaryType',
+                    'places.photos',
+                    'places.location',
+                    'places.currentOpeningHours',
+                    'places.websiteUri',
+                ].join(','),
             },
             body: JSON.stringify(requestBody),
         })
 
         if (!response.ok) {
+            const errorBody = await response.text().catch(() => '')
             return {
                 success: false,
                 data: null,
-                error: `Places API error: ${response.status} ${response.statusText}`,
+                error: `Places API error: ${response.status} ${response.statusText} — ${errorBody}`,
             }
         }
 
@@ -76,20 +152,53 @@ export async function searchPlaces(params: PlaceSearchParams): Promise<ToolExecu
             }
         }
 
-        const places = data.places.map((place: any) => {
+        // ── Build formatted output + photo URLs ─────────────────────
+
+        const images: { url: string; caption: string }[] = []
+
+        const lines: string[] = [`📍 Top results for "${textQuery}":\n`]
+
+        data.places.forEach((place: any, i: number) => {
             const name = place.displayName?.text || 'Unknown'
             const address = place.formattedAddress || ''
-            const rating = place.rating ? `${place.rating}⭐ (${place.userRatingCount})` : 'No rating'
-            const link = place.googleMapsUri
-            const price = place.priceLevel ? `(Price: ${place.priceLevel})` : ''
-            const type = place.primaryType ? `[${place.primaryType}]` : ''
+            const rating = place.rating
+                ? `⭐ ${place.rating} (${(place.userRatingCount || 0).toLocaleString()} reviews)`
+                : 'No rating yet'
+            const price = formatPrice(place.priceLevel)
+            const hours = formatHours(place.currentOpeningHours)
 
-            return `- <b>${name}</b> ${type}\n  ${rating} ${price}\n  ${address}\n  <a href="${link}">View on Maps</a>`
-        }).join('\n\n')
+            // Build place entry
+            const parts = [`${i + 1}. ${name} — ${rating}`]
+            parts.push(`   📍 ${address}`)
+
+            const extras: string[] = []
+            if (price) extras.push(price)
+            if (hours) extras.push(hours)
+            if (extras.length > 0) parts.push(`   ${extras.join(' • ')}`)
+
+            lines.push(parts.join('\n'))
+
+            // Extract first photo for Telegram media
+            if (place.photos && place.photos.length > 0) {
+                const photoName = place.photos[0].name
+                if (photoName) {
+                    images.push({
+                        url: buildPhotoUrl(photoName, apiKey),
+                        caption: `📍 ${name} — ${rating}`,
+                    })
+                }
+            }
+        })
+
+        const formatted = lines.join('\n\n')
 
         return {
             success: true,
-            data: { formatted: `Found places for "${textQuery}":\n\n${places}`, raw: data.places },
+            data: {
+                formatted,
+                raw: data.places,
+                images: images.slice(0, 5), // cap at 5 photos for Telegram
+            },
         }
 
     } catch (error: any) {
@@ -104,7 +213,7 @@ export async function searchPlaces(params: PlaceSearchParams): Promise<ToolExecu
 
 export const placeToolDefinition = {
     name: 'search_places',
-    description: 'Search for places, restaurants, attractions, or hidden gems.',
+    description: 'Search for places, restaurants, attractions, or hidden gems in Bengaluru (default) or any specified location.',
     parameters: {
         type: 'object',
         properties: {
@@ -114,7 +223,7 @@ export const placeToolDefinition = {
             },
             location: {
                 type: 'string',
-                description: 'Location context (e.g., "San Francisco", "near me")',
+                description: 'Location context (e.g., "Koramangala", "lat,lng"). Defaults to Bengaluru.',
             },
             openNow: {
                 type: 'boolean',
