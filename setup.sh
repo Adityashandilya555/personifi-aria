@@ -126,8 +126,12 @@ set_env_key() {
     local value="$2"
     # If key exists in .env, replace it; otherwise append
     if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
-        # macOS-compatible sed (requires '' after -i)
-        sed -i '' "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
+        # macOS sed requires '' after -i, Linux sed does not
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            sed -i '' "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
+        else
+            sed -i "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
+        fi
     else
         echo "${key}=${value}" >> "$ENV_FILE"
     fi
