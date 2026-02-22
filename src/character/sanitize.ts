@@ -67,8 +67,10 @@ export function sanitizeInput(input: string): SanitizationResult {
   
   // 2. Check for and neutralize injection patterns
   for (const pattern of INJECTION_PATTERNS) {
+    pattern.lastIndex = 0
     if (pattern.test(sanitized)) {
       suspiciousPatterns.push(pattern.source)
+      pattern.lastIndex = 0
       // Replace with harmless text instead of removing (less obvious to attacker)
       sanitized = sanitized.replace(pattern, '[filtered]')
       modified = true

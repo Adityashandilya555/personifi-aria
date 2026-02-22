@@ -11,6 +11,7 @@ interface CacheEntry<T> {
 const store = new Map<string, CacheEntry<unknown>>()
 
 const DEFAULT_TTL_MS = 10 * 60 * 1000 // 10 minutes
+const MAX_CACHE_SIZE = 500
 
 export function cacheGet<T>(key: string): T | null {
     const entry = store.get(key)
@@ -23,6 +24,10 @@ export function cacheGet<T>(key: string): T | null {
 }
 
 export function cacheSet<T>(key: string, data: T, ttlMs: number = DEFAULT_TTL_MS): void {
+    if (store.size >= MAX_CACHE_SIZE) {
+        const firstKey = store.keys().next().value
+        if (firstKey) store.delete(firstKey)
+    }
     store.set(key, { data, expiresAt: Date.now() + ttlMs })
 }
 
