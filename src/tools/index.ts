@@ -20,6 +20,7 @@ import { searchSwiggyFood, searchInstamartMCP, searchDineout, searchZomatoMCP, s
 import { compareProactive, compareProactiveDefinition } from './proactive-compare.js'
 import { searchBlinkit, blinkitDefinition } from './blinkit-mcp.js'
 import { searchZepto, zeptoDefinition } from './zepto-mcp.js'
+import { compareRides, rideCompareDefinition } from './ride-compare.js'
 
 const bodyHooks: BodyHooks = {
     async executeTool(name: string, params: Record<string, unknown>): Promise<ToolExecutionResult> {
@@ -54,6 +55,8 @@ const bodyHooks: BodyHooks = {
                 return searchBlinkit(params as any)
             case 'search_zepto':
                 return searchZepto(params as any)
+            case 'compare_rides':
+                return compareRides(params as any)
             default:
                 return { success: false, data: null, error: `Unknown tool: ${name}` }
         }
@@ -75,6 +78,7 @@ const bodyHooks: BodyHooks = {
             compareProactiveDefinition,
             blinkitDefinition,
             zeptoDefinition,
+            rideCompareDefinition,
         ]
     },
 }
