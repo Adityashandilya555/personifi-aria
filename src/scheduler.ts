@@ -15,7 +15,7 @@
 import cron from 'node-cron'
 import { runProactiveForAllUsers, loadUsersFromDB } from './media/proactiveRunner.js'
 import { registerMediaCron } from './cron/media-cron.js'
-import { runMigrations } from './character/session-store.js'
+import { runMigrations, cleanupExpiredRateLimits } from './character/session-store.js'
 
 // ─── Core scheduler ────────────────────────────────────────────────────────
 
@@ -38,6 +38,16 @@ export function initScheduler(_databaseUrl: string) {
 
   // ── 3. Media scraping cron — every 6 hours ────────────────────────────
   registerMediaCron()
+
+  // ── 5. Rate limit cleanup — every hour ────────────────────────────────
+  cron.schedule('0 * * * *', async () => {
+    try {
+      const deleted = await cleanupExpiredRateLimits()
+      if (deleted > 0) console.log(`[SCHEDULER] Cleaned ${deleted} stale rate_limit rows`)
+    } catch (err) {
+      console.error('[SCHEDULER] Rate limit cleanup error:', err)
+    }
+  })
 
   // ── 4. Migrations + load active users on startup ──────────────────────
   setTimeout(async () => {

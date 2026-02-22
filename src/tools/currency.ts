@@ -28,7 +28,7 @@ export async function convertCurrency(params: CurrencyParams): Promise<ToolExecu
 
         if (!data.rates || !data.rates[toCode]) {
             return {
-                success: true,
+                success: false,
                 data: `Could not convert from ${fromCode} to ${toCode}. Invalid currency code?`,
             }
         }

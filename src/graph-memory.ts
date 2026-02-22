@@ -12,6 +12,7 @@
 import Groq from 'groq-sdk'
 import { getPool } from './character/session-store.js'
 import { embed, embedBatch, queueForEmbedding } from './embeddings.js'
+import { safeError } from './utils/safe-log.js'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -135,8 +136,8 @@ export async function addToGraph(
             ...r,
             source: r.source === 'USER' ? userId : r.source.toLowerCase(),
             destination: r.destination === 'USER' ? userId : r.destination.toLowerCase(),
-            source_type: entityTypeMap[r.source] || 'unknown',
-            destination_type: entityTypeMap[r.destination] || 'unknown',
+            source_type: entityTypeMap[r.source] || entityTypeMap[r.source.toLowerCase()] || 'unknown',
+            destination_type: entityTypeMap[r.destination] || entityTypeMap[r.destination.toLowerCase()] || 'unknown',
         }))
 
         // Step 4: Search existing relations for this user
@@ -157,7 +158,7 @@ export async function addToGraph(
             added.push(rel)
         }
     } catch (error) {
-        console.error('[graph-memory] addToGraph failed:', error)
+        console.error('[graph-memory] addToGraph failed:', safeError(error))
     }
 
     return { added, deleted }
@@ -361,7 +362,7 @@ async function extractEntities(text: string): Promise<Entity[]> {
         const parsed = JSON.parse(content)
         return Array.isArray(parsed.entities) ? parsed.entities : []
     } catch (error) {
-        console.error('[graph-memory] Entity extraction failed:', error)
+        console.error('[graph-memory] Entity extraction failed:', safeError(error))
         return []
     }
 }
@@ -388,7 +389,7 @@ async function extractRelations(text: string, entities: Entity[]): Promise<Relat
         const parsed = JSON.parse(content)
         return Array.isArray(parsed.relations) ? parsed.relations : []
     } catch (error) {
-        console.error('[graph-memory] Relation extraction failed:', error)
+        console.error('[graph-memory] Relation extraction failed:', safeError(error))
         return []
     }
 }
@@ -439,7 +440,7 @@ async function detectContradictions(
         const parsed = JSON.parse(content)
         return Array.isArray(parsed.to_delete) ? parsed.to_delete : []
     } catch (error) {
-        console.error('[graph-memory] Contradiction detection failed:', error)
+        console.error('[graph-memory] Contradiction detection failed:', safeError(error))
         return []
     }
 }

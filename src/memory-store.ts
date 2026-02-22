@@ -13,6 +13,7 @@
 import Groq from 'groq-sdk'
 import crypto from 'crypto'
 import { getPool } from './character/session-store.js'
+import { safeError } from './utils/safe-log.js'
 import { embed, embedBatch, queueForEmbedding, EMBEDDING_DIMS } from './embeddings.js'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -352,7 +353,7 @@ export async function addMemories(
                     break
             }
         } catch (error) {
-            console.error(`[memory-store] Error executing ${action.event}:`, error)
+            console.error(`[memory-store] Error executing ${action.event}:`, safeError(error))
         }
     }
 
@@ -389,7 +390,7 @@ async function extractFacts(
         const parsed = JSON.parse(content)
         return Array.isArray(parsed.facts) ? parsed.facts.filter((f: any) => typeof f === 'string' && f.length > 0) : []
     } catch (error) {
-        console.error('[memory-store] Fact extraction failed:', error)
+        console.error('[memory-store] Fact extraction failed:', safeError(error))
         return []
     }
 }
@@ -436,7 +437,7 @@ async function decideMemoryActions(
                 old_memory: m.old_memory,
             }))
     } catch (error) {
-        console.error('[memory-store] Memory decision failed:', error)
+        console.error('[memory-store] Memory decision failed:', safeError(error))
         // Fallback: ADD all new facts
         return newFacts.map((f, i) => ({
             id: String(existingMemories.length + i),
