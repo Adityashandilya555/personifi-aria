@@ -251,7 +251,9 @@ async function runProactiveForUser(userId: string, chatId: string): Promise<void
     }
 
     // Use agent's hashtag or our suggestion
-    const hashtag = decision.search_params?.hashtag || selection.hashtag
+    // Strip leading # if agent echoed it back (##tag bug in logs)
+    const rawHashtag = decision.search_params?.hashtag || selection.hashtag
+    const hashtag = rawHashtag.replace(/^#+/, '')
     const category = (decision.category || selection.category) as ContentCategory
 
     console.log(`[Proactive] Agent approved! Fetching reels for #${hashtag} (${category})`)

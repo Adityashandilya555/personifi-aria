@@ -9,10 +9,10 @@
  * READ:  embed query entities → pgvector cosine search → recursive CTE traversal → format
  */
 
-import Groq from 'groq-sdk'
 import { getPool } from './character/session-store.js'
 import { embed, embedBatch, queueForEmbedding } from './embeddings.js'
 import { safeError } from './utils/safe-log.js'
+import { generateResponse } from './llm/tierManager.js'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -36,18 +36,7 @@ export interface GraphSearchResult {
     similarity?: number
 }
 
-// ─── Groq Client ────────────────────────────────────────────────────────────
-
-let groq: Groq | null = null
-
-function getGroq(): Groq {
-    if (!groq) {
-        groq = new Groq({ apiKey: process.env.GROQ_API_KEY })
-    }
-    return groq
-}
-
-const EXTRACTION_MODEL = 'llama-3.1-8b-instant'
+// ─── LLM calls route through tierManager (backoff + Gemini fallback) ─────────
 
 // ─── Prompts (adapted from mem0 graphs/utils.ts) ────────────────────────────
 
@@ -342,24 +331,14 @@ async function searchGraphByText(
 // ─── Internal Helpers ───────────────────────────────────────────────────────
 
 async function extractEntities(text: string): Promise<Entity[]> {
-    const client = getGroq()
-
     try {
-        const response = await client.chat.completions.create({
-            model: EXTRACTION_MODEL,
-            messages: [
-                { role: 'system', content: EXTRACT_ENTITIES_PROMPT },
-                { role: 'user', content: text },
-            ],
-            temperature: 0.1,
-            max_tokens: 300,
-            response_format: { type: 'json_object' },
-        })
+        const { text: raw } = await generateResponse([
+            { role: 'system', content: EXTRACT_ENTITIES_PROMPT },
+            { role: 'user', content: text },
+        ], { maxTokens: 300, temperature: 0.1, jsonMode: true })
 
-        const content = response.choices[0]?.message?.content
-        if (!content) return []
-
-        const parsed = JSON.parse(content)
+        if (!raw) return []
+        const parsed = JSON.parse(raw)
         return Array.isArray(parsed.entities) ? parsed.entities : []
     } catch (error) {
         console.error('[graph-memory] Entity extraction failed:', safeError(error))
@@ -368,25 +347,16 @@ async function extractEntities(text: string): Promise<Entity[]> {
 }
 
 async function extractRelations(text: string, entities: Entity[]): Promise<Relation[]> {
-    const client = getGroq()
     const entityList = entities.map(e => e.entity).join(', ')
 
     try {
-        const response = await client.chat.completions.create({
-            model: EXTRACTION_MODEL,
-            messages: [
-                { role: 'system', content: EXTRACT_RELATIONS_PROMPT },
-                { role: 'user', content: `Text: "${text}"\nEntities: [${entityList}]` },
-            ],
-            temperature: 0.1,
-            max_tokens: 300,
-            response_format: { type: 'json_object' },
-        })
+        const { text: raw } = await generateResponse([
+            { role: 'system', content: EXTRACT_RELATIONS_PROMPT },
+            { role: 'user', content: `Text: "${text}"\nEntities: [${entityList}]` },
+        ], { maxTokens: 300, temperature: 0.1, jsonMode: true })
 
-        const content = response.choices[0]?.message?.content
-        if (!content) return []
-
-        const parsed = JSON.parse(content)
+        if (!raw) return []
+        const parsed = JSON.parse(raw)
         return Array.isArray(parsed.relations) ? parsed.relations : []
     } catch (error) {
         console.error('[graph-memory] Relation extraction failed:', safeError(error))
@@ -415,8 +385,6 @@ async function detectContradictions(
     existing: Relation[],
     newInfo: string
 ): Promise<Relation[]> {
-    const client = getGroq()
-
     const existingStr = existing
         .map(r => `${r.source} -- ${r.relationship} -- ${r.destination}`)
         .join('\n')
@@ -426,18 +394,13 @@ async function detectContradictions(
         .replace('{new_info}', newInfo)
 
     try {
-        const response = await client.chat.completions.create({
-            model: EXTRACTION_MODEL,
-            messages: [{ role: 'user', content: prompt }],
-            temperature: 0.1,
-            max_tokens: 300,
-            response_format: { type: 'json_object' },
-        })
+        const { text: raw } = await generateResponse(
+            [{ role: 'user', content: prompt }],
+            { maxTokens: 300, temperature: 0.1, jsonMode: true }
+        )
 
-        const content = response.choices[0]?.message?.content
-        if (!content) return []
-
-        const parsed = JSON.parse(content)
+        if (!raw) return []
+        const parsed = JSON.parse(raw)
         return Array.isArray(parsed.to_delete) ? parsed.to_delete : []
     } catch (error) {
         console.error('[graph-memory] Contradiction detection failed:', safeError(error))

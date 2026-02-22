@@ -99,15 +99,32 @@ function looksLikeLookup(text: string): boolean {
   )
 }
 
-/** Searching placeholder text matched to query type. */
-function searchingPlaceholder(text: string): string {
+/**
+ * Show a placeholder bubble for any message that will take a noticeable moment
+ * to process — either a data lookup or any conversational message with substance.
+ */
+function needsPlaceholder(text: string): boolean {
+  const wordCount = text.trim().split(/\s+/).length
+  return looksLikeLookup(text) || wordCount > 4
+}
+
+const THINKING_BUBBLES = [
+  'Thinking...',
+  'Hmm, let me think da...',
+  'One sec...',
+  '...',
+]
+
+/** Placeholder text matched to query type — falls back to a thinking bubble. */
+function placeholderFor(text: string): string {
   const t = text.toLowerCase()
-  if (/flight|fly/.test(t))       return '✈️ Checking flights...'
-  if (/hotel|stay/.test(t))       return '🏨 Looking up stays...'
-  if (/weather|rain/.test(t))     return '🌤️ Checking the sky...'
+  if (/flight|fly/.test(t))            return '✈️ Checking flights...'
+  if (/hotel|stay/.test(t))            return '🏨 Looking up stays...'
+  if (/weather|rain/.test(t))          return '🌤️ Checking the sky...'
   if (/food|order|restaurant/.test(t)) return '🍽️ Hunting for the best bites...'
-  if (/place|where|cafe/.test(t)) return '📍 Finding spots near you...'
-  return '🔍 On it...'
+  if (/place|where|cafe/.test(t))      return '📍 Finding spots near you...'
+  if (/grocery|blinkit|zepto/.test(t)) return '🛒 Checking grocery prices...'
+  return pick(THINKING_BUBBLES)
 }
 
 async function tgFetch(method: string, body: object): Promise<any> {
@@ -306,21 +323,26 @@ server.post('/webhook/telegram', async (request, reply) => {
     // Fire typing indicator immediately — before anything else runs
     sendChatAction(chatId, typingActionFor(msgText))
 
-    // Send a "Searching..." placeholder only for lookup-style queries
+    // Send a placeholder bubble for lookups and any substantive conversational message
     let placeholderMsgId: number | null = null
-    if (looksLikeLookup(msgText)) {
+    if (needsPlaceholder(msgText)) {
       const res = await tgFetch('sendMessage', {
         chat_id: chatId,
-        text: searchingPlaceholder(msgText),
+        text: placeholderFor(msgText),
       })
       placeholderMsgId = res?.result?.message_id ?? null
     }
 
     const response = await handleMessage(parsedMessage.channel, parsedMessage.userId, msgText)
 
-    // Replace placeholder in-place, or delete it if we're sending media
+    // Replace placeholder in-place, or delete it when we need a fresh send
     if (placeholderMsgId) {
-      if (!response.media?.length) {
+      if (response.requestLocation || response.media?.length) {
+        // requestLocation needs a ReplyKeyboard; media can't replace a text message —
+        // delete the placeholder so the proper message goes out fresh below
+        await tgFetch('deleteMessage', { chat_id: chatId, message_id: placeholderMsgId })
+        placeholderMsgId = null
+      } else {
         // Edit text message in-place — no chat clutter
         await tgFetch('editMessageText', {
           chat_id: chatId,
@@ -328,9 +350,6 @@ server.post('/webhook/telegram', async (request, reply) => {
           text: response.text,
           parse_mode: 'HTML',
         })
-      } else {
-        // Can't edit a text message into media — delete placeholder then send fresh
-        await tgFetch('deleteMessage', { chat_id: chatId, message_id: placeholderMsgId })
       }
     }
 

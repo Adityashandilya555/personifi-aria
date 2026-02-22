@@ -9,7 +9,7 @@
  * - Handles contradictions gracefully
  */
 
-import Groq from 'groq-sdk'
+import { generateResponse } from './llm/tierManager.js'
 import { Pool } from 'pg'
 import type {
   PreferenceCategory,
@@ -23,22 +23,7 @@ import type {
   ConfidenceScoreResult,
 } from './types/handler.js'
 
-// Initialize Groq client for preference extraction
-let groq: Groq | null = null
-
-function getGroqClient(): Groq {
-  if (!groq) {
-    const apiKey = process.env.GROQ_API_KEY
-    if (!apiKey) {
-      throw new Error('GROQ_API_KEY environment variable is required for preference extraction')
-    }
-    groq = new Groq({ apiKey })
-  }
-  return groq
-}
-
-// Model for preference extraction (fast, free Llama 3.1 8B)
-const EXTRACTION_MODEL = 'llama-3.1-8b-instant'
+// LLM calls route through tierManager (backoff + Gemini fallback)
 
 // Confidence score thresholds
 const CONFIDENCE = {
@@ -63,10 +48,7 @@ export async function extractPreferences(
   userMessage: string,
   _existingPrefs: Partial<PreferencesMap> = {}
 ): Promise<ExtractedPreferences | null> {
-  try {
-    const groqClient = getGroqClient()
-
-    const systemPrompt = `You are a preference extraction engine. Extract user preferences from the single message below.
+  const systemPrompt = `You are a preference extraction engine. Extract user preferences from the single message below.
 
 Return ONLY valid JSON in this exact format:
 { "preferences": {}, "found": false }
@@ -83,18 +65,13 @@ Output: { "preferences": {}, "found": false }
 
 Only extract explicitly stated preferences. Do not infer. Return valid JSON only.`
 
-    const completion = await groqClient.chat.completions.create({
-      model: EXTRACTION_MODEL,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userMessage },
-      ],
-      response_format: { type: 'json_object' },
-      temperature: 0.1,
-      max_tokens: 150,
-    })
+  try {
+    // Route through tierManager for 429 backoff + Gemini fallback
+    const { text: raw } = await generateResponse([
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userMessage },
+    ], { maxTokens: 150, temperature: 0.1, jsonMode: true })
 
-    const raw = completion.choices[0]?.message?.content?.trim() || ''
     if (!raw) return null
 
     try {
@@ -233,10 +210,10 @@ export async function savePreferences(
         message: sourceMessage,
         existingPreference: existingPref
           ? {
-              value: existingPref.value,
-              confidence: Number(existingPref.confidence),
-              mentionCount: existingPref.mention_count,
-            }
+            value: existingPref.value,
+            confidence: Number(existingPref.confidence),
+            mentionCount: existingPref.mention_count,
+          }
           : undefined,
       })
 

@@ -10,11 +10,12 @@
  *        LLM decides ADD/UPDATE/DELETE/NONE → execute on PG
  */
 
-import Groq from 'groq-sdk'
+
 import crypto from 'crypto'
 import { getPool } from './character/session-store.js'
 import { safeError } from './utils/safe-log.js'
 import { embed, embedBatch, queueForEmbedding, EMBEDDING_DIMS } from './embeddings.js'
+import { generateResponse } from './llm/tierManager.js'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -40,18 +41,7 @@ export interface AddMemoryResult {
     actions: MemoryAction[]
 }
 
-// ─── Groq Client ────────────────────────────────────────────────────────────
 
-let groq: Groq | null = null
-
-function getGroq(): Groq {
-    if (!groq) {
-        groq = new Groq({ apiKey: process.env.GROQ_API_KEY })
-    }
-    return groq
-}
-
-const EXTRACTION_MODEL = 'llama-3.1-8b-instant'
 
 // ─── Prompts (adapted from mem0 prompts.py) ─────────────────────────────────
 
@@ -366,28 +356,19 @@ async function extractFacts(
     message: string,
     history: Array<{ role: string; content: string }>
 ): Promise<string[]> {
-    const client = getGroq()
-
     const conversationContext = history.length > 0
         ? '\n\nConversation context:\n' + history.slice(-6).map(m => `${m.role}: ${m.content}`).join('\n')
         : ''
 
     try {
-        const response = await client.chat.completions.create({
-            model: EXTRACTION_MODEL,
-            messages: [
-                { role: 'system', content: FACT_RETRIEVAL_PROMPT },
-                { role: 'user', content: `Extract facts from this message:\n\nUser: ${message}${conversationContext}` },
-            ],
-            temperature: 0.1,
-            max_tokens: 500,
-            response_format: { type: 'json_object' },
-        })
+        // Route through tierManager so 429s get exponential backoff + Gemini fallback
+        const { text } = await generateResponse([
+            { role: 'system', content: FACT_RETRIEVAL_PROMPT },
+            { role: 'user', content: `Extract facts from this message:\n\nUser: ${message}${conversationContext}` },
+        ], { maxTokens: 500, temperature: 0.1, jsonMode: true })
 
-        const content = response.choices[0]?.message?.content
-        if (!content) return []
-
-        const parsed = JSON.parse(content)
+        if (!text) return []
+        const parsed = JSON.parse(text)
         return Array.isArray(parsed.facts) ? parsed.facts.filter((f: any) => typeof f === 'string' && f.length > 0) : []
     } catch (error) {
         console.error('[memory-store] Fact extraction failed:', safeError(error))
@@ -399,28 +380,23 @@ async function decideMemoryActions(
     existingMemories: Array<{ id: string; text: string }>,
     newFacts: string[]
 ): Promise<MemoryAction[]> {
-    const client = getGroq()
     const prompt = getUpdateMemoryPrompt(existingMemories, newFacts)
 
     try {
-        const response = await client.chat.completions.create({
-            model: EXTRACTION_MODEL,
-            messages: [{ role: 'user', content: prompt }],
-            temperature: 0.1,
-            max_tokens: 1000,
-            response_format: { type: 'json_object' },
-        })
+        // Route through tierManager for 429 backoff + Gemini fallback
+        const { text } = await generateResponse(
+            [{ role: 'user', content: prompt }],
+            { maxTokens: 1000, temperature: 0.1, jsonMode: true }
+        )
 
-        const content = response.choices[0]?.message?.content
-        if (!content) return newFacts.map((f, i) => ({
+        if (!text) return newFacts.map((f, i) => ({
             id: String(existingMemories.length + i),
             text: f,
             event: 'ADD' as const,
         }))
 
-        const parsed = JSON.parse(content)
+        const parsed = JSON.parse(text)
         if (!Array.isArray(parsed.memory)) {
-            // Fallback: treat all facts as ADD
             return newFacts.map((f, i) => ({
                 id: String(existingMemories.length + i),
                 text: f,
@@ -438,7 +414,6 @@ async function decideMemoryActions(
             }))
     } catch (error) {
         console.error('[memory-store] Memory decision failed:', safeError(error))
-        // Fallback: ADD all new facts
         return newFacts.map((f, i) => ({
             id: String(existingMemories.length + i),
             text: f,

@@ -107,9 +107,23 @@ export async function searchFlights(params: FlightSearchParams): Promise<ToolExe
             return `- <b>${price}</b>: ${segments} (Duration: ${duration})`
         }).join('\n')
 
+        // Cap formatted string to prevent prompt overflow (~10k tokens seen in prod)
+        const header = `Flight offers from ${origin} to ${destination}:`
+        let formatted = `${header}\n${offers}`
+        if (formatted.length > 1200) {
+            // Keep the header + first N lines that fit
+            const lines = offers.split('\n')
+            let trimmed = header
+            for (const line of lines) {
+                if ((trimmed + '\n' + line).length > 1200) break
+                trimmed += '\n' + line
+            }
+            formatted = trimmed + '\n…(more results available, ask for details)'
+        }
+
         return {
             success: true,
-            data: { formatted: `Flight offers from ${origin} to ${destination}:\n${offers}`, raw: response.data },
+            data: { formatted, raw: response.data },
         }
 
     } catch (error: any) {

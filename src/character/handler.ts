@@ -56,6 +56,9 @@ import type { RouteContext } from '../hooks.js'
 // Location utilities
 import { shouldRequestLocation } from '../location.js'
 
+// Scene manager — tracks active multi-turn flow for mid-flow context injection
+import { setScene, toolToFlow } from '../character/scene-manager.js'
+
 // Tier 2: LLM with fallback chains
 import { generateResponse, type ChatMessage } from '../llm/tierManager.js'
 
@@ -266,7 +269,8 @@ export async function handleMessage(
     // ─── Step 5: Classify message via 8B ──────────────────────────
     const classification = await classifyMessage(
       userMessage,
-      session.messages.slice(-4)
+      session.messages.slice(-4),
+      user.userId
     )
 
     console.log('[handler] Classification:', {
@@ -398,6 +402,11 @@ export async function handleMessage(
       if (toolResult?.success && toolResult.data) {
         toolResultStr = toolResult.data
         toolRawData = toolResult.raw
+      }
+      // Register active flow so follow-up replies ("15th", "2 adults") get context
+      if (routeDecision.toolName) {
+        const flow = toolToFlow(routeDecision.toolName)
+        setScene(user.userId, { flow, partialArgs: routeDecision.toolParams })
       }
     }
 

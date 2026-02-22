@@ -25,6 +25,7 @@ import type {
 import { ClassifierResultSchema, safeParseLLM } from './types/schemas.js'
 import { getPool } from './character/session-store.js'
 import { getGroqTools } from './tools/index.js'
+import { buildSceneHint } from './character/scene-manager.js'
 
 // ─── Type Coercion Helper ───────────────────────────────────────────────────
 // Groq 8B sometimes emits numbers as strings (e.g. "amount": "100").
@@ -118,7 +119,8 @@ s = user signal: dry|stressed|roasting|normal
  */
 export async function classifyMessage(
     userMessage: string,
-    history: Array<{ role: string; content: string }>
+    history: Array<{ role: string; content: string }>,
+    userId?: string
 ): Promise<ClassifierResult> {
     const client = getGroq()
 
@@ -132,6 +134,9 @@ export async function classifyMessage(
         ? history.slice(-4).map(m => `${m.role}: ${m.content}`).join('\n')
         : ''
 
+    // Inject active scene context so ambiguous follow-ups ("15th", "2 adults") resolve correctly
+    const sceneHint = userId ? buildSceneHint(userId) : ''
+
     try {
         const response = await client.chat.completions.create({
             model: COGNITIVE_MODEL,
@@ -139,9 +144,11 @@ export async function classifyMessage(
                 { role: 'system', content: buildClassifierPrompt() },
                 {
                     role: 'user',
-                    content: historyStr
-                        ? `Recent history:\n${historyStr}\n\nUser message: "${userMessage}"`
-                        : `User message: "${userMessage}"`,
+                    content: [
+                        historyStr ? `Recent history:\n${historyStr}` : '',
+                        sceneHint ? `Context: ${sceneHint}` : '',
+                        `User message: "${userMessage}"`,
+                    ].filter(Boolean).join('\n\n'),
                 },
             ],
             tools: getGroqTools(),
