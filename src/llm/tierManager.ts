@@ -276,15 +276,3 @@ export async function generateCaption(
     return result.text
 }
 
-/**
- * Get the Tier 2 provider chain (for direct use in handler.ts
- * where the Groq completion object is needed for usage tracking).
- * Prefer generateResponse() when possible.
- */
-export function getTier2Providers(): LLMProvider[] {
-    return TIER2_PROVIDERS
-}
-
-export function getTier1Providers(): LLMProvider[] {
-    return TIER1_PROVIDERS
-}

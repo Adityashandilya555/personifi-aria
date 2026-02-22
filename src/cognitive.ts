@@ -1,14 +1,14 @@
 /**
  * Cognitive Layer — DEV 3: The Soul
  *
- * Pre-response analysis that runs BEFORE the main 70B personality response.
- * Uses Groq 8B to produce internal monologue, detect user emotion,
- * and set conversation goals that guide the personality model.
+ * Single 8B call that both routes to tools AND fuses cognitive analysis.
+ * classifyMessage() returns tool_call OR {complexity, emotion, goal, monologue}.
  *
  * Exports:
- *   internalMonologue()     — LLM analysis → CognitiveState
+ *   classifyMessage()        — 8B classifier: tool routing + cognitive state
  *   updateConversationGoal() — persist/update goals in conversation_goals table
- *   selectResponseTone()    — pure function, emotion → ToneDirective
+ *   getActiveGoal()          — fetch active goal for a session
+ *   selectResponseTone()     — pure function, emotion → ToneDirective
  *   formatCognitiveForPrompt() — render CognitiveState for system prompt
  */
 
@@ -23,8 +23,6 @@ import type {
     ClassifierResult,
 } from './types/cognitive.js'
 import { ClassifierResultSchema, safeParseLLM } from './types/schemas.js'
-import type { MemoryItem } from './memory-store.js'
-import type { GraphSearchResult } from './graph-memory.js'
 import { getPool } from './character/session-store.js'
 import { getGroqTools } from './tools/index.js'
 
@@ -67,32 +65,6 @@ function getGroq(): Groq {
 }
 
 const COGNITIVE_MODEL = 'llama-3.1-8b-instant'
-
-// ─── Cognitive Analysis Prompt ──────────────────────────────────────────────
-
-const COGNITIVE_PROMPT = `You are Aria's cognitive pre-processor. Analyze the conversation context and produce a brief internal analysis to guide Aria's response.
-
-You are given:
-- The user's latest message
-- Recent conversation history
-- Known memories and preferences about this user
-- Entity relationships from the knowledge graph
-
-Produce a JSON response with exactly these fields:
-{
-  "internalMonologue": "1-2 sentences of Aria's private reasoning about what the user needs",
-  "emotionalState": "one of: excited, frustrated, curious, neutral, anxious, grateful, nostalgic, overwhelmed",
-  "conversationGoal": "one of: inform, recommend, clarify, empathize, redirect, upsell, plan, reassure",
-  "relevantMemories": ["list of memory texts that are most relevant to bring up"]
-}
-
-Guidelines:
-- internalMonologue should be strategic, e.g. "User seems excited about Bali, I should suggest off-tourist spots they'd love based on their preference for adventure"
-- emotionalState should reflect the USER's emotion, not Aria's
-- conversationGoal should be the SINGLE most important thing to achieve in the response
-- relevantMemories should list 0-3 specific memories to weave into the response naturally
-
-Keep the response very concise. This is internal reasoning, not the actual response.`
 
 // ─── Classifier Prompt (Slim — tool schemas are passed via native tools[]) ───
 // Built as a function so we can inject today's date dynamically on every call.
@@ -318,73 +290,6 @@ function getDefaultClassification(): ClassifierResult {
     }
 }
 
-/**
- * Analyze the conversation context before generating a response.
- * Returns cognitive state that guides the personality model.
- *
- * This is the renamed version of the old `analyze()` function.
- *
- * Cost: ~100 tokens in, ~80 tokens out on Groq 8B (negligible)
- * Latency: ~150-250ms
- */
-export async function internalMonologue(
-    userMessage: string,
-    history: Array<{ role: string; content: string }>,
-    memories: MemoryItem[],
-    graphContext: GraphSearchResult[]
-): Promise<CognitiveState> {
-    const client = getGroq()
-
-    // Build context fragments
-    const historyStr = history.length > 0
-        ? history.slice(-4).map(m => `${m.role}: ${m.content}`).join('\n')
-        : 'No prior history.'
-
-    const memoriesStr = memories.length > 0
-        ? memories.map(m => `• ${m.memory}`).join('\n')
-        : 'No memories yet.'
-
-    const graphStr = graphContext.length > 0
-        ? graphContext.map(r => `${r.source} → ${r.relationship} → ${r.destination}`).join('\n')
-        : 'No graph context.'
-
-    try {
-        const response = await client.chat.completions.create({
-            model: COGNITIVE_MODEL,
-            messages: [
-                { role: 'system', content: COGNITIVE_PROMPT },
-                {
-                    role: 'user',
-                    content: `User message: "${userMessage}"
-
-Recent history:
-${historyStr}
-
-Known memories:
-${memoriesStr}
-
-Knowledge graph:
-${graphStr}`,
-                },
-            ],
-            temperature: 0.2,
-            max_tokens: 200,
-            response_format: { type: 'json_object' },
-        })
-
-        const content = response.choices[0]?.message?.content
-        if (!content) return getDefaultState()
-
-        return parseCognitiveState(content)
-    } catch (error) {
-        console.error('[cognitive] Analysis failed, using defaults:', error)
-        return getDefaultState()
-    }
-}
-
-/** @deprecated Use `internalMonologue()` instead. Kept for backward compatibility. */
-export const analyze = internalMonologue
-
 // ─── Conversation Goal Persistence ──────────────────────────────────────────
 
 /**
@@ -568,7 +473,6 @@ function getDefaultState(): CognitiveState {
 
 /**
  * Format cognitive state + tone directive for system prompt injection.
- * Enhanced version — includes tone guidance when available.
  */
 export function formatCognitiveForPrompt(
     state: CognitiveState,

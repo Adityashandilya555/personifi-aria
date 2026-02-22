@@ -285,8 +285,7 @@ function formatGoal(goal: ConversationGoalRecord): string {
 
 /**
  * Format cognitive state with tone directive for prompt injection.
- * Combines internalMonologue output + selectResponseTone pure function.
- * Matches spec PC4 format.
+ * Combines classifyMessage's fused cognitiveState + selectResponseTone pure function.
  */
 function formatCognitiveWithTone(state: CognitiveState): string {
     // Get tone directive from emotional state (pure function, zero cost)

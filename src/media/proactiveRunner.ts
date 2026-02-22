@@ -11,7 +11,7 @@
 
 import { callProactiveAgent, generateCaption } from '../llm/tierManager.js'
 import { PROACTIVE_AGENT_PROMPT } from '../llm/prompts/proactiveAgent.js'
-import { CAPTION_PROMPT } from '../llm/prompts/ariaPersonality.js'
+import { CAPTION_PROMPT } from '../llm/prompts/captionPrompt.js'
 import {
     type ContentCategory,
     selectContentForUser,
