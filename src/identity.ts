@@ -42,8 +42,17 @@ export async function generateLinkCode(userId: string): Promise<string> {
         [userId]
     )
 
-    // Generate a unique 6-digit code
-    const code = generateSixDigitCode()
+    // Generate a unique 6-digit code with collision retry
+    let code: string = ''
+    for (let attempt = 0; attempt < 5; attempt++) {
+        code = generateSixDigitCode()
+        const existing = await pool.query(
+            `SELECT 1 FROM link_codes WHERE code = $1 AND redeemed = FALSE AND expires_at > NOW()`,
+            [code]
+        )
+        if (existing.rows.length === 0) break
+        if (attempt === 4) throw new Error('Could not generate unique link code after 5 attempts')
+    }
     const expiresAt = new Date(Date.now() + LINK_CODE_EXPIRY_MINUTES * 60 * 1000)
 
     await pool.query(

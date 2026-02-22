@@ -35,6 +35,7 @@ import {
 } from './session-store.js'
 import { sanitizeInput, logSuspiciousInput, isPotentialAttack } from './sanitize.js'
 import { filterOutput, needsHumanReview } from './output-filter.js'
+import { safeError } from '../utils/safe-log.js'
 
 // DEV 3: The Soul — memory, cognition, personality
 import { searchMemories, addMemories } from '../memory-store.js'
@@ -306,24 +307,24 @@ export async function handleMessage(
         classification.skip_memory
           ? Promise.resolve([])
           : searchMemories(searchUserIds.length > 1 ? searchUserIds : user.userId, userMessage, 5).catch(err => {
-            console.error('[handler] Memory search failed:', err)
+            console.error('[handler] Memory search failed:', safeError(err))
             return [] as Awaited<ReturnType<typeof searchMemories>>
           }),
         // Graph search (skip if classifier says so)
         classification.skip_graph
           ? Promise.resolve([])
           : searchGraph(searchUserIds.length > 1 ? searchUserIds : user.userId, userMessage, 2, 10).catch(err => {
-            console.error('[handler] Graph search failed:', err)
+            console.error('[handler] Graph search failed:', safeError(err))
             return [] as Awaited<ReturnType<typeof searchGraph>>
           }),
         // Load user preferences
         loadPreferences(pool, user.userId).catch(err => {
-          console.error('[handler] Preferences load failed:', err)
+          console.error('[handler] Preferences load failed:', safeError(err))
           return {}
         }),
         // Fetch active conversation goal
         getActiveGoal(user.userId, session.sessionId).catch(err => {
-          console.error('[handler] Goal fetch failed:', err)
+          console.error('[handler] Goal fetch failed:', safeError(err))
           return null
         }),
       ])
@@ -443,7 +444,7 @@ export async function handleMessage(
         toolResults: toolResultStr,
       })
     } catch (err) {
-      console.error('[handler] Personality composition failed, using static SOUL.md', err)
+      console.error('[handler] Personality composition failed, using static SOUL.md', safeError(err))
       systemPromptComposed = getRawSoulPrompt()
     }
 
@@ -580,24 +581,27 @@ export async function handleMessage(
       setImmediate(() => {
         // Step 18: Vector memory write
         addMemories(user.userId, userMessage, conversationHistory).catch(err => {
-          console.error('[handler] Memory write failed:', err)
+          console.error('[handler] Memory write failed:', safeError(err))
         })
         // Step 19: Graph memory write
         addToGraph(user.userId, userMessage).catch(err => {
-          console.error('[handler] Graph write failed:', err)
+          console.error('[handler] Graph write failed:', safeError(err))
         })
         // Step 20: Preference extraction
         processUserMessage(pool, user.userId, userMessage).catch(err => {
-          console.error('[handler] Preference extraction failed:', err)
+          console.error('[handler] Preference extraction failed:', safeError(err))
         })
         // Step 21: Persist conversation goal
+        const goalDescription = cognitiveState.internalMonologue
+          ? cognitiveState.internalMonologue.substring(0, 120)
+          : cognitiveState.conversationGoal
         updateConversationGoal(
           user.userId,
           session.sessionId,
-          cognitiveState.conversationGoal,
+          goalDescription,
           { destination: user.homeLocation, mood: cognitiveState.emotionalState }
         ).catch(err => {
-          console.error('[handler] Goal update failed:', err)
+          console.error('[handler] Goal update failed:', safeError(err))
         })
       })
     }
@@ -608,7 +612,7 @@ export async function handleMessage(
     }
 
   } catch (error) {
-    console.error('[ERROR] Message handling failed:', error)
+    console.error('[ERROR] Message handling failed:', safeError(error))
     return { text: "Oops, something went wrong on my end! Mind trying that again? 😅" }
   }
 }
@@ -637,7 +641,7 @@ async function handleLinkCommand(
     }
     return result.message
   } catch (error) {
-    console.error('[handler] Link command failed:', error)
+    console.error('[handler] Link command failed:', safeError(error))
     return "Something went wrong with the link command. Please try again!"
   }
 }

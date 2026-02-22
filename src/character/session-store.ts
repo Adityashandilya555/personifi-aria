@@ -231,7 +231,7 @@ export async function trimSessionHistory(
 // Rate Limiting
 
 const RATE_LIMIT_WINDOW_MS = 60000 // 1 minute
-const RATE_LIMIT_MAX_REQUESTS = 15 // 15 requests per minute
+const RATE_LIMIT_MAX_REQUESTS = parseInt(process.env.RATE_LIMIT_PER_MINUTE || '15', 10)
 
 export async function checkRateLimit(userId: string): Promise<boolean> {
   const db = getPool()
@@ -269,6 +269,12 @@ export async function trackUsage(
      VALUES ($1, $2, $3, $4, $5)`,
     [userId, channel, inputTokens, outputTokens, cachedTokens]
   )
+}
+
+export async function cleanupExpiredRateLimits(): Promise<number> {
+  const db = getPool()
+  const result = await db.query(`DELETE FROM rate_limits WHERE window_start < NOW() - INTERVAL '5 minutes'`)
+  return result.rowCount ?? 0
 }
 
 // Cleanup
