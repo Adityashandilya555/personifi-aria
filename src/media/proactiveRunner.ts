@@ -19,7 +19,10 @@ import {
     recordContentSent,
     getCurrentTimeIST,
     markCategoryCooling,
+    enrichScoresFromPreferences,
+    scoreUserInterests,
 } from './contentIntelligence.js'
+import { getPool } from '../character/session-store.js'
 import { fetchReels, pickBestReel, markMediaSent, markReelSent } from './reelPipeline.js'
 import { sendMediaViaPipeline } from './mediaDownloader.js'
 import { sendProactiveContent } from '../channels.js'
@@ -51,28 +54,102 @@ interface ProactiveDecision {
     text_only_message?: string | null
 }
 
-// ─── In-Memory State ────────────────────────────────────────────────────────
+// ─── State: in-memory cache backed by proactive_user_state DB table ─────────
 
 const userStates = new Map<string, UserProactiveState>()
 
-function getOrCreateState(userId: string, chatId: string): UserProactiveState {
+/**
+ * Load proactive state for a user from DB.
+ * Falls back to fresh defaults if row doesn't exist or DB unavailable.
+ */
+async function loadStateFromDB(userId: string, chatId: string): Promise<UserProactiveState> {
+    const today = getTodayIST()
+    try {
+        const pool = getPool()
+        const { rows } = await pool.query<{
+            chat_id: string
+            last_sent_at: Date | null
+            last_reset_date: string | null
+            send_count_today: number
+            last_category: string | null
+            recent_hashtags: string[]
+            cooling_categories: Record<string, number>
+        }>(
+            `SELECT chat_id, last_sent_at, last_reset_date, send_count_today,
+                    last_category, recent_hashtags, cooling_categories
+             FROM proactive_user_state WHERE user_id = $1`,
+            [userId]
+        )
+        if (rows.length === 0) {
+            return {
+                userId, chatId,
+                lastSentAt: 0, sendCountToday: 0,
+                lastResetDate: today, lastCategory: null, lastHashtags: [],
+            }
+        }
+        const row = rows[0]
+        const dbDate = row.last_reset_date?.slice(0, 10) ?? today
+        const isNewDay = dbDate !== today
+        return {
+            userId,
+            chatId: row.chat_id,
+            lastSentAt: row.last_sent_at ? row.last_sent_at.getTime() : 0,
+            sendCountToday: isNewDay ? 0 : (row.send_count_today ?? 0),
+            lastResetDate: isNewDay ? today : dbDate,
+            lastCategory: row.last_category,
+            lastHashtags: row.recent_hashtags ?? [],
+        }
+    } catch {
+        return {
+            userId, chatId,
+            lastSentAt: 0, sendCountToday: 0,
+            lastResetDate: today, lastCategory: null, lastHashtags: [],
+        }
+    }
+}
+
+/**
+ * Persist proactive state for a user to DB.
+ * Fire-and-forget — never blocks the send pipeline.
+ */
+function saveStateToDB(state: UserProactiveState): void {
+    getPool().query(
+        `INSERT INTO proactive_user_state
+             (user_id, chat_id, last_sent_at, last_reset_date, send_count_today,
+              last_category, recent_hashtags, cooling_categories)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (user_id) DO UPDATE SET
+             chat_id          = EXCLUDED.chat_id,
+             last_sent_at     = EXCLUDED.last_sent_at,
+             last_reset_date  = EXCLUDED.last_reset_date,
+             send_count_today = EXCLUDED.send_count_today,
+             last_category    = EXCLUDED.last_category,
+             recent_hashtags  = EXCLUDED.recent_hashtags,
+             cooling_categories = EXCLUDED.cooling_categories,
+             updated_at       = NOW()`,
+        [
+            state.userId,
+            state.chatId,
+            state.lastSentAt ? new Date(state.lastSentAt) : null,
+            state.lastResetDate,
+            state.sendCountToday,
+            state.lastCategory,
+            state.lastHashtags,
+            '{}', // cooling_categories stored separately in contentIntelligence
+        ]
+    ).catch(err => console.warn('[Proactive] Failed to persist state:', err?.message))
+}
+
+async function getOrCreateState(userId: string, chatId: string): Promise<UserProactiveState> {
     const today = getTodayIST()
     let state = userStates.get(userId)
 
     if (!state) {
-        state = {
-            userId,
-            chatId,
-            lastSentAt: 0,
-            sendCountToday: 0,
-            lastResetDate: today,
-            lastCategory: null,
-            lastHashtags: [],
-        }
+        state = await loadStateFromDB(userId, chatId)
         userStates.set(userId, state)
     }
 
-    // Reset daily counter
+    // Reset daily counter if it's a new day
     if (state.lastResetDate !== today) {
         state.sendCountToday = 0
         state.lastResetDate = today
@@ -117,7 +194,7 @@ function shouldAttemptSend(state: UserProactiveState): { ok: boolean; reason: st
 // ─── Main: Run Proactive for One User ───────────────────────────────────────
 
 async function runProactiveForUser(userId: string, chatId: string): Promise<void> {
-    const state = getOrCreateState(userId, chatId)
+    const state = await getOrCreateState(userId, chatId)
 
     // Gate check: should we even try?
     const gate = shouldAttemptSend(state)
@@ -126,8 +203,10 @@ async function runProactiveForUser(userId: string, chatId: string): Promise<void
         return
     }
 
-    // Get content selection from intelligence layer
-    const selection = selectContentForUser(userId)
+    // Get content selection from intelligence layer, enriched with user preferences
+    const baseScores = scoreUserInterests(userId)
+    const enrichedScores = await enrichScoresFromPreferences(userId, baseScores)
+    const selection = selectContentForUser(userId, enrichedScores)
     if (!selection) {
         console.log(`[Proactive] Skip ${userId}: no suitable content category`)
         return
@@ -252,12 +331,24 @@ async function runProactiveForUser(userId: string, chatId: string): Promise<void
         await sendProactiveContent(chatId, caption)
     }
 
-    // Update state
+    // Update in-memory state
     state.lastSentAt = Date.now()
     state.sendCountToday++
     state.lastCategory = category
-    state.lastHashtags = [hashtag, ...state.lastHashtags].slice(0, 5)
+    state.lastHashtags = [hashtag, ...state.lastHashtags].slice(0, 10)
     recordContentSent(userId, category, hashtag)
+
+    // Persist to DB so state survives server restarts
+    saveStateToDB(state)
+
+    // Record the send in proactive_messages audit log
+    getPool().query(
+        `INSERT INTO proactive_messages (user_id, message_type, sent_at, category, hashtag)
+         SELECT u.user_id, 'proactive_content', NOW(), $2, $3
+         FROM users u
+         WHERE u.channel = 'telegram' AND u.channel_user_id = $1`,
+        [userId, category, hashtag]
+    ).catch(() => {})
 }
 
 // ─── Main: Run for All Active Users ─────────────────────────────────────────

@@ -2,8 +2,11 @@
  * Content Intelligence — The brain that decides what content
  * Aria should proactively send to a specific user.
  *
- * Based on user interests, time of day, and Aria's personality.
+ * Based on user interests, time of day, Aria's personality,
+ * and learned preferences from user_preferences table.
  */
+
+import { getPool } from '../character/session-store.js'
 
 // ─── Content Categories ─────────────────────────────────────────────────────
 
@@ -150,9 +153,86 @@ const DEFAULT_SCORES: ContentScores = {
 }
 
 /**
+ * Read user_preferences from DB and map them to category score boosts.
+ * This is the key personalization loop: stored preferences → content selection.
+ *
+ * Mapping logic:
+ *   interests  containing food/restaurant/street/darshini → FOOD_DISCOVERY, DARSHINI_CULTURE, STREET_FOOD
+ *   interests  containing cafe/coffee                     → CAFE_CULTURE
+ *   interests  containing nightlife/bar/beer/brewery      → CRAFT_BEER_NIGHTLIFE
+ *   interests  containing events/experiences              → EVENTS_EXPERIENCES
+ *   budget     low/budget/cheap                           → FOOD_PRICE_DEALS (+20)
+ *   dietary    vegetarian/vegan                           → DARSHINI_CULTURE (+15)
+ *   dislikes   containing alcohol/beer/bar                → CRAFT_BEER_NIGHTLIFE (−40, near-suppress)
+ */
+export async function enrichScoresFromPreferences(
+    userId: string,
+    scores: ContentScores
+): Promise<ContentScores> {
+    try {
+        const pool = getPool()
+        const { rows } = await pool.query<{ category: string; value: string }>(
+            `SELECT category, value FROM user_preferences WHERE user_id = $1`,
+            [userId]
+        )
+        if (rows.length === 0) return scores
+
+        const enriched = { ...scores }
+        for (const { category, value } of rows) {
+            const v = value.toLowerCase()
+
+            if (category === 'interests') {
+                if (/food|restaurant|eating|biryani|dosa|thali/.test(v))
+                    enriched[ContentCategory.FOOD_DISCOVERY] += 25
+                if (/street|vvpuram|chaat|pani.?puri|snack/.test(v))
+                    enriched[ContentCategory.STREET_FOOD] += 20
+                if (/darshini|idli|filter.?coffee|kaapi|breakfast/.test(v))
+                    enriched[ContentCategory.DARSHINI_CULTURE] += 20
+                if (/cafe|coffee|third.?wave|specialty/.test(v))
+                    enriched[ContentCategory.CAFE_CULTURE] += 20
+                if (/nightlife|bar|beer|brewery|craft|pub/.test(v))
+                    enriched[ContentCategory.CRAFT_BEER_NIGHTLIFE] += 20
+                if (/event|experience|market|workshop|live/.test(v))
+                    enriched[ContentCategory.EVENTS_EXPERIENCES] += 20
+                if (/neighbourhood|area|hidden|local|gem/.test(v))
+                    enriched[ContentCategory.NEIGHBORHOOD_GEMS] += 20
+            }
+
+            if (category === 'budget') {
+                if (/low|budget|cheap|affordable|under/.test(v))
+                    enriched[ContentCategory.FOOD_PRICE_DEALS] += 20
+                if (/high|luxury|premium|fine.?dining/.test(v))
+                    enriched[ContentCategory.FOOD_PRICE_DEALS] -= 20
+            }
+
+            if (category === 'dietary') {
+                if (/vegetarian|vegan|plant.?based/.test(v)) {
+                    enriched[ContentCategory.DARSHINI_CULTURE] += 15
+                    enriched[ContentCategory.CRAFT_BEER_NIGHTLIFE] -= 10
+                }
+            }
+
+            if (category === 'dislikes') {
+                if (/alcohol|beer|bar|nightlife|drinking/.test(v))
+                    enriched[ContentCategory.CRAFT_BEER_NIGHTLIFE] -= 40
+            }
+        }
+
+        // Clamp: scores can't go below 0
+        for (const cat of Object.keys(enriched) as ContentCategory[]) {
+            enriched[cat] = Math.max(0, enriched[cat])
+        }
+        return enriched
+    } catch {
+        // DB unavailable — return unmodified scores
+        return scores
+    }
+}
+
+/**
  * Score user interests per category.
- * Currently returns defaults + time-of-day bonuses.
- * Will be enriched with DB-backed preference data later.
+ * Returns defaults + time-of-day bonuses. Call enrichScoresFromPreferences()
+ * after this to layer in DB-backed personalisation.
  */
 export function scoreUserInterests(userId: string): ContentScores {
     const scores = { ...DEFAULT_SCORES }
@@ -183,15 +263,16 @@ export function scoreUserInterests(userId: string): ContentScores {
 
 /**
  * Pick the best content category and hashtag for a user.
+ * Accepts optional pre-computed scores (enriched with DB preferences).
  * Returns null if all categories are filtered out.
  */
-export function selectContentForUser(userId: string): ContentSelection | null {
-    const scores = scoreUserInterests(userId)
+export function selectContentForUser(userId: string, scores?: ContentScores): ContentSelection | null {
+    const finalScores = scores ?? scoreUserInterests(userId)
     const state = getUserState(userId)
     const time = getCurrentTimeIST()
 
     // Filter: score ≥ 25, not the same as last category, not cooling
-    const candidates = Object.entries(scores)
+    const candidates = Object.entries(finalScores)
         .filter(([cat, score]) => {
             const category = cat as ContentCategory
             if (score < 25) return false
@@ -214,7 +295,7 @@ export function selectContentForUser(userId: string): ContentSelection | null {
         ? unused[Math.floor(Math.random() * unused.length)]
         : pool[Math.floor(Math.random() * pool.length)] // fallback: random from pool
 
-    const reason = `${category} scored ${scores[category]} — ${time.formatted}`
+    const reason = `${category} scored ${finalScores[category]} — ${time.formatted}`
 
     return { category, hashtag, reason }
 }
