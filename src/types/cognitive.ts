@@ -31,6 +31,15 @@ export interface ClassifierResult {
      * For tool calls, a sensible default is injected (no LLM needed).
      */
     cognitiveState?: CognitiveState
+    /**
+     * User communication style signal detected by the 8B classifier.
+     * Drives the mood engine to shift Aria's personality weights.
+     *   dry     = short/terse replies, lowercase, no punctuation
+     *   stressed = "help", "urgent", "stuck", "confused" energy
+     *   roasting = user being sarcastic back at Aria → mirror harder
+     *   normal   = everything else
+     */
+    userSignal?: 'dry' | 'stressed' | 'roasting' | 'normal'
 }
 
 // ─── Emotional + Cognitive Types ─────────────────────────────────────────────

@@ -31,6 +31,8 @@ import type { ConversationGoalRecord } from './types/cognitive.js'
 import { formatMemoriesForPrompt } from './memory-store.js'
 import { formatGraphForPrompt } from './graph-memory.js'
 import { selectResponseTone } from './cognitive.js'
+import { computeMoodWeights, getMoodInstruction } from './character/mood-engine.js'
+import { getBangaloreContext } from './utils/bangalore-context.js'
 
 // ─── SOUL.md Cache ──────────────────────────────────────────────────────────
 
@@ -126,6 +128,12 @@ export interface ComposeOptions {
     /** Active conversation goal from conversation_goals table */
     activeGoal?: ConversationGoalRecord | null
 
+    // ─── Mood engine inputs ───
+    /** Communication style signal from 8B classifier */
+    userSignal?: 'dry' | 'stressed' | 'roasting' | 'normal'
+    /** True when a tool ran this turn — genuine mode up */
+    toolInvolved?: boolean
+
     // ─── Tool results from DEV 1's router ───
     /** Tool results (if any) */
     toolResults?: string
@@ -188,6 +196,27 @@ export function composeSystemPrompt(opts: ComposeOptions): string {
     // ─── Layer 7: Cognitive Guidance + Tone ──────────────────────
     if (opts.cognitiveState) {
         sections.push(formatCognitiveWithTone(opts.cognitiveState))
+    }
+
+    // ─── Layer 7b: Active Personality Mode (mood engine) ─────────
+    if (opts.cognitiveState) {
+        const now = new Date()
+        const istHour = (now.getUTCHours() + 5) % 24 // approximate IST
+        const isWeekend = [0, 6].includes(now.getDay())
+        const weights = computeMoodWeights({
+            userSignal:     opts.userSignal ?? 'normal',
+            emotionalState: opts.cognitiveState.emotionalState,
+            hourIST:        istHour,
+            isWeekend,
+            toolInvolved:   !!opts.toolInvolved,
+        })
+        sections.push(`## Active Personality Mode\n${getMoodInstruction(weights)}`)
+    }
+
+    // ─── Layer 7c: Bangalore time/traffic context ─────────────────
+    const bangaloreCtx = getBangaloreContext()
+    if (bangaloreCtx) {
+        sections.push(`## City Context\n${bangaloreCtx}`)
     }
 
     // ─── Layer 8: Tool Results ──────────────────────────────────

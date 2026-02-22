@@ -29,9 +29,7 @@ declare module 'fastify' {
   }
 }
 
-const server = Fastify({
-  logger: true,
-})
+const server = Fastify({ logger: true })
 
 await server.register(cors)
 
@@ -53,12 +51,9 @@ async function handleChannelMessage(adapter: ChannelAdapter, body: unknown) {
 
   try {
     const response = await handleMessage(message.channel, message.userId, message.text)
-
-    // Send media (dish images etc.) before the text response
     if (response.media?.length && adapter.sendMedia) {
       await adapter.sendMedia(message.chatId, response.media)
     }
-
     await adapter.sendMessage(message.chatId, response.text)
     return { ok: true }
   } catch (error) {
@@ -71,28 +66,117 @@ async function handleChannelMessage(adapter: ChannelAdapter, body: unknown) {
 // Telegram helpers
 // ============================================
 
+const TOKEN = () => process.env.TELEGRAM_BOT_TOKEN || ''
+
+function pick<T>(arr: T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)]
+}
+
+/** Fire-and-forget typing indicator. Never awaited — must not block the pipeline. */
+function sendChatAction(chatId: string, action: string): void {
+  const token = TOKEN()
+  if (!token) return
+  fetch(`https://api.telegram.org/bot${token}/sendChatAction`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, action }),
+  }).catch(() => {})
+}
+
+/** Determine typing action from message text before 8B runs. */
+function typingActionFor(text: string): string {
+  const t = text.toLowerCase()
+  if (/flight|fly|airline/.test(t))                   return 'upload_document'
+  if (/where|place|restaurant|cafe|spot/.test(t))     return 'find_location'
+  if (/photo|picture|image|gallery/.test(t))          return 'upload_photo'
+  return 'typing'
+}
+
+/** True when the message probably needs a real-time lookup. */
+function looksLikeLookup(text: string): boolean {
+  return /flight|hotel|weather|rain|restaurant|food|order|compare|price|place|where|weather/.test(
+    text.toLowerCase()
+  )
+}
+
+/** Searching placeholder text matched to query type. */
+function searchingPlaceholder(text: string): string {
+  const t = text.toLowerCase()
+  if (/flight|fly/.test(t))       return '✈️ Checking flights...'
+  if (/hotel|stay/.test(t))       return '🏨 Looking up stays...'
+  if (/weather|rain/.test(t))     return '🌤️ Checking the sky...'
+  if (/food|order|restaurant/.test(t)) return '🍽️ Hunting for the best bites...'
+  if (/place|where|cafe/.test(t)) return '📍 Finding spots near you...'
+  return '🔍 On it...'
+}
+
+async function tgFetch(method: string, body: object): Promise<any> {
+  const token = TOKEN()
+  if (!token) return null
+  const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  return res.json()
+}
+
 /**
- * Send a Telegram message with an inline keyboard.
- * Used to present the "Share Location" button.
+ * Send a Telegram message with an inline keyboard attachment.
+ * Used for the "Share Location" ReplyKeyboard and inline button rows.
  */
 async function sendTelegramWithKeyboard(
   chatId: string,
   text: string,
   keyboard: object
 ): Promise<void> {
-  const token = process.env.TELEGRAM_BOT_TOKEN
-  if (!token) return
-  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text,
-      reply_markup: keyboard,
-      parse_mode: 'HTML',
-    }),
+  await tgFetch('sendMessage', {
+    chat_id: chatId,
+    text,
+    reply_markup: keyboard,
+    parse_mode: 'HTML',
   })
 }
+
+/** Dismiss any visible ReplyKeyboard by sending remove_keyboard. */
+async function dismissKeyboard(chatId: string, text: string): Promise<void> {
+  await tgFetch('sendMessage', {
+    chat_id: chatId,
+    text,
+    parse_mode: 'HTML',
+    reply_markup: { remove_keyboard: true },
+  })
+}
+
+/** Drop a named map pin for the top places result. */
+async function sendVenue(chatId: string, place: {
+  name: string; address?: string; lat: number; lng: number
+}): Promise<void> {
+  await tgFetch('sendVenue', {
+    chat_id: chatId,
+    latitude: place.lat,
+    longitude: place.lng,
+    title: place.name,
+    address: place.address ?? '',
+  })
+}
+
+// ============================================
+// Randomised Aria acknowledgment strings
+// ============================================
+
+const LOCATION_ACKS = [
+  (addr: string) => `📍 Got it — <b>${addr}</b>! Give me a sec...`,
+  (addr: string) => `Nice, using <b>${addr}</b>. On it! 🗺️`,
+  (addr: string) => `<b>${addr}</b> — perfect. Hang tight da.`,
+  (addr: string) => `Locked in <b>${addr}</b>. Let me pull this up.`,
+]
+
+const LOCATION_ERRORS = [
+  "Couldn't read your location da — mind typing your area name instead?",
+  "Hmm, that location didn't come through clearly. Just type your neighbourhood and I've got you!",
+  "My GPS sense is off right now 😅 — type your area and I'll sort it.",
+]
 
 // ============================================
 // Telegram Webhook
@@ -108,11 +192,8 @@ server.post('/webhook/telegram', async (request, reply) => {
   if (webhookSecret) {
     const headerSecret = request.headers['x-telegram-bot-api-secret-token']
     const incomingToken = Array.isArray(headerSecret) ? headerSecret[0] : (headerSecret || '')
-
-    // Compute SHA-256 digests for timing-safe comparison
     const expectedDigest = createHash('sha256').update(webhookSecret).digest()
-    const actualDigest = createHash('sha256').update(incomingToken).digest()
-
+    const actualDigest   = createHash('sha256').update(incomingToken).digest()
     if (!timingSafeEqual(expectedDigest, actualDigest)) {
       server.log.warn('Telegram webhook: invalid secret token')
       return reply.code(403).send({ ok: false, error: 'Forbidden' })
@@ -120,9 +201,52 @@ server.post('/webhook/telegram', async (request, reply) => {
   }
 
   const body = request.body as any
+
+  // ── Inline button tap (callback_query) ─────────────────────────────────────
+  if (body?.callback_query) {
+    const query    = body.callback_query
+    const chatId   = String(query.message?.chat?.id ?? '')
+    const userId   = String(query.from?.id ?? '')
+    const data: string = query.data ?? ''
+
+    // Acknowledge immediately — removes spinner on button
+    await tgFetch('answerCallbackQuery', { callback_query_id: query.id })
+
+    if (chatId && userId && data) {
+      const { handleCallbackAction } = await import('./character/callback-handler.js')
+      const response = await handleCallbackAction('telegram', userId, data)
+      if (response?.text) {
+        await channels.telegram.sendMessage(chatId, response.text)
+      }
+    }
+    return { ok: true }
+  }
+
+  // ── Emoji reaction on a message ────────────────────────────────────────────
+  if (body?.message_reaction) {
+    const reaction      = body.message_reaction
+    const chatId        = String(reaction.chat?.id ?? '')
+    const userId        = String(reaction.user?.id ?? '')
+    const positiveEmoji = ['🔥', '👍', '❤️', '😍', '🤩', '🫡', '💯']
+    const isPositive    = (reaction.new_reaction ?? [])
+      .some((r: any) => r.type === 'emoji' && positiveEmoji.includes(r.emoji))
+
+    if (isPositive && chatId && userId) {
+      setTimeout(async () => {
+        const followUps = [
+          'Glad you liked it da! 😄 Want me to find more like this?',
+          'Right? This city is unhinged in the best way 🔥 Want directions or delivery options?',
+          'Aye! Should I check if it\'s open / bookable right now?',
+        ]
+        await channels.telegram.sendMessage(chatId, pick(followUps))
+      }, 8000) // 8s feels natural, not instant-bot
+    }
+    return { ok: true }
+  }
+
   const message = body?.message
 
-  // Handle GPS location share
+  // ── GPS location share ─────────────────────────────────────────────────────
   if (message?.location) {
     const userId = message.from?.id?.toString()
     const chatId = message.chat?.id?.toString()
@@ -132,71 +256,125 @@ server.post('/webhook/telegram', async (request, reply) => {
 
     try {
       const address = await reverseGeocode(latitude, longitude)
-
-      // Resolve the internal UUID — saveUserLocation needs a UUID, not "telegram:123"
       const user = await getOrCreateUser('telegram', userId)
       await saveUserLocation(user.userId, address)
 
-      // Retrieve the original message the user sent before sharing location
       const pending = pendingLocationStore.get(userId)
       pendingLocationStore.delete(userId)
 
-      // Confirm and re-run any parked tool via a natural message
-      await channels.telegram.sendMessage(
-        chatId,
-        `📍 Got it — I'll use <b>${address}</b> as your location. Give me a moment to look that up for you!`
-      )
+      // Dismiss the GPS share keyboard + confirm in Aria's voice
+      await dismissKeyboard(chatId, pick(LOCATION_ACKS)(address))
 
-      // Re-trigger with the original query + location context
-      // e.g. "Search restaurants on Zomato near Koramangala, Bengaluru"
       const originalQuery = pending?.originalMessage || ''
       const retriggerMsg = originalQuery
         ? `${originalQuery.replace(/near\s+me/i, '').trim()} near ${address}`
         : `near ${address}`
+
+      sendChatAction(chatId, 'find_location')
       const response = await handleMessage('telegram', userId, retriggerMsg)
+
       if (response.media?.length && channels.telegram.sendMedia) {
         await channels.telegram.sendMedia(chatId, response.media)
       }
       await channels.telegram.sendMessage(chatId, response.text)
     } catch (err) {
       server.log.error(err, 'Failed to handle Telegram location message')
-      await channels.telegram.sendMessage(chatId, "Sorry, I had trouble reading your location. Try typing your area name instead!")
+      await channels.telegram.sendMessage(chatId, pick(LOCATION_ERRORS))
     }
     return { ok: true }
   }
 
-  // Normal text message — use generic handler
+  // ── Normal text message ────────────────────────────────────────────────────
   const adapter = channels.telegram
   const parsedMessage = adapter.parseWebhook(body)
   if (!parsedMessage) return { ok: true }
 
+  const chatId = parsedMessage.chatId
+  const msgText = parsedMessage.text
+
+  // /start command — onboarding entry point
+  if (msgText === '/start') {
+    const greetings = [
+      "Hey! 👋 I'm Aria — your Bengaluru bestie. Food, cafes, what's open, where to go — that's my whole thing. What should I call you?",
+      "Ayyo, you found me! 👋 I'm Aria. Bengaluru food, places, vibes — that's my thing. First up: what do I call you?",
+    ]
+    await channels.telegram.sendMessage(chatId, pick(greetings))
+    return { ok: true }
+  }
+
   try {
-    const response = await handleMessage(parsedMessage.channel, parsedMessage.userId, parsedMessage.text)
+    // Fire typing indicator immediately — before anything else runs
+    sendChatAction(chatId, typingActionFor(msgText))
 
-    // Send media before text
+    // Send a "Searching..." placeholder only for lookup-style queries
+    let placeholderMsgId: number | null = null
+    if (looksLikeLookup(msgText)) {
+      const res = await tgFetch('sendMessage', {
+        chat_id: chatId,
+        text: searchingPlaceholder(msgText),
+      })
+      placeholderMsgId = res?.result?.message_id ?? null
+    }
+
+    const response = await handleMessage(parsedMessage.channel, parsedMessage.userId, msgText)
+
+    // Replace placeholder in-place, or delete it if we're sending media
+    if (placeholderMsgId) {
+      if (!response.media?.length) {
+        // Edit text message in-place — no chat clutter
+        await tgFetch('editMessageText', {
+          chat_id: chatId,
+          message_id: placeholderMsgId,
+          text: response.text,
+          parse_mode: 'HTML',
+        })
+      } else {
+        // Can't edit a text message into media — delete placeholder then send fresh
+        await tgFetch('deleteMessage', { chat_id: chatId, message_id: placeholderMsgId })
+      }
+    }
+
+    // Send media (only if placeholder was deleted or there was no placeholder)
     if (response.media?.length && adapter.sendMedia) {
-      await adapter.sendMedia(parsedMessage.chatId, response.media)
+      await adapter.sendMedia(chatId, response.media)
     }
 
-    // If Aria wants location, attach a keyboard with the location button
-    if (response.requestLocation) {
-      await sendTelegramWithKeyboard(parsedMessage.chatId, response.text, {
-        keyboard: [[{ text: '📍 Share my location', request_location: true }]],
-        resize_keyboard: true,
-        one_time_keyboard: true,
-      })
-      // Track the pending request so we know which tool to resume
-      pendingLocationStore.set(parsedMessage.userId, {
-        toolHint: 'food_grocery',
-        chatId: parsedMessage.chatId,
-        originalMessage: parsedMessage.text,
-      })
-    } else {
-      await adapter.sendMessage(parsedMessage.chatId, response.text)
+    // Send text response (only when not already edited into placeholder)
+    if (!placeholderMsgId || response.media?.length) {
+      if (response.requestLocation) {
+        await sendTelegramWithKeyboard(chatId, response.text, {
+          keyboard: [[{ text: '📍 Share my location', request_location: true }]],
+          resize_keyboard: true,
+          one_time_keyboard: true,
+        })
+        pendingLocationStore.set(parsedMessage.userId, {
+          toolHint: 'food_grocery',
+          chatId,
+          originalMessage: msgText,
+        })
+      } else {
+        await adapter.sendMessage(chatId, response.text)
+      }
     }
+
+    // Drop a map pin for the top places result
+    const rawData = (response as any)._toolRawData
+    if (rawData?.places?.[0]) {
+      const top = rawData.places[0]
+      if (top.location?.lat && top.location?.lng) {
+        await sendVenue(chatId, {
+          name: top.name,
+          address: top.address,
+          lat: top.location.lat,
+          lng: top.location.lng,
+        })
+      }
+    }
+
   } catch (error) {
     server.log.error(error, 'Failed to handle Telegram message')
   }
+
   return { ok: true }
 })
 
@@ -204,20 +382,17 @@ server.post('/webhook/telegram', async (request, reply) => {
 // WhatsApp Webhook
 // ============================================
 
-// Verification endpoint (required for WhatsApp)
 server.get('/webhook/whatsapp', async (request, reply) => {
   const query = request.query as Record<string, string>
   const mode = query['hub.mode']
   const token = query['hub.verify_token']
   const challenge = query['hub.challenge']
-
   if (mode === 'subscribe' && token === process.env.WHATSAPP_VERIFY_TOKEN) {
     return reply.send(challenge)
   }
   return reply.code(403).send('Forbidden')
 })
 
-// Message handler
 server.post('/webhook/whatsapp', async (request, reply) => {
   if (!channels.whatsapp.isEnabled()) {
     return { ok: false, error: 'WhatsApp not configured' }
@@ -229,7 +404,6 @@ server.post('/webhook/whatsapp', async (request, reply) => {
 // Slack Webhook
 // ============================================
 
-// Capture raw body only for Slack route (avoids global memory overhead)
 server.addHook('preParsing', async (request, reply, payload) => {
   if (request.url === '/webhook/slack' && request.method === 'POST') {
     const chunks: Buffer[] = []
@@ -254,15 +428,12 @@ server.post('/webhook/slack', async (request, reply) => {
     return { challenge: body.challenge }
   }
 
-  // Verify Slack request signature when signing secret is configured.
   const signingSecret = process.env.SLACK_SIGNING_SECRET
   if (signingSecret) {
-    // Reject if raw body is missing (parser bypassed or failed)
     if (!request.rawBody) {
       server.log.warn('Missing raw body for Slack signature verification')
       return reply.code(400).send({ error: 'Invalid request' })
     }
-
     const result = verifySlackSignature(
       signingSecret,
       request.headers['x-slack-request-timestamp'] as string | undefined,
@@ -303,28 +474,19 @@ export async function sendChannelMessage(
 
 const start = async () => {
   try {
-    // Initialize database
     const dbUrl = process.env.DATABASE_URL
-    if (!dbUrl) {
-      throw new Error('DATABASE_URL is required')
-    }
+    if (!dbUrl) throw new Error('DATABASE_URL is required')
     initDatabase(dbUrl)
 
-    // Load persisted MCP tokens from DB into process.env (survives container restarts)
     await initMCPTokenStore(dbUrl)
-
-    // Register Brain Hooks (Dev 1)
     registerBrainHooks(brainHooks)
 
-    // Initialize browser for scraping
     if (process.env.BROWSER_SCRAPING_ENABLED !== 'false') {
       await initBrowser()
     }
 
-    // Initialize proactive scheduler
     initScheduler(dbUrl)
 
-    // Start server
     const port = parseInt(process.env.PORT || '3000')
     await server.listen({ port, host: '0.0.0.0' })
 
@@ -336,17 +498,7 @@ const start = async () => {
   }
 }
 
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  await closeBrowser()
-  await server.close()
-  process.exit(0)
-})
-
-process.on('SIGINT', async () => {
-  await closeBrowser()
-  await server.close()
-  process.exit(0)
-})
+process.on('SIGTERM', async () => { await closeBrowser(); await server.close(); process.exit(0) })
+process.on('SIGINT',  async () => { await closeBrowser(); await server.close(); process.exit(0) })
 
 start()

@@ -12,6 +12,7 @@
 import { callProactiveAgent, generateCaption } from '../llm/tierManager.js'
 import { PROACTIVE_AGENT_PROMPT } from '../llm/prompts/proactiveAgent.js'
 import { CAPTION_PROMPT } from '../llm/prompts/captionPrompt.js'
+import { sendEngagementHook, hookTypeForCategory } from '../character/engagement-hooks.js'
 import {
     type ContentCategory,
     selectContentForUser,
@@ -243,8 +244,9 @@ async function runProactiveForUser(userId: string, chatId: string): Promise<void
 
     if (sent) {
         console.log(`[Proactive] Successfully delivered ${bestReel.type} to ${userId}`)
-        // Update DB: bump sent_count so this item is deprioritised next time
         markMediaSent(bestReel.id).catch(() => {})
+        // Follow-up engagement hook — fires 2s after media, converts passive views to replies
+        sendEngagementHook(chatId, hookTypeForCategory(category)).catch(() => {})
     } else {
         console.warn(`[Proactive] Media pipeline failed, sending caption as text`)
         await sendProactiveContent(chatId, caption)

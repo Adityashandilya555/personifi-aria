@@ -88,12 +88,17 @@ STEP 1 — Call a tool if the user needs real-time data:
 
 STEP 2 — If NO tool needed, reply with ONLY this JSON (nothing else):
 {"c":"simple"} — greetings, farewells, yes/no, thanks, one-word replies
-{"c":"moderate","m":"...","e":"...","g":"..."} — general travel/food chat, opinions, follow-ups
-{"c":"complex","m":"...","e":"...","g":"..."} — multi-part questions needing memory or planning
+{"c":"moderate","m":"...","e":"...","g":"...","s":"..."} — general travel/food chat, opinions, follow-ups
+{"c":"complex","m":"...","e":"...","g":"...","s":"..."} — multi-part questions needing memory or planning
 
 m = Aria's 1-sentence private reasoning (e.g. "User wants Bali tips, mention the visa trick they'll love")
 e = user emotion: excited|frustrated|curious|neutral|anxious|grateful|nostalgic|overwhelmed
-g = Aria's goal: inform|recommend|clarify|empathize|redirect|upsell|plan|reassure`
+g = Aria's goal: inform|recommend|clarify|empathize|redirect|upsell|plan|reassure
+s = user signal: dry|stressed|roasting|normal
+  dry = short/terse/lowercase messages, minimal punctuation
+  stressed = words like help, urgent, stuck, confused, please
+  roasting = user being sarcastic back at Aria
+  normal = everything else`
 }
 
 // ─── Public API ─────────────────────────────────────────────────────────────
@@ -201,6 +206,11 @@ export async function classifyMessage(
                     }
                     : undefined
 
+                const VALID_SIGNALS = ['dry', 'stressed', 'roasting', 'normal'] as const
+                const userSignal = VALID_SIGNALS.includes(parsed.s)
+                    ? parsed.s as 'dry' | 'stressed' | 'roasting' | 'normal'
+                    : 'normal'
+
                 return {
                     message_complexity: complexity,
                     needs_tool: false,
@@ -210,6 +220,7 @@ export async function classifyMessage(
                     skip_graph: complexity === 'moderate', // moderate skips graph (cheaper)
                     skip_cognitive: true, // cognitive already done above
                     cognitiveState,
+                    userSignal,
                 }
             } catch {
                 // If content isn't valid JSON, fall through to default
