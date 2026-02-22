@@ -69,7 +69,9 @@ async function getDistanceMatrix(origin: string, destination: string): Promise<D
     url.searchParams.set('mode', 'driving')
     url.searchParams.set('key', apiKey)
 
-    const response = await fetch(url.toString())
+    const response = await fetch(url.toString(), {
+        signal: AbortSignal.timeout(8000), // 8 s — fail fast rather than hanging the tool pipeline
+    })
     if (!response.ok) {
         throw new Error(`Distance Matrix API error: ${response.status} ${response.statusText}`)
     }
@@ -119,9 +121,12 @@ export async function compareRides(params: RideCompareParams): Promise<ToolExecu
         // 1. Get real distance/duration from Google
         const route = await getDistanceMatrix(origin, destination)
 
-        // 2. Determine surge
-        const currentHour = new Date().getHours()
-        const surge = getSurgeInfo(currentHour)
+        // 2. Determine surge — always use Bengaluru IST (UTC+5:30), not server-local time
+        const istHour = parseInt(
+            new Date().toLocaleString('en-US', { hour: 'numeric', hour12: false, timeZone: 'Asia/Kolkata' }),
+            10,
+        )
+        const surge = getSurgeInfo(istHour)
 
         // 3. Calculate fares for all services
         const estimates = RATE_CARDS.map(card => ({
