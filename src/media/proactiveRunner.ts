@@ -2,11 +2,16 @@
  * Proactive Runner — Orchestrates the proactive content pipeline
  *
  * Called by scheduler every 10 minutes. For each active user:
- * 1. Build context (interests, last sent, time)
- * 2. Ask 70B proactive agent: should we send? what?
- * 3. If yes → fetch real reels via reelPipeline → send via Telegram
+ * 1. Smart adaptive gate based on inactivity (30m/1h/3h+ buckets)
+ * 2. Ask 70B proactive agent: should we send? what type?
+ * 3. Pick content type: reel (40%) | image (35%) | text-only (25%)
+ * 4. If reel → 60% chance also send companion food image
+ * 5. Fetch real content via reelPipeline → send via Telegram
  *
- * This is how Aria feels like a real person sharing content.
+ * Timing pattern:
+ *  - After user joins/returns (30–60m inactive): 15m check, 45% fire
+ *  - After 1–3h inactive: 30m check, 55% fire
+ *  - After 3h+ inactive: 60m check, 65% fire
  */
 
 import { callProactiveAgent, generateCaption } from '../llm/tierManager.js'
@@ -40,10 +45,12 @@ interface UserProactiveState {
     lastHashtags: string[]
 }
 
+type ContentPickType = 'reel' | 'image_text' | 'text_only'
+
 interface ProactiveDecision {
     should_send: boolean
     reason: string
-    content_type?: 'reel' | 'image_text'
+    content_type?: 'reel' | 'image_text' | 'text_only'
     category?: string
     search_params?: {
         hashtag: string
@@ -52,6 +59,31 @@ interface ProactiveDecision {
     }
     caption?: string
     text_only_message?: string | null
+}
+
+// ─── Activity Tracking (in-memory, resets on restart which is fine) ─────────
+
+/** Tracks when each user last sent us a message */
+const userLastActivity = new Map<string, number>()
+
+/**
+ * Call this every time a user sends a message.
+ * Updates the inactivity clock so smart gate works correctly.
+ */
+export function updateUserActivity(userId: string, chatId: string): void {
+    userLastActivity.set(userId, Date.now())
+    registerProactiveUser(userId, chatId)
+}
+
+/**
+ * Pick a content type with weighted randomness.
+ * reel: 40%, image_text: 35%, text_only: 25%
+ */
+function pickContentType(): ContentPickType {
+    const r = Math.random()
+    if (r < 0.40) return 'reel'
+    if (r < 0.75) return 'image_text'
+    return 'text_only'
 }
 
 // ─── State: in-memory cache backed by proactive_user_state DB table ─────────
@@ -166,29 +198,73 @@ function getTodayIST(): string {
     return ist.toISOString().slice(0, 10)
 }
 
-// ─── Gate Checks ────────────────────────────────────────────────────────────
+// ─── Smart Adaptive Gate ────────────────────────────────────────────────────
 
-function shouldAttemptSend(state: UserProactiveState): { ok: boolean; reason: string } {
+/**
+ * Adaptive gate that decides whether to attempt a send.
+ *
+ * Inactivity buckets:
+ *  < 30 min  → user is actively chatting, skip completely
+ *  30–60 min → 15-min minimum gap, 45% fire probability (post-session follow-up)
+ *  1–3 h     → 30-min minimum gap, 55% fire probability (re-engagement)
+ *  3h+       → 60-min minimum gap, 65% fire probability (hourly poke)
+ *
+ * ±5 min jitter is added to all gaps to avoid robot-precision timing.
+ */
+function computeSmartGate(state: UserProactiveState): { ok: boolean; reason: string } {
     const time = getCurrentTimeIST()
 
-    // Outside active hours (8am–10pm IST)
     if (time.hour < 8 || time.hour >= 22) {
         return { ok: false, reason: `Outside active hours (${time.formatted})` }
     }
 
-    // Max 2 proactive sends per day
-    if (state.sendCountToday >= 2) {
-        return { ok: false, reason: `Daily limit reached (${state.sendCountToday}/2)` }
+    // Max 5 proactive sends per day
+    if (state.sendCountToday >= 5) {
+        return { ok: false, reason: `Daily limit reached (${state.sendCountToday}/5)` }
     }
 
-    // Minimum 25 minutes between sends
-    const minInterval = 25 * 60 * 1000
-    if (Date.now() - state.lastSentAt < minInterval) {
-        const minsAgo = Math.floor((Date.now() - state.lastSentAt) / 60000)
-        return { ok: false, reason: `Too soon (last sent ${minsAgo}m ago)` }
+    const now = Date.now()
+    const lastActivity = userLastActivity.get(state.userId) ?? 0
+    const inactivityMins = lastActivity > 0 ? (now - lastActivity) / 60_000 : Infinity
+
+    // User is in an active conversation — don't interrupt
+    if (lastActivity > 0 && inactivityMins < 30) {
+        return { ok: false, reason: `User active ${Math.floor(inactivityMins)}m ago` }
     }
 
-    return { ok: true, reason: 'All gates passed' }
+    // Pick gap and fire probability based on inactivity
+    let minGapMs: number
+    let fireProbability: number
+
+    if (inactivityMins < 60) {
+        // 30–60 min inactive: post-chat follow-up window
+        minGapMs = 15 * 60_000
+        fireProbability = 0.45
+    } else if (inactivityMins < 180) {
+        // 1–3h inactive: gentle re-engagement
+        minGapMs = 30 * 60_000
+        fireProbability = 0.55
+    } else {
+        // 3h+ inactive: hourly poke
+        minGapMs = 60 * 60_000
+        fireProbability = 0.65
+    }
+
+    // Add ±5 min jitter so sends never feel robotic
+    const jitter = (Math.random() - 0.5) * 10 * 60_000
+    const effectiveGap = Math.max(minGapMs + jitter, 10 * 60_000) // floor at 10 min always
+
+    if (now - state.lastSentAt < effectiveGap) {
+        const minsAgo = Math.floor((now - state.lastSentAt) / 60_000)
+        return { ok: false, reason: `Too soon (last sent ${minsAgo}m ago, gap ${Math.floor(effectiveGap / 60_000)}m)` }
+    }
+
+    // Probability gate — don't send on every qualifying check
+    if (Math.random() > fireProbability) {
+        return { ok: false, reason: `Skipping this slot (${Math.floor(fireProbability * 100)}% probability)` }
+    }
+
+    return { ok: true, reason: `Smart gate passed (inactivity: ${Math.floor(inactivityMins)}m)` }
 }
 
 // ─── Main: Run Proactive for One User ───────────────────────────────────────
@@ -196,8 +272,8 @@ function shouldAttemptSend(state: UserProactiveState): { ok: boolean; reason: st
 async function runProactiveForUser(userId: string, chatId: string): Promise<void> {
     const state = await getOrCreateState(userId, chatId)
 
-    // Gate check: should we even try?
-    const gate = shouldAttemptSend(state)
+    // Smart adaptive gate check
+    const gate = computeSmartGate(state)
     if (!gate.ok) {
         console.log(`[Proactive] Skip ${userId}: ${gate.reason}`)
         return
@@ -213,6 +289,7 @@ async function runProactiveForUser(userId: string, chatId: string): Promise<void
     }
 
     const time = getCurrentTimeIST()
+    const forcedContentType = pickContentType()
 
     // Build context for proactive agent (TEXT ONLY — no URLs)
     const context = [
@@ -226,10 +303,11 @@ async function runProactiveForUser(userId: string, chatId: string): Promise<void
         `suggested_category: ${selection.category}`,
         `suggested_hashtag: #${selection.hashtag}`,
         `selection_reason: ${selection.reason}`,
+        `forced_content_type: ${forcedContentType}`,
     ].join('\n')
 
-    // Ask 70B proactive agent: should we send?
-    console.log(`[Proactive] Asking 70B for user ${userId} (suggested: ${selection.category} #${selection.hashtag})`)
+    // Ask 70B proactive agent: caption + final approval
+    console.log(`[Proactive] Asking 70B for user ${userId} (suggested: ${selection.category} #${selection.hashtag}, type: ${forcedContentType})`)
     const { text: agentResponse, provider } = await callProactiveAgent(
         PROACTIVE_AGENT_PROMPT,
         context
@@ -250,47 +328,66 @@ async function runProactiveForUser(userId: string, chatId: string): Promise<void
         return
     }
 
-    // Use agent's hashtag or our suggestion
-    // Strip leading # if agent echoed it back (##tag bug in logs)
+    // Use agent's hashtag or our suggestion — strip leading # to avoid ##tag bugs
     const rawHashtag = decision.search_params?.hashtag || selection.hashtag
     const hashtag = rawHashtag.replace(/^#+/, '')
     const category = (decision.category || selection.category) as ContentCategory
 
-    console.log(`[Proactive] Agent approved! Fetching reels for #${hashtag} (${category})`)
+    // Use forced_content_type (client-side) rather than agent's preference to enforce distribution
+    const contentType = forcedContentType
 
-    // Fetch real reels
-    const reels = await fetchReels(hashtag, userId, 5)
+    console.log(`[Proactive] Agent approved! content_type=${contentType} #${hashtag} (${category})`)
 
-    if (reels.length === 0) {
-        // No reels found — send text-only message if agent provided one
-        if (decision.text_only_message) {
-            console.log(`[Proactive] No reels, sending text-only to ${userId}`)
-            const sent = await sendProactiveContent(chatId, decision.text_only_message)
-            if (sent) {
-                state.lastSentAt = Date.now()
-                state.sendCountToday++
-                state.lastCategory = category
-                state.lastHashtags = [hashtag, ...state.lastHashtags].slice(0, 5)
-                recordContentSent(userId, category, hashtag)
-            }
-        } else {
-            console.warn(`[Proactive] No reels and no text fallback for #${hashtag}`)
+    // ── text_only path ────────────────────────────────────────────────────────
+    if (contentType === 'text_only') {
+        const msg = decision.text_only_message || decision.caption || null
+        if (!msg) {
+            console.warn(`[Proactive] text_only selected but no message from agent`)
+            return
+        }
+        console.log(`[Proactive] Sending text-only to ${userId}`)
+        const sent = await sendProactiveContent(chatId, msg)
+        if (sent) {
+            await updateStateAfterSend(state, userId, category, hashtag)
+            sendEngagementHook(chatId, hookTypeForCategory(category)).catch(() => {})
         }
         return
     }
 
-    // Pick the best reel
-    const bestReel = await pickBestReel(reels, userId)
+    // ── media paths (reel + image_text) ─────────────────────────────────────
+    const reels = await fetchReels(hashtag, userId, 8)
+
+    if (reels.length === 0) {
+        // Fallback to text-only if no media found
+        const fallback = decision.text_only_message || decision.caption
+        if (fallback) {
+            console.log(`[Proactive] No media, falling back to text for ${userId}`)
+            const sent = await sendProactiveContent(chatId, fallback)
+            if (sent) await updateStateAfterSend(state, userId, category, hashtag)
+        } else {
+            console.warn(`[Proactive] No media and no text fallback for #${hashtag}`)
+        }
+        return
+    }
+
+    // Split pool: prefer images for image_text, videos for reels
+    const imagePool = reels.filter(r => r.type === 'image')
+    const videoPool = reels.filter(r => r.type === 'video')
+    const preferImages = contentType === 'image_text'
+    const primaryPool = preferImages
+        ? (imagePool.length > 0 ? imagePool : reels)
+        : (videoPool.length > 0 ? videoPool : reels)
+
+    const bestReel = await pickBestReel(primaryPool, userId)
     if (!bestReel) {
-        console.warn(`[Proactive] All reel URLs invalid for #${hashtag}`)
-        // Fallback: text-only
+        console.warn(`[Proactive] All primary URLs invalid for #${hashtag}`)
         if (decision.text_only_message || decision.caption) {
             await sendProactiveContent(chatId, decision.text_only_message || decision.caption || '')
         }
         return
     }
 
-    // Generate caption via 70B (uses content metadata, NOT the URL)
+    // Generate caption via 70B
     let caption = decision.caption || ''
     if (!caption || caption.length < 10) {
         const captionContext = [
@@ -300,17 +397,50 @@ async function runProactiveForUser(userId: string, chatId: string): Promise<void
             `Category: ${category}`,
             `Hashtag: #${hashtag}`,
             `Content type: ${bestReel.type}`,
+            `Mood: ${decision.search_params?.mood || 'casual'}`,
             `User's interest: ${selection.reason}`,
         ].join('\n')
 
         caption = await generateCaption(CAPTION_PROMPT, captionContext)
-        if (!caption) caption = decision.caption || `macha check this out 🔥`
+        if (!caption) caption = `macha check this out 🔥`
     }
 
-    // Send to user via Telegram using download-first pipeline
-    // CDN URLs expire quickly — download to buffer, upload via multipart
-    console.log(`[Proactive] Sending ${bestReel.type} from ${bestReel.source} to ${userId} via download pipeline`)
+    // ── Companion image for reels (60% of the time) ─────────────────────────
+    // When sending a reel, 60% chance: also send a food photo with a punchy line before/after
+    if (contentType === 'reel' && Math.random() < 0.6 && imagePool.length > 0) {
+        // Pick a companion image (different from primary reel)
+        const companionPool = imagePool.filter(r => r.id !== bestReel.id)
+        const companion = companionPool.length > 0
+            ? companionPool[Math.floor(Math.random() * companionPool.length)]
+            : null
 
+        if (companion) {
+            const companionCaptions = [
+                `and this is the vibe 👀`,
+                `context needed`,
+                `this is why i'm broke da`,
+                `bro just look at it`,
+                `your eyes are not ready`,
+                `okay but seriously`,
+                `the before. now the after 👇`,
+            ]
+            const companionCaption = companionCaptions[Math.floor(Math.random() * companionCaptions.length)]
+
+            console.log(`[Proactive] Sending companion image to ${userId} (${companion.source})`)
+            await sendMediaViaPipeline(chatId, {
+                id: companion.id,
+                source: companion.source,
+                videoUrl: companion.videoUrl,
+                thumbnailUrl: companion.thumbnailUrl,
+                type: companion.type,
+            }, companionCaption)
+            markMediaSent(companion.id).catch(() => {})
+            await sleep(1500) // brief pause between companion and main reel
+        }
+    }
+
+    // ── Send main media ──────────────────────────────────────────────────────
+    console.log(`[Proactive] Sending ${bestReel.type} from ${bestReel.source} to ${userId}`)
     const sent = await sendMediaViaPipeline(
         chatId,
         {
@@ -324,26 +454,32 @@ async function runProactiveForUser(userId: string, chatId: string): Promise<void
     )
 
     if (sent) {
-        console.log(`[Proactive] Successfully delivered ${bestReel.type} to ${userId}`)
+        console.log(`[Proactive] Delivered ${bestReel.type} to ${userId}`)
         markMediaSent(bestReel.id).catch(() => {})
-        // Follow-up engagement hook — fires 2s after media, converts passive views to replies
         sendEngagementHook(chatId, hookTypeForCategory(category)).catch(() => {})
     } else {
         console.warn(`[Proactive] Media pipeline failed, sending caption as text`)
         await sendProactiveContent(chatId, caption)
     }
 
-    // Update in-memory state
+    await updateStateAfterSend(state, userId, category, hashtag)
+}
+
+/** Update in-memory state + persist to DB after a successful send */
+async function updateStateAfterSend(
+    state: UserProactiveState,
+    userId: string,
+    category: ContentCategory,
+    hashtag: string
+): Promise<void> {
     state.lastSentAt = Date.now()
     state.sendCountToday++
     state.lastCategory = category
     state.lastHashtags = [hashtag, ...state.lastHashtags].slice(0, 10)
     recordContentSent(userId, category, hashtag)
 
-    // Persist to DB so state survives server restarts
     saveStateToDB(state)
 
-    // Record the send in proactive_messages audit log
     getPool().query(
         `INSERT INTO proactive_messages (user_id, message_type, sent_at, category, hashtag)
          SELECT u.user_id, 'proactive_content', NOW(), $2, $3

@@ -62,8 +62,8 @@ import { setScene, toolToFlow } from '../character/scene-manager.js'
 // Tier 2: LLM with fallback chains
 import { generateResponse, type ChatMessage } from '../llm/tierManager.js'
 
-// Proactive content registration
-import { registerProactiveUser } from '../media/proactiveRunner.js'
+// Proactive content registration + activity tracking
+import { registerProactiveUser, updateUserActivity } from '../media/proactiveRunner.js'
 
 // Initialize Groq client
 const groq = new Groq({
@@ -252,9 +252,9 @@ export async function handleMessage(
     // ─── Step 2: Get or create user, resolve person_id ────────────
     const user = await getOrCreateUser(channel, channelUserId)
 
-    // Register for proactive content (uses channelUserId as chatId for Telegram DMs)
+    // Register + update activity clock (resets inactivity timer for smart gate)
     if (channel === 'telegram') {
-      registerProactiveUser(channelUserId, channelUserId)
+      updateUserActivity(channelUserId, channelUserId)
     }
 
     // ─── Step 3: Check rate limit ─────────────────────────────────
