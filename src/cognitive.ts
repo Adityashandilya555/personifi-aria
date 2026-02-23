@@ -81,6 +81,7 @@ Today is ${today} (${dayName}). Always convert relative dates ("next Friday", "t
 
 STEP 1 — Call a tool if the user needs real-time data:
 - Flights, hotels, weather, places, currency, transport → those tools
+- Cab/auto/bike fare comparisons in Bengaluru (Ola/Uber/Rapido/Namma Yatri) → compare_rides
 - "Best deal", "compare platforms", "order or go out?", "which app is cheaper" → compare_prices_proactive
 - Food delivery comparison (Swiggy vs Zomato, restaurant prices, coupons) → compare_food_prices
 - Grocery prices, quick delivery apps in general → compare_grocery_prices

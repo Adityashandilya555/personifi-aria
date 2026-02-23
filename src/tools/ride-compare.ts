@@ -1,4 +1,5 @@
 import type { ToolExecutionResult } from '../hooks.js'
+import { getWeather } from './weather.js'
 
 // ─── Rate Card Config (Bengaluru, early 2025) ───────────────────────────────
 // Stored as a config array so rates can be updated in one place.
@@ -37,18 +38,46 @@ const RATE_CARDS: RateCard[] = [
 
 interface SurgeInfo {
     multiplier: number
-    label: string | null  // Human-readable label, null if no surge
+    labels: string[]
 }
 
-function getSurgeInfo(hour: number): SurgeInfo {
+function getTimeSurgeInfo(hour: number): SurgeInfo {
     if (hour >= 8 && hour < 10) {
-        return { multiplier: 1.2, label: 'Morning rush (8-10AM): Ola/Uber prices may be ~1.2x higher' }
+        return { multiplier: 1.2, labels: ['Morning rush (8-10AM): Ola/Uber prices may be ~1.2x higher'] }
     }
     if (hour >= 17 && hour < 20) {
         // Use midpoint of 1.3-1.5x range
-        return { multiplier: 1.4, label: 'Evening rush (5-8PM): Ola/Uber prices may be 1.3-1.5x higher' }
+        return { multiplier: 1.4, labels: ['Evening rush (5-8PM): Ola/Uber prices may be 1.3-1.5x higher'] }
     }
-    return { multiplier: 1.0, label: null }
+    return { multiplier: 1.0, labels: [] }
+}
+
+async function getRainSurgeInfo(): Promise<SurgeInfo> {
+    try {
+        // Reuse the existing weather tool so rain detection logic stays centralized.
+        const weatherResult = await getWeather({ location: 'Bengaluru' })
+        if (!weatherResult.success || !weatherResult.data || typeof weatherResult.data !== 'object') {
+            return { multiplier: 1.0, labels: [] }
+        }
+
+        const raw = (weatherResult.data as { raw?: any }).raw
+        const main = String(raw?.weather?.[0]?.main ?? '')
+        const description = String(raw?.weather?.[0]?.description ?? '')
+        const isRaining = /rain|drizzle|thunder|shower/i.test(`${main} ${description}`)
+
+        if (!isRaining) {
+            return { multiplier: 1.0, labels: [] }
+        }
+
+        // Rain surge heuristic in Bengaluru: Ola/Uber often jump to ~1.5-2.0x.
+        return {
+            multiplier: 1.7, // midpoint of the documented 1.5-2.0x range
+            labels: ['Rain detected in Bengaluru: Ola/Uber prices may be 1.5-2.0x higher'],
+        }
+    } catch (error) {
+        console.warn('[Ride Compare] Weather surge check failed:', error)
+        return { multiplier: 1.0, labels: [] }
+    }
 }
 
 // ─── Google Distance Matrix API ─────────────────────────────────────────────
@@ -126,14 +155,17 @@ export async function compareRides(params: RideCompareParams): Promise<ToolExecu
             new Date().toLocaleString('en-US', { hour: 'numeric', hour12: false, timeZone: 'Asia/Kolkata' }),
             10,
         )
-        const surge = getSurgeInfo(istHour)
+        const timeSurge = getTimeSurgeInfo(istHour)
+        const rainSurge = await getRainSurgeInfo()
+        const surgeMultiplier = Math.max(timeSurge.multiplier, rainSurge.multiplier)
+        const surgeLabels = [...timeSurge.labels, ...rainSurge.labels]
 
         // 3. Calculate fares for all services
         const estimates = RATE_CARDS.map(card => ({
             provider: card.provider,
             tier: card.tier,
             emoji: card.emoji,
-            fare: calculateFare(card, route.distanceKm, route.durationMin, surge.multiplier),
+            fare: calculateFare(card, route.distanceKm, route.durationMin, surgeMultiplier),
             hasSurge: card.hasSurge,
             label: `${card.provider} ${card.tier}`,
         }))
@@ -164,8 +196,8 @@ export async function compareRides(params: RideCompareParams): Promise<ToolExecu
             lines.push(`💡 Cheapest enclosed: ${cheapestEnclosed.label} (₹${cheapestEnclosed.fare})`)
         }
 
-        if (surge.label) {
-            lines.push(`⚠️ ${surge.label}`)
+        for (const label of surgeLabels) {
+            lines.push(`⚠️ ${label}`)
         }
 
         lines.push('')
@@ -182,7 +214,8 @@ export async function compareRides(params: RideCompareParams): Promise<ToolExecu
                     destination,
                     distanceKm: route.distanceKm,
                     durationMin: route.durationMin,
-                    surgeMultiplier: surge.multiplier,
+                    surgeMultiplier,
+                    surgeNotes: surgeLabels,
                     estimates,
                 },
             },
