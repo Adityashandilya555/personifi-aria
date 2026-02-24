@@ -18,8 +18,8 @@ export async function convertCurrency(params: CurrencyParams): Promise<ToolExecu
     const toCode = to.toUpperCase().trim()
     const normalizedAmount = Math.round(amount * 100) / 100
     const key = cacheKey('convert_currency', {
-        from: fromCode.trim(),
-        to: toCode.trim(),
+        from: fromCode,
+        to: toCode,
         amount: normalizedAmount,
     })
 

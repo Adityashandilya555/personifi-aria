@@ -3,6 +3,7 @@ import { convertCurrency } from './currency.js'
 import { searchFlights } from './flights.js'
 import { searchPlaces } from './places.js'
 import { getWeather } from './weather.js'
+import { cacheClear } from './scrapers/cache.js'
 
 const ORIGINAL_ENV = {
   OPENWEATHERMAP_API_KEY: process.env.OPENWEATHERMAP_API_KEY,
@@ -26,6 +27,7 @@ describe('tool caching integration', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
+    cacheClear()
 
     delete process.env.OPENWEATHERMAP_API_KEY
     delete process.env.GOOGLE_PLACES_API_KEY

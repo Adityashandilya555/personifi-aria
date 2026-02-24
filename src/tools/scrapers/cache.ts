@@ -34,3 +34,8 @@ export function cacheSet<T>(key: string, data: T, ttlMs: number = DEFAULT_TTL_MS
 export function cacheKey(toolName: string, params: Record<string, unknown>): string {
     return `${toolName}:${JSON.stringify(params)}`
 }
+
+/** Clear all cache entries (primarily for tests). */
+export function cacheClear(): void {
+    store.clear()
+}

@@ -41,7 +41,7 @@ export async function getWeather(params: WeatherParams): Promise<ToolExecutionRe
     }
 
     try {
-        const url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(location)}&units=metric&appid=${process.env.OPENWEATHERMAP_API_KEY}`
+        const url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(normalizedLocation)}&units=metric&appid=${process.env.OPENWEATHERMAP_API_KEY}`
         const response = await fetch(url)
         const data = await response.json()
 
