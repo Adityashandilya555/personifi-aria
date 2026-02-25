@@ -423,7 +423,7 @@ erDiagram
 
     link_codes {
         UUID code_id PK
-        TEXT code UK
+        TEXT code
         UUID user_id FK
         UUID person_id FK
         TIMESTAMPTZ expires_at
@@ -475,7 +475,7 @@ erDiagram
     }
 
     rate_limits {
-        UUID user_id PK_FK
+        UUID user_id PK, FK
         TIMESTAMPTZ window_start PK
         INTEGER request_count
     }
@@ -490,7 +490,7 @@ erDiagram
 
     scraped_media {
         SERIAL id PK
-        TEXT item_id UK
+        TEXT item_id
         TEXT platform
         TEXT media_url
         TEXT telegram_file_id
