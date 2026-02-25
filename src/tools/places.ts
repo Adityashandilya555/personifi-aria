@@ -1,5 +1,6 @@
 
 import type { ToolExecutionResult } from '../hooks.js'
+import { cacheGet, cacheKey, cacheSet } from './scrapers/cache.js'
 
 interface PlaceSearchParams {
     query: string
@@ -7,6 +8,8 @@ interface PlaceSearchParams {
     openNow?: boolean
     minRating?: number
 }
+
+const PLACES_CACHE_TTL = 30 * 60 * 1000 // 30 minutes
 
 // ─── Defaults (Bengaluru) ───────────────────────────────────────────────────
 
@@ -60,6 +63,21 @@ function buildPhotoUrl(photoName: string, apiKey: string, maxHeightPx = 400): st
  */
 export async function searchPlaces(params: PlaceSearchParams): Promise<ToolExecutionResult> {
     const { query, location, openNow = false, minRating = 0 } = params
+    const normalizedQuery = query.toLowerCase().trim()
+    const normalizedLocation = (location ?? 'bengaluru').toLowerCase().trim()
+    const key = cacheKey('search_places', {
+        query: normalizedQuery,
+        location: normalizedLocation,
+        openNow,
+        minRating: Number(minRating) || 0,
+    })
+
+    const cached = cacheGet<ToolExecutionResult>(key)
+    if (cached) {
+        console.log(`[Places Tool] Cache hit for "${normalizedQuery}" @ "${normalizedLocation}"`)
+        return cached
+    }
+
     const apiKey = process.env.GOOGLE_PLACES_API_KEY
 
     if (!apiKey) {
@@ -146,10 +164,12 @@ export async function searchPlaces(params: PlaceSearchParams): Promise<ToolExecu
         const data = await response.json()
 
         if (!data.places || data.places.length === 0) {
-            return {
+            const result: ToolExecutionResult = {
                 success: true,
                 data: `No places found for "${textQuery}".`,
             }
+            cacheSet(key, result, PLACES_CACHE_TTL)
+            return result
         }
 
         // ── Build formatted output + photo URLs ─────────────────────
@@ -192,7 +212,7 @@ export async function searchPlaces(params: PlaceSearchParams): Promise<ToolExecu
 
         const formatted = lines.join('\n\n')
 
-        return {
+        const result: ToolExecutionResult = {
             success: true,
             data: {
                 formatted,
@@ -200,6 +220,8 @@ export async function searchPlaces(params: PlaceSearchParams): Promise<ToolExecu
                 images: images.slice(0, 5), // cap at 5 photos for Telegram
             },
         }
+        cacheSet(key, result, PLACES_CACHE_TTL)
+        return result
 
     } catch (error: any) {
         console.error('[Places Tool] Error:', error)

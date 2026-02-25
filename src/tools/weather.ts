@@ -1,8 +1,11 @@
 import type { ToolExecutionResult } from '../hooks.js'
+import { cacheGet, cacheKey, cacheSet } from './scrapers/cache.js'
 
 interface WeatherParams {
     location: string
 }
+
+const WEATHER_CACHE_TTL = 15 * 60 * 1000 // 15 minutes
 
 const BANGALORE_ALIASES = ['bangalore', 'bengaluru', 'blr', 'koramangala', 'indiranagar',
     'whitefield', 'hsr', 'jayanagar', 'malleshwaram', 'basavanagudi', 'hebbal', 'yelahanka']
@@ -20,6 +23,14 @@ const RAIN_HINTS = [
  */
 export async function getWeather(params: WeatherParams): Promise<ToolExecutionResult> {
     const { location } = params
+    const normalizedLocation = location.toLowerCase().trim()
+    const key = cacheKey('get_weather', { location: normalizedLocation })
+
+    const cached = cacheGet<ToolExecutionResult>(key)
+    if (cached) {
+        console.log(`[Weather Tool] Cache hit for "${normalizedLocation}"`)
+        return cached
+    }
 
     if (!process.env.OPENWEATHERMAP_API_KEY) {
         return {
@@ -30,7 +41,7 @@ export async function getWeather(params: WeatherParams): Promise<ToolExecutionRe
     }
 
     try {
-        const url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(location)}&units=metric&appid=${process.env.OPENWEATHERMAP_API_KEY}`
+        const url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(normalizedLocation)}&units=metric&appid=${process.env.OPENWEATHERMAP_API_KEY}`
         const response = await fetch(url)
         const data = await response.json()
 
@@ -63,10 +74,12 @@ export async function getWeather(params: WeatherParams): Promise<ToolExecutionRe
             formatted += RAIN_HINTS[Math.floor(Math.random() * RAIN_HINTS.length)]
         }
 
-        return {
+        const result: ToolExecutionResult = {
             success: true,
             data: { formatted, raw: data },
         }
+        cacheSet(key, result, WEATHER_CACHE_TTL)
+        return result
 
     } catch (error: any) {
         console.error('[Weather Tool] Error:', error)

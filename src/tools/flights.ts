@@ -1,5 +1,6 @@
 import Amadeus from 'amadeus'
 import type { ToolExecutionResult } from '../hooks.js'
+import { cacheGet, cacheKey, cacheSet } from './scrapers/cache.js'
 
 // Lazy-initialize Amadeus client to avoid eager auth with missing keys
 let amadeus: InstanceType<typeof Amadeus> | null = null
@@ -22,6 +23,8 @@ interface FlightSearchParams {
     adults?: number
     currency?: string
 }
+
+const FLIGHTS_CACHE_TTL = 10 * 60 * 1000 // 10 minutes
 
 /**
  * Ensure departureDate is YYYY-MM-DD. If the 8B model sent a relative
@@ -53,14 +56,46 @@ function resolveDate(dateStr: string): string {
  */
 export async function searchFlights(params: FlightSearchParams): Promise<ToolExecutionResult> {
     const { origin, destination, departureDate: rawDate, returnDate, adults = 1, currency = 'USD' } = params
+    const originCode = origin.trim().toUpperCase()
+    const destinationCode = destination.trim().toUpperCase()
     const departureDate = resolveDate(rawDate)
+    const normalizedReturnDate = returnDate?.trim() || undefined
+    const normalizedAdults = Number.isFinite(adults) && adults > 0 ? adults : 1
+    const normalizedCurrency = currency.trim().toUpperCase()
+    const key = cacheKey('search_flights', {
+        origin: originCode,
+        destination: destinationCode,
+        departureDate,
+        returnDate: normalizedReturnDate ?? 'one_way',
+        adults: normalizedAdults,
+        currency: normalizedCurrency,
+    })
+
+    const cached = cacheGet<ToolExecutionResult>(key)
+    if (cached) {
+        console.log(`[Flight Tool] Cache hit for ${originCode}->${destinationCode} on ${departureDate}`)
+        return cached
+    }
+
+    const normalizedParams: FlightSearchParams = {
+        origin: originCode,
+        destination: destinationCode,
+        departureDate,
+        returnDate: normalizedReturnDate,
+        adults: normalizedAdults,
+        currency: normalizedCurrency,
+    }
 
     // Check if API keys are set
     const client = getAmadeusClient()
     if (!client) {
         if (process.env.SERPAPI_KEY) {
             console.log('[Flight Tool] Amadeus keys missing, falling back to SerpAPI')
-            return searchFlightsFallback(params)
+            const fallback = await searchFlightsFallback(normalizedParams)
+            if (fallback.success) {
+                cacheSet(key, fallback, FLIGHTS_CACHE_TTL)
+            }
+            return fallback
         }
         return {
             success: false,
@@ -71,24 +106,30 @@ export async function searchFlights(params: FlightSearchParams): Promise<ToolExe
 
     try {
         const response = await client.shopping.flightOffersSearch.get({
-            originLocationCode: origin,
-            destinationLocationCode: destination,
+            originLocationCode: originCode,
+            destinationLocationCode: destinationCode,
             departureDate: departureDate,
-            returnDate: returnDate,
-            adults: adults,
-            currencyCode: currency,
+            returnDate: normalizedReturnDate,
+            adults: normalizedAdults,
+            currencyCode: normalizedCurrency,
             max: 5,
         })
 
         if (!response.data || response.data.length === 0) {
             if (process.env.SERPAPI_KEY) {
                 console.log('[Flight Tool] No Amadeus results, falling back to SerpAPI')
-                return searchFlightsFallback(params)
+                const fallback = await searchFlightsFallback(normalizedParams)
+                if (fallback.success) {
+                    cacheSet(key, fallback, FLIGHTS_CACHE_TTL)
+                }
+                return fallback
             }
-            return {
+            const result: ToolExecutionResult = {
                 success: true,
-                data: { formatted: `No flights found from ${origin} to ${destination} on ${departureDate}.`, raw: null },
+                data: { formatted: `No flights found from ${originCode} to ${destinationCode} on ${departureDate}.`, raw: null },
             }
+            cacheSet(key, result, FLIGHTS_CACHE_TTL)
+            return result
         }
 
         // Format results
@@ -108,7 +149,7 @@ export async function searchFlights(params: FlightSearchParams): Promise<ToolExe
         }).join('\n')
 
         // Cap formatted string to prevent prompt overflow (~10k tokens seen in prod)
-        const header = `Flight offers from ${origin} to ${destination}:`
+        const header = `Flight offers from ${originCode} to ${destinationCode}:`
         let formatted = `${header}\n${offers}`
         if (formatted.length > 1200) {
             // Keep the header + first N lines that fit
@@ -121,10 +162,12 @@ export async function searchFlights(params: FlightSearchParams): Promise<ToolExe
             formatted = trimmed + '\n…(more results available, ask for details)'
         }
 
-        return {
+        const result: ToolExecutionResult = {
             success: true,
             data: { formatted, raw: response.data },
         }
+        cacheSet(key, result, FLIGHTS_CACHE_TTL)
+        return result
 
     } catch (error: any) {
         console.error('[Flight Tool] Amadeus error:', error.response?.result?.errors || error)
@@ -132,7 +175,11 @@ export async function searchFlights(params: FlightSearchParams): Promise<ToolExe
         // Fallback to SerpAPI on error
         if (process.env.SERPAPI_KEY) {
             console.log('[Flight Tool] Amadeus error, falling back to SerpAPI')
-            return searchFlightsFallback(params)
+            const fallback = await searchFlightsFallback(normalizedParams)
+            if (fallback.success) {
+                cacheSet(key, fallback, FLIGHTS_CACHE_TTL)
+            }
+            return fallback
         }
 
         return {
