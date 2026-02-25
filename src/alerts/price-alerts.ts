@@ -224,7 +224,12 @@ export async function checkPriceAlerts(): Promise<PriceAlertCheckSummary> {
     return { checked: 0, triggered: 0, errors: 0, skipped: true }
   }
 
-  const filters: string[] = ['target_price IS NOT NULL']
+  const filters: string[] = [
+    'target_price IS NOT NULL',
+    'origin IS NOT NULL',
+    'destination IS NOT NULL',
+    'departure_date IS NOT NULL',
+  ]
   if (columnConfig.activeColumn) filters.push(`${columnConfig.activeColumn} = TRUE`)
 
   const alertsRes = await pool.query<PriceAlertRecord>(
@@ -280,6 +285,12 @@ export async function checkPriceAlerts(): Promise<PriceAlertCheckSummary> {
         console.log(
           `[Price Alerts] Triggered ${alert.alertId}: ${extracted.currency} ${extracted.currentPrice} <= ${target}`,
         )
+        if (columnConfig.activeColumn) {
+          await pool.query(
+            `UPDATE price_alerts SET ${columnConfig.activeColumn} = FALSE WHERE alert_id = $1`,
+            [alert.alertId],
+          )
+        }
       }
     } catch (error) {
       errors += 1
