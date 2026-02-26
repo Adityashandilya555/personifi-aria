@@ -158,29 +158,25 @@ export async function discoverAccounts(hashtag: string): Promise<string[]> {
 
     // R1: Race the discovery flow against a timeout.
     // If the timeout fires first, return seed accounts unranked.
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
     try {
+        const timeoutPromise = new Promise<string[]>((resolve) => {
+            timeoutId = setTimeout(() => {
+                console.warn(`[AccountDiscovery] Discovery timed out after ${DISCOVERY_TIMEOUT_MS}ms, returning seeds`)
+                resolve([...seeds])
+            }, DISCOVERY_TIMEOUT_MS)
+        })
         const usernames = await Promise.race([
             runDiscovery(hashtag, seeds),
-            discoveryTimeout(seeds),
+            timeoutPromise,
         ])
         return usernames
     } catch (err: any) {
         console.warn(`[AccountDiscovery] Discovery failed, returning seeds:`, err?.message)
         return [...seeds]
+    } finally {
+        clearTimeout(timeoutId)
     }
-}
-
-/**
- * R1: Returns seed accounts after DISCOVERY_TIMEOUT_MS.
- * Used as the losing side of Promise.race when discovery completes in time.
- */
-function discoveryTimeout(seeds: string[]): Promise<string[]> {
-    return new Promise((resolve) => {
-        setTimeout(() => {
-            console.warn(`[AccountDiscovery] Discovery timed out after ${DISCOVERY_TIMEOUT_MS}ms, returning seeds`)
-            resolve([...seeds])
-        }, DISCOVERY_TIMEOUT_MS)
-    })
 }
 
 /**
@@ -462,9 +458,10 @@ async function scoreAccounts(
         for (let j = 0; j < batch.length; j++) {
             const account = batch[j]
             const profileResult = profiles[j]
+            // fetchProfile catches all errors and returns null — check value, not status
             const profile = profileResult.status === 'fulfilled' ? profileResult.value : null
 
-            if (profileResult.status === 'rejected') {
+            if (!profile) {
                 consecutiveFailures++
             }
 
