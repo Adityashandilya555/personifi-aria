@@ -14,6 +14,7 @@
 import { rapidGet, rapidPost } from '../tools/rapidapi-client.js'
 import { sleep } from '../tools/scrapers/retry.js'
 import { cacheGet, cacheSet, cacheKey } from '../tools/scrapers/cache.js'
+import { discoverAccounts } from './accountDiscovery.js'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -135,20 +136,7 @@ export async function markMediaSent(itemId: string, telegramFileId?: string): Pr
 // ─── Instagram Scraper ──────────────────────────────────────────────────────
 // Uses instagram120 API (user's subscribed API)
 // Only working endpoint: POST /api/instagram/posts → { result: { edges: [{ node: {...} }] } }
-
-// Bangalore food accounts known for posting Reels — rotated randomly for variety.
-// Sorted roughly by reel activity. Update periodically as accounts change focus.
-const BANGALORE_FOOD_ACCOUNTS = [
-    'bangalorefoodbomb',      // 160K — heavy reel poster, street food & restaurants
-    'ghatotkatcha',           // 151K — food vlogs, reels
-    'sabkhajayenge',          // Archie Gupta — food review reels
-    'bangalorefoodjunkies',   // food hub, mixed content
-    'bangaloreepicure',       // Naveen Suresh — reel content
-    'tummy_on_fire',          // Sumukh Vishwanath — food reels
-    'bangalore_foodtales',    // Suraj — food & travel reels
-    'bangalorefoodie',        // 188K — large account, some reels
-    'thefoodquest.in',        // Vivek G — 110K, food reels
-]
+// Accounts are discovered dynamically via accountDiscovery.ts (seed + @mention expansion + ranking)
 
 async function searchInstagramReels(opts: SearchOptions): Promise<ReelResult[]> {
     const maxResults = opts.maxResults ?? 10
@@ -159,8 +147,8 @@ async function searchInstagramReels(opts: SearchOptions): Promise<ReelResult[]> 
         return cached
     }
 
-    // Try accounts in random order until we get enough results
-    const accounts = [...BANGALORE_FOOD_ACCOUNTS].sort(() => Math.random() - 0.5)
+    // Discover and rank accounts dynamically (cached for 12h)
+    const accounts = await discoverAccounts(opts.hashtag)
     for (const account of accounts) {
         try {
             const data = await rapidPost('instagram120', '/api/instagram/posts', {
