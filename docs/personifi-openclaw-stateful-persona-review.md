@@ -6,7 +6,7 @@ Input fidelity notes:
 - The Copilot URL (`https://github.com/copilot/c/4156f14c-25fb-4bbc-aab4-42f0e5e65db2`) resolves to GitHub sign-in from this environment, so the underlying chat transcript is not directly readable.
 - No local `openclaw` repository is present in this workspace, so the OpenClaw side is analyzed as an interface/contract boundary using your provided goals.
 
-## <feasibility_analysis>
+## `<feasibility_analysis>`
 
 ### Can this architecture sustain a persistent digital user?
 Yes, with one condition: `personifi-aria` must stop owning volatile runtime state in-process and treat `openclaw` as the durable memory/state control plane.
@@ -37,7 +37,7 @@ Yes, with one condition: `personifi-aria` must stop owning volatile runtime stat
   - `openclaw`: working memory, long-term retrieval orchestration, user state machine, proactive trigger scoring, durable queues.
 - Not feasible long-term if both layers write independent memory/state without a single source of truth.
 
-## <issue_identification_and_fixes>
+## `<issue_identification_and_fixes>`
 
 ### 1) Personality drift (Aria mirrors user too much)
 Where it comes from:
@@ -135,7 +135,7 @@ Fix:
 - Consolidate to one canonical migration path and write compatibility migration.
 - Keep backward compatibility logic temporarily, then remove after migration cutover.
 
-## <strategic_pathway>
+## `<strategic_pathway>`
 
 ### Step 0: Define the OpenClaw handshake contract first
 Implement explicit API contract before further feature work.
@@ -192,7 +192,7 @@ This keeps persona stability while allowing personalization.
 - Memory continuity tests (facts survive session rotation/restart).
 - Tool grounding tests (no ungrounded numeric claims when tool data is partial).
 
-## <tech_stack_optimizations>
+## `<tech_stack_optimizations>`
 
 ### Routing and storage
 - Redis for hot mutable state:
