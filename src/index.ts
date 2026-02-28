@@ -12,6 +12,7 @@ import { initMCPTokenStore } from './tools/mcp-client.js'
 import { initBrowser, closeBrowser } from './browser.js'
 import './tools/index.js'  // Register body hooks (DEV 2 tools)
 import { verifySlackSignature } from './slack-verify.js'
+import { initArchivist } from './archivist/index.js'
 import {
   channels,
   getEnabledChannels,
@@ -184,6 +185,9 @@ const start = async () => {
       throw new Error('DATABASE_URL is required')
     }
     initDatabase(dbUrl)
+
+    // Initialize Archivist subagent (Redis + S3 if configured)
+    initArchivist()
 
     // Load persisted MCP tokens from DB into process.env (survives container restarts)
     await initMCPTokenStore(dbUrl)

@@ -1,6 +1,7 @@
 /**
  * Scheduler - Proactive tasks and heartbeat
- * Handles: inactivity messages, daily tips, scheduled scraping
+ * Handles: inactivity messages, daily tips, scheduled scraping,
+ *          memory write queue, session summarization
  */
 
 // @ts-ignore - node-cron has no types
@@ -13,6 +14,8 @@ import { scrapeTravelDeals } from './browser.js'
 import { compareFoodPrices } from './tools/food-compare.js'
 import { compareGroceryPrices } from './tools/grocery-compare.js'
 import { refreshAllMCPTokens } from './tools/mcp-client.js'
+import { checkAndSummarizeSessions } from './archivist/session-summaries.js'
+import { processMemoryWriteQueue } from './archivist/memory-queue.js'
 
 let pool: Pool | null = null
 
@@ -22,6 +25,28 @@ export function initScheduler(databaseUrl: string, sendMessage: SendMessageFn) {
     connectionString: cleanUrl,
     ssl: { rejectUnauthorized: false },
   })
+
+  // ── Archivist crons ──────────────────────────────────────────────────────
+
+  // Memory write queue worker — every 30 seconds
+  cron.schedule('*/30 * * * * *', async () => {
+    try {
+      await processMemoryWriteQueue(20)
+    } catch (err) {
+      console.error('[SCHEDULER] Memory queue worker failed:', err)
+    }
+  })
+
+  // Session summarization — every 5 minutes
+  cron.schedule('*/5 * * * *', async () => {
+    try {
+      await checkAndSummarizeSessions()
+    } catch (err) {
+      console.error('[SCHEDULER] Session summarization failed:', err)
+    }
+  })
+
+  // ── Existing crons ───────────────────────────────────────────────────────
 
   // Check for inactive users every 15 minutes
   cron.schedule('*/15 * * * *', () => checkInactiveUsers(sendMessage))
@@ -251,7 +276,7 @@ async function checkPriceAlerts(sendMessage: SendMessageFn) {
 
         // Match "USD 123.45" (Amadeus) or "$123" (SerpAPI fallback)
         const priceMatch = formatted.match(/([A-Z]{3})\s+(\d+(?:\.\d{1,2})?)/)
-            || formatted.match(/\$(\d+(?:\.\d{1,2})?)/)
+          || formatted.match(/\$(\d+(?:\.\d{1,2})?)/)
         if (priceMatch) {
           const currentPrice = parseFloat(priceMatch[2] ?? priceMatch[1])
           const currency = priceMatch[2] ? priceMatch[1] : 'USD'

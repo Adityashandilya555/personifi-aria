@@ -194,7 +194,13 @@ async function main() {
     console.log('⏳ Waiting for you to log in with your Swiggy account...\n')
 
     try {
-        const { code } = await waitForCallback(server)
+        const { code, state: callbackState } = await waitForCallback(server)
+
+        // Validate OAuth state to prevent CSRF attacks
+        if (callbackState !== state) {
+            throw new Error('OAuth state mismatch — possible CSRF attack. Try again.')
+        }
+
         console.log('✅ Authorization code received, exchanging for token...')
 
         const tokens = await exchangeCodeForToken(code, codeVerifier)

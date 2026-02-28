@@ -32,13 +32,13 @@ export interface ChannelAdapter {
 
 export const telegramAdapter: ChannelAdapter = {
   name: 'telegram',
-  
+
   isEnabled: () => process.env.TELEGRAM_ENABLED === 'true' && !!process.env.TELEGRAM_BOT_TOKEN,
-  
+
   parseWebhook: (body: any): ChannelMessage | null => {
     const message = body?.message
     if (!message?.text) return null
-    
+
     return {
       channel: 'telegram',
       userId: message.from.id.toString(),
@@ -52,7 +52,7 @@ export const telegramAdapter: ChannelAdapter = {
       },
     }
   },
-  
+
   sendMessage: async (chatId: string, text: string) => {
     const token = process.env.TELEGRAM_BOT_TOKEN
     const resp = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
@@ -73,6 +73,9 @@ export const telegramAdapter: ChannelAdapter = {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ chat_id: chatId, text }),
         })
+      } else {
+        // Non-parse failure — do not swallow
+        throw new Error(`Telegram sendMessage failed: ${(err as any)?.description ?? resp.status}`)
       }
     }
   },
@@ -95,7 +98,7 @@ export const telegramAdapter: ChannelAdapter = {
       })
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}))
-        console.error('[Telegram] sendPhoto failed:', (err as any)?.description, 'url:', media[0].url)
+        console.error('[Telegram] sendPhoto failed:', (err as any)?.description)
       }
     } else {
       // Multiple photos — sendMediaGroup (album). Only first item gets caption (Telegram limit).
@@ -123,7 +126,7 @@ export const telegramAdapter: ChannelAdapter = {
             caption: media[0].caption || '',
             parse_mode: 'HTML',
           }),
-        }).catch(() => {})
+        }).catch(err => console.error('[Telegram] sendPhoto fallback failed:', (err as Error).message))
       }
     }
   },
@@ -135,17 +138,17 @@ export const telegramAdapter: ChannelAdapter = {
 
 export const whatsappAdapter: ChannelAdapter = {
   name: 'whatsapp',
-  
+
   isEnabled: () => process.env.WHATSAPP_ENABLED === 'true' && !!process.env.WHATSAPP_API_TOKEN,
-  
+
   parseWebhook: (body: any): ChannelMessage | null => {
     // WhatsApp Cloud API webhook structure
     const entry = body?.entry?.[0]
     const change = entry?.changes?.[0]
     const message = change?.value?.messages?.[0]
-    
+
     if (!message?.text?.body) return null
-    
+
     return {
       channel: 'whatsapp',
       userId: message.from,  // Phone number
@@ -158,11 +161,11 @@ export const whatsappAdapter: ChannelAdapter = {
       },
     }
   },
-  
+
   sendMessage: async (chatId: string, text: string) => {
     const token = process.env.WHATSAPP_API_TOKEN
     const phoneId = process.env.WHATSAPP_PHONE_ID
-    
+
     await fetch(`https://graph.facebook.com/v18.0/${phoneId}/messages`, {
       method: 'POST',
       headers: {
@@ -185,19 +188,19 @@ export const whatsappAdapter: ChannelAdapter = {
 
 export const slackAdapter: ChannelAdapter = {
   name: 'slack',
-  
+
   isEnabled: () => process.env.SLACK_ENABLED === 'true' && !!process.env.SLACK_BOT_TOKEN,
-  
+
   parseWebhook: (body: any): ChannelMessage | null => {
     // Handle URL verification challenge
     if (body.type === 'url_verification') {
       return null  // Handled separately
     }
-    
+
     const event = body?.event
     if (event?.type !== 'message' || event?.subtype) return null
     if (event?.bot_id) return null  // Ignore bot messages
-    
+
     return {
       channel: 'slack',
       userId: event.user,
@@ -210,10 +213,10 @@ export const slackAdapter: ChannelAdapter = {
       },
     }
   },
-  
+
   sendMessage: async (chatId: string, text: string) => {
     const token = process.env.SLACK_BOT_TOKEN
-    
+
     await fetch('https://slack.com/api/chat.postMessage', {
       method: 'POST',
       headers: {
