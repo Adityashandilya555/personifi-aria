@@ -26,11 +26,30 @@ ALTER TABLE conversation_goals
     ADD COLUMN IF NOT EXISTS deadline TIMESTAMPTZ;
 
 ALTER TABLE conversation_goals
-    ADD COLUMN IF NOT EXISTS parent_goal_id INTEGER REFERENCES conversation_goals(id) ON DELETE SET NULL;
+    ADD COLUMN IF NOT EXISTS parent_goal_id INTEGER;
 
 ALTER TABLE conversation_goals
     ADD COLUMN IF NOT EXISTS source VARCHAR(30) NOT NULL DEFAULT 'classifier'
     CHECK (source IN ('classifier', 'agenda_planner', 'funnel', 'task_orchestrator', 'manual'));
+
+-- Scope-isolation: unique index so composite FK can reference (id, user_id, session_id)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_goals_scope
+    ON conversation_goals(id, user_id, session_id);
+
+-- Composite FK: parent_goal_id must reference a goal within the same user+session
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.table_constraints
+    WHERE constraint_name = 'conversation_goals_parent_scope_fk'
+      AND table_name = 'conversation_goals'
+  ) THEN
+    ALTER TABLE conversation_goals
+      ADD CONSTRAINT conversation_goals_parent_scope_fk
+      FOREIGN KEY (parent_goal_id, user_id, session_id)
+      REFERENCES conversation_goals(id, user_id, session_id)
+      ON DELETE SET NULL (parent_goal_id);
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_goals_user_session_status_priority
     ON conversation_goals(user_id, session_id, status, priority DESC, updated_at DESC);

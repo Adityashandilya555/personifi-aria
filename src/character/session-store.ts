@@ -204,7 +204,7 @@ export async function runMigrations(): Promise<void> {
           ADD CONSTRAINT conversation_goals_parent_scope_fk
           FOREIGN KEY (parent_goal_id, user_id, session_id)
           REFERENCES conversation_goals(id, user_id, session_id)
-          ON DELETE SET NULL;
+          ON DELETE SET NULL (parent_goal_id);
       END IF;
     END $$
   `)
