@@ -338,7 +338,10 @@ export async function updateConversationGoal(
             await pool.query(
                 `UPDATE conversation_goals
                  SET status = 'completed', updated_at = NOW()
-                 WHERE user_id = $1 AND session_id = $2 AND status = 'active'`,
+                 WHERE user_id = $1
+                   AND session_id = $2
+                   AND status = 'active'
+                   AND COALESCE(source, 'classifier') = 'classifier'`,
                 [userId, sessionId]
             )
             return null
@@ -346,16 +349,23 @@ export async function updateConversationGoal(
 
         // Update-then-insert: avoids needing a partial unique index
         const updated = await pool.query(
-            `UPDATE conversation_goals SET goal = $1, context = $2, updated_at = NOW()
-             WHERE user_id = $3 AND session_id = $4 AND status = 'active'
+            `UPDATE conversation_goals
+             SET goal = $1,
+                 context = $2,
+                 source = 'classifier',
+                 updated_at = NOW()
+             WHERE user_id = $3
+               AND session_id = $4
+               AND status = 'active'
+               AND COALESCE(source, 'classifier') = 'classifier'
              RETURNING *`,
             [newGoal.trim(), JSON.stringify(context), userId, sessionId]
         )
         if (updated.rows.length > 0) return updated.rows[0]
 
         const inserted = await pool.query(
-            `INSERT INTO conversation_goals (user_id, session_id, goal, status, context)
-             VALUES ($1, $2, $3, 'active', $4)
+            `INSERT INTO conversation_goals (user_id, session_id, goal, status, context, goal_type, priority, source)
+             VALUES ($1, $2, $3, 'active', $4, 'general', 5, 'classifier')
              RETURNING *`,
             [userId, sessionId, newGoal.trim(), JSON.stringify(context)]
         )
@@ -378,7 +388,10 @@ export async function getActiveGoal(
         const result = await pool.query(
             `SELECT * FROM conversation_goals
              WHERE user_id = $1 AND session_id = $2 AND status = 'active'
-             ORDER BY updated_at DESC LIMIT 1`,
+             ORDER BY
+               CASE WHEN COALESCE(source, 'classifier') = 'classifier' THEN 0 ELSE 1 END,
+               updated_at DESC
+             LIMIT 1`,
             [userId, sessionId]
         )
         return result.rows[0] || null

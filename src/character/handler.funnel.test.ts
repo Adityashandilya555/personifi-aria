@@ -8,6 +8,8 @@ const {
   handleFunnelReplyMock,
   generateResponseMock,
   appendMessagesMock,
+  agendaGetStackMock,
+  agendaEvaluateMock,
 } = vi.hoisted(() => ({
   getOrCreateUserMock: vi.fn(),
   getOrCreateSessionMock: vi.fn(),
@@ -16,6 +18,8 @@ const {
   handleFunnelReplyMock: vi.fn(),
   generateResponseMock: vi.fn(),
   appendMessagesMock: vi.fn(),
+  agendaGetStackMock: vi.fn(),
+  agendaEvaluateMock: vi.fn(),
 }))
 
 vi.mock('groq-sdk', () => ({
@@ -108,6 +112,13 @@ vi.mock('../proactive-intent/index.js', () => ({
   handleFunnelReply: handleFunnelReplyMock,
 }))
 
+vi.mock('../agenda-planner/index.js', () => ({
+  agendaPlanner: {
+    getStack: agendaGetStackMock,
+    evaluate: agendaEvaluateMock,
+  },
+}))
+
 import { handleMessage } from './handler.js'
 
 describe('handler proactive funnel interception', () => {
@@ -150,6 +161,15 @@ describe('handler proactive funnel interception', () => {
       provider: 'mock',
     })
     appendMessagesMock.mockResolvedValue(undefined)
+    agendaGetStackMock.mockResolvedValue([])
+    agendaEvaluateMock.mockResolvedValue({
+      stack: [],
+      createdGoalIds: [],
+      completedGoalIds: [],
+      abandonedGoalIds: [],
+      promotedGoalIds: [],
+      actions: [],
+    })
   })
 
   it('returns early when funnel reply is handled', async () => {
@@ -178,4 +198,3 @@ describe('handler proactive funnel interception', () => {
     expect(generateResponseMock).toHaveBeenCalledTimes(1)
   })
 })
-

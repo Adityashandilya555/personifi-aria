@@ -100,6 +100,12 @@ export interface ConversationGoalRecord {
     goal: string
     status: 'active' | 'completed' | 'abandoned'
     context: Record<string, any>
+    goal_type?: 'trip_plan' | 'food_search' | 'price_watch' | 'recommendation' | 'onboarding' | 're_engagement' | 'upsell' | 'general' | null
+    priority?: number | null
+    next_action?: string | null
+    deadline?: string | null
+    parent_goal_id?: number | null
+    source?: 'classifier' | 'agenda_planner' | 'funnel' | 'task_orchestrator' | 'manual' | null
     created_at: string
     updated_at: string
 }
