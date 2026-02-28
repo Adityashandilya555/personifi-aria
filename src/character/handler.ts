@@ -65,6 +65,7 @@ import { generateResponse, type ChatMessage } from '../llm/tierManager.js'
 
 // Proactive content registration + activity tracking
 import { registerProactiveUser, updateUserActivity } from '../media/proactiveRunner.js'
+import { handleFunnelReply } from '../proactive-intent/index.js'
 
 // Initialize Groq client
 const groq = new Groq({
@@ -266,6 +267,19 @@ export async function handleMessage(
 
     // ─── Step 4: Get session with conversation history ────────────
     const session = await getOrCreateSession(user.userId)
+
+    // ─── Step 4.5: Active funnel reply interception (Issue #63) ───
+    // If the user is in an active proactive funnel, route reply before the full
+    // classifier/memory pipeline. This avoids funnel-state collisions.
+    if (channel === 'telegram') {
+      const funnelReply = await handleFunnelReply(channelUserId, userMessage).catch(err => {
+        console.warn('[handler] Funnel reply handling failed, continuing normal pipeline:', safeError(err))
+        return { handled: false as const }
+      })
+      if (funnelReply.handled) {
+        return { text: funnelReply.responseText ?? 'Got it da, I will park that flow for now 👍 Tell me what you want next.' }
+      }
+    }
 
     // ─── Step 5: Classify message via 8B ──────────────────────────
     const classification = await classifyMessage(
