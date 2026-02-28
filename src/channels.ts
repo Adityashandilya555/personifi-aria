@@ -117,7 +117,7 @@ export const telegramAdapter: ChannelAdapter = {
         const err = await resp.json().catch(() => ({}))
         console.error('[Telegram] sendMediaGroup failed:', (err as any)?.description)
         // Fallback: send only the first photo individually
-        await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
+        const fallbackResp = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -126,7 +126,11 @@ export const telegramAdapter: ChannelAdapter = {
             caption: media[0].caption || '',
             parse_mode: 'HTML',
           }),
-        }).catch(err => console.error('[Telegram] sendPhoto fallback failed:', (err as Error).message))
+        })
+        if (!fallbackResp.ok) {
+          const fallbackErr = await fallbackResp.json().catch(() => ({}))
+          throw new Error(`Telegram sendPhoto fallback failed: ${(fallbackErr as any)?.description ?? fallbackResp.status}`)
+        }
       }
     }
   },
