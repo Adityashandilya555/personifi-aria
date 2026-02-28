@@ -587,12 +587,13 @@ export async function handleMessage(
 
     // ─── Step 11: Call Tier 2 (70B) + inline media fetch concurrently ─
     // Resolve influence media hint (pure/sync — no extra cost)
+    const _istDate = new Date(Date.now() + 5.5 * 60 * 60 * 1000 + new Date().getTimezoneOffset() * 60 * 1000)
     const _influenceStrategy = selectStrategy(pulseEngagementState, {
       toolName: routeDecision?.toolName ?? undefined,
       hasToolResult: !!toolResultStr,
       toolInvolved: !!routeDecision?.toolName,
-      istHour: (new Date().getUTCHours() + 5) % 24,
-      isWeekend: [0, 6].includes(new Date().getDay()),
+      istHour: _istDate.getHours(),
+      isWeekend: [0, 6].includes(_istDate.getDay()),
       hasPreferences: Object.keys(preferences).length > 0,
       userSignal: classification.userSignal,
     })
