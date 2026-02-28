@@ -94,6 +94,7 @@ describe('orchestrator integration', () => {
       updated_at: new Date('2026-02-28T12:00:00Z'),
     }
 
+    const sendText = vi.fn(async (_chatId: string, _text: string, _choices?: Array<{ label: string; action: string }>) => true)
     mockQuery.mockImplementation(async (sql: string) => {
       if (sql.includes('FROM proactive_funnels') && sql.includes("status = 'ACTIVE'")) return { rows: [] }
       if (sql.includes('FROM users')) return { rows: [{ user_id: '11111111-1111-1111-1111-111111111111' }] }
@@ -106,13 +107,14 @@ describe('orchestrator integration', () => {
       return { rows: [] }
     })
 
-    const started = await tryStartIntentDrivenFunnel(
-      'tg-user-1',
-      'chat-1',
-      async () => true,
-    )
+    const started = await tryStartIntentDrivenFunnel('tg-user-1', 'chat-1', sendText)
     expect(started.started).toBe(true)
+    if (!started.started) throw new Error('expected started funnel')
     expect(started.funnelKey).toBe('biryani_price_compare')
+    expect(sendText).toHaveBeenCalledTimes(1)
+    const choices = (sendText.mock.calls[0]?.[2] as Array<{ label: string; action: string }> | undefined) ?? []
+    expect(Array.isArray(choices)).toBe(true)
+    expect(String(choices[0]?.action ?? '')).toMatch(/^funnel:biryani_price_compare:/)
     expect(mockQuery).toHaveBeenCalled()
   })
 
@@ -161,5 +163,49 @@ describe('orchestrator integration', () => {
 
     const expired = await expireStaleIntentFunnels(30)
     expect(expired).toBe(2)
+  })
+
+  it('falls back to session-based pulse inference when pulse table is unavailable', async () => {
+    mockQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM users')) {
+        return { rows: [{ user_id: '11111111-1111-1111-1111-111111111111' }] }
+      }
+      if (sql.includes('FROM pulse_engagement_scores')) {
+        throw new Error('relation "pulse_engagement_scores" does not exist')
+      }
+      if (sql.includes('FROM sessions')) {
+        return {
+          rows: [{
+            message_count: 12,
+            last_active: new Date(),
+          }],
+        }
+      }
+      if (sql.includes('FROM user_preferences')) return { rows: [] }
+      if (sql.includes('FROM conversation_goals')) return { rows: [] }
+      if (sql.includes('FROM proactive_funnel_events') && sql.includes("event_type = 'funnel_started'")) return { rows: [] }
+      if (sql.includes('INSERT INTO proactive_funnels')) {
+        return {
+          rows: [{
+            id: 'f3',
+            platform_user_id: 'tg-user-1',
+            internal_user_id: '11111111-1111-1111-1111-111111111111',
+            chat_id: 'chat-1',
+            funnel_key: 'weekend_food_plan',
+            status: 'ACTIVE',
+            current_step_index: 0,
+            context: {},
+            last_event_at: new Date(),
+            created_at: new Date(),
+            updated_at: new Date(),
+          }],
+        }
+      }
+      if (sql.includes('INSERT INTO proactive_funnel_events')) return { rows: [] }
+      return { rows: [] }
+    })
+
+    const started = await tryStartIntentDrivenFunnel('tg-user-1', 'chat-1', async () => true)
+    expect(started.started).toBe(true)
   })
 })

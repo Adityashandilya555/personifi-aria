@@ -28,6 +28,11 @@ interface FunnelRow {
 }
 
 type SendTextFn = (chatId: string, text: string, choices?: FunnelChoice[]) => Promise<boolean>
+const IN_MEMORY_IDLE_TIMEOUT_MS = Math.max(
+  60_000,
+  Number(process.env.PROACTIVE_INTENT_IDLE_MINUTES ?? '15') * 60_000,
+)
+const expiryTimers = new Map<string, NodeJS.Timeout>()
 
 function formatStepText(base: string, choices?: FunnelChoice[]): string {
   if (!choices || choices.length === 0) return base
@@ -125,6 +130,43 @@ async function updateFunnelState(
   )
 }
 
+function clearInMemoryExpiry(funnelId: string): void {
+  const timer = expiryTimers.get(funnelId)
+  if (!timer) return
+  clearTimeout(timer)
+  expiryTimers.delete(funnelId)
+}
+
+async function expireActiveFunnelByTimer(funnelId: string): Promise<void> {
+  const pool = getPool()
+  const { rows } = await pool.query<Pick<FunnelRow, 'platform_user_id' | 'current_step_index'>>(
+    `UPDATE proactive_funnels
+     SET status = 'EXPIRED',
+         updated_at = NOW(),
+         last_event_at = NOW()
+     WHERE id = $1
+       AND status = 'ACTIVE'
+     RETURNING platform_user_id, current_step_index`,
+    [funnelId],
+  )
+  clearInMemoryExpiry(funnelId)
+  if (rows.length === 0) return
+  await safeRecordEvent(funnelId, rows[0].platform_user_id, 'funnel_expired', rows[0].current_step_index, {
+    source: 'in_memory_timer',
+  })
+}
+
+function scheduleInMemoryExpiry(funnelId: string): void {
+  clearInMemoryExpiry(funnelId)
+  const timer = setTimeout(() => {
+    expireActiveFunnelByTimer(funnelId).catch(err => {
+      console.warn('[IntentFunnel] In-memory expiry timer failed:', (err as Error).message)
+    })
+  }, IN_MEMORY_IDLE_TIMEOUT_MS)
+  if (typeof timer.unref === 'function') timer.unref()
+  expiryTimers.set(funnelId, timer)
+}
+
 function stepWithCallbackAction(funnel: FunnelDefinition, stepAction: string): string {
   return `funnel:${funnel.key}:${stepAction}`
 }
@@ -189,6 +231,7 @@ export async function tryStartIntentDrivenFunnel(
     return { started: false, reason: 'failed_to_send_funnel_message' }
   }
 
+  scheduleInMemoryExpiry(instance.id)
   await safeRecordEvent(instance.id, platformUserId, 'step_sent', 0, { funnelKey: selection.funnel.key })
   return {
     started: true,
@@ -225,6 +268,7 @@ export async function handleFunnelReply(
 
   const decision = evaluateReply(step, message)
   if (decision.type === 'abandon') {
+    clearInMemoryExpiry(active.id)
     await updateFunnelState(active.id, 'ABANDONED', active.currentStepIndex)
     await safeRecordEvent(active.id, platformUserId, 'funnel_abandoned', active.currentStepIndex, { reason: decision.reason })
     return {
@@ -234,6 +278,7 @@ export async function handleFunnelReply(
   }
 
   if (decision.type === 'pass_through') {
+    clearInMemoryExpiry(active.id)
     await updateFunnelState(active.id, 'COMPLETED', active.currentStepIndex)
     await safeRecordEvent(active.id, platformUserId, 'handoff_main_pipeline', active.currentStepIndex, { reason: decision.reason })
     await safeRecordEvent(active.id, platformUserId, 'funnel_completed', active.currentStepIndex, { reason: 'handoff' })
@@ -243,12 +288,14 @@ export async function handleFunnelReply(
   if (decision.type === 'advance') {
     const nextStep = funnel.steps[decision.nextStepIndex]
     if (!nextStep) {
+      clearInMemoryExpiry(active.id)
       await updateFunnelState(active.id, 'COMPLETED', active.currentStepIndex)
       await safeRecordEvent(active.id, platformUserId, 'funnel_completed', active.currentStepIndex, { reason: 'terminal' })
       return { handled: true, responseText: 'Done. Flow completed.' }
     }
 
     await updateFunnelState(active.id, 'ACTIVE', decision.nextStepIndex)
+    scheduleInMemoryExpiry(active.id)
     await safeRecordEvent(active.id, platformUserId, 'step_advanced', decision.nextStepIndex, { reason: decision.reason })
     await safeRecordEvent(active.id, platformUserId, 'step_sent', decision.nextStepIndex)
 
@@ -288,12 +335,14 @@ export async function handleFunnelCallback(
   const decision = evaluateCallback(step, parsed.action)
 
   if (decision.type === 'abandon') {
+    clearInMemoryExpiry(active.id)
     await updateFunnelState(active.id, 'ABANDONED', active.currentStepIndex)
     await safeRecordEvent(active.id, platformUserId, 'funnel_abandoned', active.currentStepIndex, { reason: decision.reason })
     return { text: 'All good, I paused this flow.' }
   }
 
   if (decision.type === 'pass_through') {
+    clearInMemoryExpiry(active.id)
     await updateFunnelState(active.id, 'COMPLETED', active.currentStepIndex)
     await safeRecordEvent(active.id, platformUserId, 'handoff_main_pipeline', active.currentStepIndex, { reason: decision.reason })
     await safeRecordEvent(active.id, platformUserId, 'funnel_completed', active.currentStepIndex, { reason: 'callback_handoff' })
@@ -303,12 +352,14 @@ export async function handleFunnelCallback(
   if (decision.type === 'advance') {
     const nextStep = funnel.steps[decision.nextStepIndex]
     if (!nextStep) {
+      clearInMemoryExpiry(active.id)
       await updateFunnelState(active.id, 'COMPLETED', active.currentStepIndex)
       await safeRecordEvent(active.id, platformUserId, 'funnel_completed', active.currentStepIndex, { reason: 'terminal' })
       return { text: 'Done. Flow completed.' }
     }
 
     await updateFunnelState(active.id, 'ACTIVE', decision.nextStepIndex)
+    scheduleInMemoryExpiry(active.id)
     await safeRecordEvent(active.id, platformUserId, 'step_advanced', decision.nextStepIndex, { reason: decision.reason })
     await safeRecordEvent(active.id, platformUserId, 'step_sent', decision.nextStepIndex)
     return { text: formatStepText(nextStep.text, nextStep.choices) }
@@ -331,6 +382,7 @@ export async function expireStaleIntentFunnels(maxIdleMinutes = 45): Promise<num
   )
 
   for (const row of rows) {
+    clearInMemoryExpiry(row.id)
     await safeRecordEvent(row.id, row.platform_user_id, 'funnel_expired', row.current_step_index)
   }
   return rows.length

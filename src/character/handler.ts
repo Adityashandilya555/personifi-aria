@@ -276,7 +276,7 @@ export async function handleMessage(
         return { handled: false as const }
       })
       if (funnelReply.handled) {
-        return { text: funnelReply.responseText ?? 'Noted. I paused that flow for now.' }
+        return { text: funnelReply.responseText ?? 'Got it da, I will park that flow for now 👍 Tell me what you want next.' }
       }
     }
 

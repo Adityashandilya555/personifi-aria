@@ -284,13 +284,9 @@ async function runProactiveForUser(userId: string, chatId: string): Promise<void
     // If no funnel is selected/eligible, we continue to the existing pipeline untouched.
     try {
         const funnelStart = await tryStartIntentDrivenFunnel(userId, chatId)
-        if (funnelStart.started && funnelStart.category && funnelStart.hashtag) {
+        if (funnelStart.started) {
             console.log(`[Proactive] Funnel started for ${userId}: ${funnelStart.funnelKey} (${funnelStart.reason})`)
             await updateStateAfterSend(state, userId, funnelStart.category, funnelStart.hashtag)
-            return
-        }
-        if (funnelStart.started) {
-            console.log(`[Proactive] Funnel started for ${userId}: ${funnelStart.funnelKey}`)
             return
         }
     } catch (err: any) {

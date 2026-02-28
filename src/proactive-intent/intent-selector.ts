@@ -11,6 +11,11 @@ interface PulseRow {
   current_state: PulseState
 }
 
+interface SessionSnapshotRow {
+  message_count: number
+  last_active: Date
+}
+
 interface PreferenceRow {
   category: string
   value: string
@@ -34,6 +39,21 @@ export interface SelectedFunnel {
 function parseDate(value: string): Date | null {
   const parsed = new Date(value)
   return Number.isNaN(parsed.getTime()) ? null : parsed
+}
+
+function inferPulseFromRecentSession(row: SessionSnapshotRow | undefined): PulseState {
+  if (!row) return 'PASSIVE'
+  const now = Date.now()
+  const lastActiveAt = new Date(row.last_active).getTime()
+  if (!Number.isFinite(lastActiveAt)) return 'PASSIVE'
+
+  const minutesAgo = (now - lastActiveAt) / 60_000
+  const messageCount = Number(row.message_count) || 0
+
+  if (minutesAgo <= 360 && messageCount >= 18) return 'PROACTIVE'
+  if (minutesAgo <= 1440 && messageCount >= 8) return 'ENGAGED'
+  if (minutesAgo <= 1440 && messageCount >= 4) return 'CURIOUS'
+  return 'PASSIVE'
 }
 
 export async function loadIntentContext(
@@ -66,8 +86,22 @@ export async function loadIntentContext(
       pulseState = pulseResult.rows[0].current_state ?? 'PASSIVE'
     }
   } catch (err) {
-    // pulse table may not exist in environments where issue #60 is not deployed yet
-    console.warn('[IntentSelector] Pulse state lookup failed; defaulting to PASSIVE:', (err as Error).message)
+    // If Pulse is not available yet, infer a conservative engagement state from
+    // recent session activity so funneling can still function in degraded mode.
+    const sessionSnapshot = await pool.query<SessionSnapshotRow>(
+      `SELECT jsonb_array_length(messages) AS message_count, last_active
+       FROM sessions
+       WHERE user_id = $1
+       ORDER BY last_active DESC
+       LIMIT 1`,
+      [internalUserId],
+    ).catch(() => ({ rows: [] as SessionSnapshotRow[] }))
+
+    pulseState = inferPulseFromRecentSession(sessionSnapshot.rows[0])
+    console.warn(
+      `[IntentSelector] Pulse state lookup failed; using session-based fallback (${pulseState}):`,
+      (err as Error).message,
+    )
   }
 
   const [preferencesResult, goalsResult, recentResult] = await Promise.all([
@@ -155,4 +189,3 @@ export function selectFunnelForUser(context: IntentContext): SelectedFunnel | nu
   if (best.score < 12) return null
   return best
 }
-

@@ -65,13 +65,18 @@ export interface FunnelInstance {
   updatedAt: string
 }
 
-export interface FunnelStartResult {
-  started: boolean
-  reason: string
-  funnelKey?: string
-  category?: ContentCategory
-  hashtag?: string
-}
+export type FunnelStartResult =
+  | {
+      started: false
+      reason: string
+    }
+  | {
+      started: true
+      reason: string
+      funnelKey: string
+      category: ContentCategory
+      hashtag: string
+    }
 
 export interface FunnelReplyResult {
   handled: boolean
