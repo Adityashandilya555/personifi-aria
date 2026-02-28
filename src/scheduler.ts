@@ -1,6 +1,7 @@
 /**
  * Scheduler - Proactive tasks and heartbeat
- * Handles: inactivity messages, daily tips, scheduled scraping
+ * Handles: inactivity messages, daily tips, scheduled scraping,
+ *          memory write queue, session summarization
  */
 
 // @ts-ignore - node-cron has no types
@@ -13,6 +14,7 @@ import { scrapeTravelDeals } from './browser.js'
 import { compareFoodPrices } from './tools/food-compare.js'
 import { compareGroceryPrices } from './tools/grocery-compare.js'
 import { refreshAllMCPTokens } from './tools/mcp-client.js'
+import { initArchivist, processMemoryWriteQueue, checkAndSummarizeSessions } from './archivist/index.js'
 
 let pool: Pool | null = null
 
@@ -22,6 +24,30 @@ export function initScheduler(databaseUrl: string, sendMessage: SendMessageFn) {
     connectionString: cleanUrl,
     ssl: { rejectUnauthorized: false },
   })
+
+  // ── Archivist bootstrap ──────────────────────────────────────────────────
+  initArchivist()
+
+  // Memory write queue worker — every 30 seconds
+  const queueIntervalSec = parseInt(process.env.ARCHIVIST_QUEUE_WORKER_INTERVAL_SEC ?? '30', 10)
+  cron.schedule(`*/${queueIntervalSec} * * * * *`, async () => {
+    try {
+      await processMemoryWriteQueue(20)
+    } catch (err) {
+      console.error('[SCHEDULER] Memory queue worker failed:', err)
+    }
+  })
+
+  // Session summarization — every 5 minutes
+  cron.schedule('*/5 * * * *', async () => {
+    try {
+      await checkAndSummarizeSessions()
+    } catch (err) {
+      console.error('[SCHEDULER] Session summarization failed:', err)
+    }
+  })
+
+  // ── Existing crons ───────────────────────────────────────────────────────
 
   // Check for inactive users every 15 minutes
   cron.schedule('*/15 * * * *', () => checkInactiveUsers(sendMessage))
@@ -33,11 +59,9 @@ export function initScheduler(databaseUrl: string, sendMessage: SendMessageFn) {
   cron.schedule('0 10 * * 0', () => scrapeAndNotifyDeals(sendMessage))
 
   // Food + Grocery cache pre-warming every 45 minutes
-  // Warms popular queries so users get instant responses instead of 8-15s scrape times
   cron.schedule('*/45 * * * *', () => warmFoodGroceryCache())
 
   // Proactive MCP token refresh every 6 hours
-  // Keeps Swiggy + Zomato tokens alive 24/7 without waiting for a 401
   cron.schedule('0 */6 * * *', async () => {
     try {
       await refreshAllMCPTokens()
@@ -251,7 +275,7 @@ async function checkPriceAlerts(sendMessage: SendMessageFn) {
 
         // Match "USD 123.45" (Amadeus) or "$123" (SerpAPI fallback)
         const priceMatch = formatted.match(/([A-Z]{3})\s+(\d+(?:\.\d{1,2})?)/)
-            || formatted.match(/\$(\d+(?:\.\d{1,2})?)/)
+          || formatted.match(/\$(\d+(?:\.\d{1,2})?)/)
         if (priceMatch) {
           const currentPrice = parseFloat(priceMatch[2] ?? priceMatch[1])
           const currency = priceMatch[2] ? priceMatch[1] : 'USD'

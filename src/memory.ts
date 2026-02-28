@@ -26,6 +26,11 @@ import type {
   ConfidenceScoreParams,
   ConfidenceScoreResult,
 } from './types/handler.js'
+import {
+  getCachedPreferences,
+  cachePreferences,
+  invalidatePreferences,
+} from './archivist/redis-cache.js'
 
 // Initialize Groq client for preference extraction
 let groq: Groq | null = null
@@ -239,7 +244,6 @@ export async function savePreferences(
     await client.query('BEGIN')
 
     for (const pref of preferences) {
-      // Get existing preference if any
       const existing = await client.query<{
         value: string
         confidence: number
@@ -253,22 +257,20 @@ export async function savePreferences(
 
       const existingPref = existing.rows[0]
 
-      // Calculate confidence
       const scoreResult = scoreConfidence({
         value: pref.value,
         message: sourceMessage,
         existingPreference: existingPref
           ? {
-              value: existingPref.value,
-              confidence: Number(existingPref.confidence),
-              mentionCount: existingPref.mention_count,
-            }
+            value: existingPref.value,
+            confidence: Number(existingPref.confidence),
+            mentionCount: existingPref.mention_count,
+          }
           : undefined,
       })
 
       const confidence = pref.confidence || scoreResult.confidence
 
-      // UPSERT preference
       await client.query(
         `INSERT INTO user_preferences 
          (user_id, category, value, confidence, mention_count, source_message, last_mentioned)
@@ -290,6 +292,9 @@ export async function savePreferences(
     }
 
     await client.query('COMMIT')
+
+    // Invalidate Redis preference cache after successful write
+    await invalidatePreferences(userId)
   } catch (error) {
     await client.query('ROLLBACK')
     console.error('[MEMORY] Failed to save preferences:', error)
@@ -308,6 +313,10 @@ export async function loadPreferences(
   userId: string
 ): Promise<Partial<PreferencesMap>> {
   try {
+    // Check Redis cache first
+    const cached = await getCachedPreferences(userId)
+    if (cached) return cached as Partial<PreferencesMap>
+
     const result = await pool.query<{
       category: PreferenceCategory
       value: string
@@ -323,6 +332,9 @@ export async function loadPreferences(
     for (const row of result.rows) {
       preferences[row.category as PreferenceCategory] = row.value
     }
+
+    // Populate Redis cache for next request
+    await cachePreferences(userId, preferences as Record<string, string>)
 
     return preferences
   } catch (error) {

@@ -6,12 +6,13 @@
  *
  * Supports:
  * - Single and batch embedding
- * - LRU caching to avoid re-embedding identical strings
+ * - Redis-backed embedding cache (TTL 1h) with in-memory LRU fallback
  * - Queue-based batch processing via cron job to reduce rate limit pressure
  * - Graceful degradation: if both APIs fail, logs error and returns null
  */
 
 import { getPool } from './character/session-store.js'
+import { cacheEmbedding, getCachedEmbedding } from './archivist/redis-cache.js'
 
 // ─── Configuration ──────────────────────────────────────────────────────────
 
@@ -25,30 +26,39 @@ const HF_API_URL = `https://api-inference.huggingface.co/pipeline/feature-extrac
 
 export const EMBEDDING_DIMS = parseInt(process.env.EMBEDDING_DIMS || '768', 10)
 
-// ─── LRU Cache ──────────────────────────────────────────────────────────────
+// ─── In-Memory LRU Cache (fallback when Redis unavailable) ──────────────────
 
 const CACHE_MAX_SIZE = 500
 const embeddingCache = new Map<string, number[]>()
 
-function cacheGet(text: string): number[] | undefined {
+function lruGet(text: string): number[] | undefined {
     const val = embeddingCache.get(text)
     if (val) {
-        // Move to end (most recently used)
         embeddingCache.delete(text)
         embeddingCache.set(text, val)
     }
     return val
 }
 
-function cacheSet(text: string, vector: number[]): void {
+function lruSet(text: string, vector: number[]): void {
     if (embeddingCache.size >= CACHE_MAX_SIZE) {
-        // Delete oldest entry
         const firstKey = embeddingCache.keys().next().value
-        if (firstKey !== undefined) {
-            embeddingCache.delete(firstKey)
-        }
+        if (firstKey !== undefined) embeddingCache.delete(firstKey)
     }
     embeddingCache.set(text, vector)
+}
+
+/** Check Redis first, fall back to in-memory LRU. */
+async function cacheGet(text: string): Promise<number[] | null> {
+    const redisCached = await getCachedEmbedding(text)
+    if (redisCached) return redisCached
+    return lruGet(text) ?? null
+}
+
+/** Write to both Redis and in-memory LRU. */
+async function cacheSet(text: string, vector: number[]): Promise<void> {
+    lruSet(text, vector)
+    await cacheEmbedding(text, vector)
 }
 
 // ─── Jina AI Embedding ──────────────────────────────────────────────────────
@@ -135,12 +145,12 @@ export async function embed(
     text: string,
     task: 'retrieval.passage' | 'retrieval.query' = 'retrieval.passage'
 ): Promise<number[] | null> {
-    const cached = cacheGet(text)
+    const cached = await cacheGet(text)
     if (cached) return cached
 
     const result = await embedBatch([text], task)
     if (result && result[0]) {
-        cacheSet(text, result[0])
+        await cacheSet(text, result[0])
         return result[0]
     }
     return null
@@ -156,13 +166,13 @@ export async function embedBatch(
 ): Promise<number[][] | null> {
     if (texts.length === 0) return []
 
-    // Check cache for all texts
+    // Check cache (Redis + LRU) for all texts
     const uncachedIndices: number[] = []
     const uncachedTexts: string[] = []
     const results: (number[] | null)[] = new Array(texts.length).fill(null)
 
     for (let i = 0; i < texts.length; i++) {
-        const cached = cacheGet(texts[i])
+        const cached = await cacheGet(texts[i])
         if (cached) {
             results[i] = cached
         } else {
@@ -189,11 +199,11 @@ export async function embedBatch(
         return null
     }
 
-    // Fill results and cache
+    // Fill results and cache (Redis + LRU)
     for (let i = 0; i < uncachedIndices.length; i++) {
         const idx = uncachedIndices[i]
         results[idx] = embeddings[i]
-        cacheSet(uncachedTexts[i], embeddings[i])
+        await cacheSet(uncachedTexts[i], embeddings[i])
     }
 
     return results as number[][]

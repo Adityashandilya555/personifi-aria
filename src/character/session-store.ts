@@ -1,9 +1,15 @@
 /**
  * Session Handler for Aria Travel Guide
- * Manages multi-user sessions with PostgreSQL storage
+ * Manages multi-user sessions with PostgreSQL storage + Redis cache
  */
 
 import { Pool, PoolClient } from 'pg'
+import {
+  getCachedSession,
+  cacheSession,
+  invalidateSession,
+  type CachedSession,
+} from '../archivist/redis-cache.js'
 
 // Types
 export interface User {
@@ -115,9 +121,20 @@ export async function updateUserProfile(
  * Get or create session for a user
  */
 export async function getOrCreateSession(userId: string): Promise<Session> {
+  // Check Redis cache first (avoids Postgres round-trip on most requests)
+  const cached = await getCachedSession(userId)
+  if (cached) {
+    return {
+      sessionId: cached.sessionId,
+      userId: cached.userId,
+      messages: cached.messages as Message[],
+      lastActive: new Date(cached.lastActive),
+    }
+  }
+
   const db = getPool()
 
-  // Get most recent session
+  // Get most recent session from DB
   const existing = await db.query<Session>(
     `SELECT session_id as "sessionId", user_id as "userId", 
             messages, last_active as "lastActive"
@@ -129,7 +146,17 @@ export async function getOrCreateSession(userId: string): Promise<Session> {
   )
 
   if (existing.rows.length > 0) {
-    return existing.rows[0]
+    const session = existing.rows[0]
+    // Warm the cache for next request
+    await cacheSession(userId, {
+      sessionId: session.sessionId,
+      userId: session.userId,
+      messages: session.messages as any[],
+      lastActive: session.lastActive instanceof Date
+        ? session.lastActive.toISOString()
+        : String(session.lastActive),
+    })
+    return session
   }
 
   // Create new session
@@ -141,7 +168,16 @@ export async function getOrCreateSession(userId: string): Promise<Session> {
     [userId]
   )
 
-  return result.rows[0]
+  const newSession = result.rows[0]
+  await cacheSession(userId, {
+    sessionId: newSession.sessionId,
+    userId: newSession.userId,
+    messages: [],
+    lastActive: newSession.lastActive instanceof Date
+      ? newSession.lastActive.toISOString()
+      : String(newSession.lastActive),
+  })
+  return newSession
 }
 
 /**
@@ -150,7 +186,8 @@ export async function getOrCreateSession(userId: string): Promise<Session> {
 export async function appendMessages(
   sessionId: string,
   userMessage: string,
-  assistantMessage: string
+  assistantMessage: string,
+  userId?: string
 ): Promise<void> {
   const db = getPool()
 
@@ -166,6 +203,11 @@ export async function appendMessages(
      WHERE session_id = $1`,
     [sessionId, JSON.stringify(newMessages)]
   )
+
+  // Invalidate Redis cache so next read fetches fresh data from DB
+  if (userId) {
+    await invalidateSession(userId)
+  }
 }
 
 /**
