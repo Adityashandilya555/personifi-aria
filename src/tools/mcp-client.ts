@@ -54,7 +54,7 @@ export async function initMCPTokenStore(databaseUrl: string): Promise<void> {
                          VALUES ($1, $2, NOW())
                          ON CONFLICT (key) DO NOTHING`,
                         [key, process.env[key]]
-                    ).catch(err => console.warn(`[MCP] Could not seed ${key}:`, err.message))
+                    ).catch((err: unknown) => console.warn(`[MCP] Could not seed ${key}:`, (err as Error).message))
                 }
             }
             console.log('[MCP] Seeded tokens from env vars into DB')
@@ -143,7 +143,7 @@ function writeEnvKey(key: string, value: string): void {
              VALUES ($1, $2, NOW())
              ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
             [key, value],
-        ).catch(err => console.warn(`[MCP] Could not persist ${key} to DB:`, err.message))
+        ).catch((err: unknown) => console.warn(`[MCP] Could not persist ${key} to DB:`, (err as Error).message))
         return
     }
 

@@ -170,7 +170,7 @@ function saveStateToDB(state: UserProactiveState): void {
             state.lastHashtags,
             '{}', // cooling_categories stored separately in contentIntelligence
         ]
-    ).catch(err => console.warn('[Proactive] Failed to persist state:', err?.message))
+    ).catch((err: unknown) => console.warn('[Proactive] Failed to persist state:', (err as Error)?.message))
 }
 
 async function getOrCreateState(userId: string, chatId: string): Promise<UserProactiveState> {
@@ -363,7 +363,7 @@ async function runProactiveForUser(userId: string, chatId: string): Promise<void
         const sent = await sendProactiveContent(chatId, msg)
         if (sent) {
             await updateStateAfterSend(state, userId, category, hashtag)
-            sendEngagementHook(chatId, hookTypeForCategory(category)).catch(() => {})
+            sendEngagementHook(chatId, hookTypeForCategory(category)).catch(() => { })
         }
         return
     }
@@ -448,7 +448,7 @@ async function runProactiveForUser(userId: string, chatId: string): Promise<void
                 thumbnailUrl: companion.thumbnailUrl,
                 type: companion.type,
             }, companionCaption)
-            markMediaSent(companion.id).catch(() => {})
+            markMediaSent(companion.id).catch(() => { })
             await sleep(1500) // brief pause between companion and main reel
         }
     }
@@ -469,8 +469,8 @@ async function runProactiveForUser(userId: string, chatId: string): Promise<void
 
     if (sent) {
         console.log(`[Proactive] Delivered ${bestReel.type} to ${userId}`)
-        markMediaSent(bestReel.id).catch(() => {})
-        sendEngagementHook(chatId, hookTypeForCategory(category)).catch(() => {})
+        markMediaSent(bestReel.id).catch(() => { })
+        sendEngagementHook(chatId, hookTypeForCategory(category)).catch(() => { })
     } else {
         console.warn(`[Proactive] Media pipeline failed, sending caption as text`)
         await sendProactiveContent(chatId, caption)
@@ -500,7 +500,7 @@ async function updateStateAfterSend(
          FROM users u
          WHERE u.channel = 'telegram' AND u.channel_user_id = $1`,
         [userId, category, hashtag]
-    ).catch(() => {})
+    ).catch(() => { })
 }
 
 // ─── Main: Run for All Active Users ─────────────────────────────────────────
@@ -586,7 +586,7 @@ export async function blastReelsToAllUsers(hashtag = 'bangalorefood'): Promise<v
             console.log(`[Proactive] Blast → ${userId} [${reel.author}]: sent=${sent}`)
             if (sent) {
                 markReelSent(userId, reel.id)
-                markMediaSent(reel.id).catch(() => {})
+                markMediaSent(reel.id).catch(() => { })
             }
         } catch (err: any) {
             console.error(`[Proactive] Blast failed for ${userId}:`, err?.message)
