@@ -12,6 +12,7 @@
  */
 
 import Groq from 'groq-sdk'
+import { withGroqRetry } from '../utils/retry.js'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -88,7 +89,10 @@ function makeGroqProvider(model: string, label: string): LLMProvider {
                 params.tools = opts.tools
                 params.tool_choice = opts.toolChoice ?? 'auto'
             }
-            const completion = await client.chat.completions.create(params)
+            const completion = await withGroqRetry(
+                () => client.chat.completions.create(params),
+                `groq-${model.includes('70b') || model.includes('70B') ? '70b' : '8b'}`,
+            )
             return completion.choices[0]?.message?.content || ''
         },
     }

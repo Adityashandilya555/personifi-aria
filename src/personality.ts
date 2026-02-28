@@ -33,6 +33,7 @@ import { formatGraphForPrompt } from './graph-memory.js'
 import { selectResponseTone } from './cognitive.js'
 import { computeMoodWeights, getMoodInstruction } from './character/mood-engine.js'
 import { getBangaloreContext } from './utils/bangalore-context.js'
+import { selectStrategy, formatStrategyForPrompt } from './influence-engine.js'
 
 // ─── SOUL.md Cache ──────────────────────────────────────────────────────────
 
@@ -134,13 +135,18 @@ export interface ComposeOptions {
     /** True when a tool ran this turn — genuine mode up */
     toolInvolved?: boolean
 
-    // ─── Pulse engagement state (Layer 7d) ───
+    // ─── Pulse engagement state (Layer 7d — Influence Engine) ───
     /**
      * Current Pulse engagement state for this user.
-     * Shifts Aria's assertiveness: PASSIVE → light, PROACTIVE → lean in.
+     * Feeds the Influence Strategy Engine which selects a context-aware directive.
      * Fetched from pulse_engagement_scores table; defaults to 'PASSIVE' if unavailable.
      */
     pulseEngagementState?: 'PASSIVE' | 'CURIOUS' | 'ENGAGED' | 'PROACTIVE'
+    /**
+     * Tool that ran this turn — used by the Influence Engine to pick the right strategy.
+     * e.g. 'compare_food_prices' → food-specific PROACTIVE directive.
+     */
+    activeToolName?: string
 
     // ─── Tool results from DEV 1's router ───
     /** Tool results (if any) */
@@ -227,12 +233,23 @@ export function composeSystemPrompt(opts: ComposeOptions): string {
         sections.push(`## City Context\n${bangaloreCtx}`)
     }
 
-    // ─── Layer 7d: Pulse Engagement Directive ────────────────────
-    // Shifts Aria's assertiveness based on the user's real-time engagement score.
-    // Composes ~30-50 tokens — negligible cost, high signal for the 70B model.
-    const pulseDirective = buildPulseDirective(opts.pulseEngagementState)
-    if (pulseDirective) {
-        sections.push(pulseDirective)
+    // ─── Layer 7d: Influence Strategy (Engagement State → Specific Behavior) ─
+    // Context-aware replacement for generic pulse directive.
+    // Influence Engine picks the exact directive based on state + tool + time + preferences.
+    const istHour = (new Date().getUTCHours() + 5) % 24
+    const isWeekend = [0, 6].includes(new Date().getDay())
+    const influenceStrategy = selectStrategy(opts.pulseEngagementState, {
+        toolName: opts.activeToolName,
+        hasToolResult: !!opts.toolResults,
+        toolInvolved: !!opts.toolInvolved,
+        istHour,
+        isWeekend,
+        hasPreferences: !!(opts.preferences && Object.keys(opts.preferences).length > 0),
+        userSignal: opts.userSignal,
+    })
+    const influenceSection = formatStrategyForPrompt(opts.pulseEngagementState, influenceStrategy)
+    if (influenceSection) {
+        sections.push(influenceSection)
     }
 
     // ─── Layer 8: Tool Results ──────────────────────────────────
@@ -359,50 +376,6 @@ function formatToolResults(toolResults: string): string {
     return `## Real-Time Data (from tools)
 Use this data for a specific, accurate answer. Do NOT make up numbers, prices, dates, or availability. If the data doesn't answer the user's question, say so honestly.
 ${toolResults}`
-}
-
-/**
- * Build a Pulse engagement directive for the 70B personality model.
- *
- * This shifts Aria's assertiveness level based on the user's real-time engagement score:
- *   PASSIVE    → light presence, no pressure, just be there
- *   CURIOUS    → match energy, deepen the thread, one good follow-up
- *   ENGAGED    → build momentum, lean toward action, surface the relevant offer
- *   PROACTIVE  → full lean-in, name a specific plan, commit to the next step
- *
- * Returns null for missing/default state to avoid adding tokens unnecessarily.
- *
- * @adaptedfrom Aria-Subagent-Architecture.md §4 Pulse — "prompt changes based on state"
- */
-function buildPulseDirective(state?: 'PASSIVE' | 'CURIOUS' | 'ENGAGED' | 'PROACTIVE'): string | null {
-    switch (state) {
-        case 'PROACTIVE':
-            return `## Engagement Mode: PROACTIVE
-The user is at peak engagement right now — they are ready to act. Be assertive in a natural, friend-like way:
-- Name a specific plan, not a vague suggestion ("Rapido isn't surging, good time to go" not "you could consider going")
-- Surface the most relevant offer, price, or deal from any data you have
-- Invite a decision: "want me to compare options?" or "should I check if it's open?"
-- Keep the Aria voice — this is a friend who happens to have perfect information, not a salesperson`
-
-        case 'ENGAGED':
-            return `## Engagement Mode: ENGAGED
-The user is in the flow — keep the momentum going. Build on what they care about:
-- Go one layer deeper than their question (if they asked about food, mention the deal; if about rides, mention wait time)
-- Match their energy — if they're excited, be excited; if they're curious, be curious
-- Move toward a concrete next step without rushing them`
-
-        case 'CURIOUS':
-            return `## Engagement Mode: CURIOUS
-The user is warming up — they're interested but not fully committed yet. Use this turn to deepen the thread:
-- Ask one specific, interesting follow-up (not generic "tell me more")
-- Share one relevant fact that naturally extends what they mentioned
-- Don't push for action yet — let the conversation develop`
-
-        case 'PASSIVE':
-        default:
-            // No directive for PASSIVE — default SOUL.md personality handles it perfectly
-            return null
-    }
 }
 
 // ─── Fallback ───────────────────────────────────────────────────────────────

@@ -12,6 +12,7 @@
  */
 
 import Groq from 'groq-sdk'
+import { withGroqRetry } from '../utils/retry.js'
 
 export type DataQuality = 'excellent' | 'good' | 'partial' | 'poor'
 
@@ -100,13 +101,16 @@ Rules:
 
     try {
         const response = await Promise.race([
-            getGroq().chat.completions.create({
-                model: REFLECTION_MODEL,
-                messages: [{ role: 'user', content: prompt }],
-                temperature: 0.1,
-                max_tokens: 300,
-                response_format: { type: 'json_object' },
-            }),
+            withGroqRetry(
+                () => getGroq().chat.completions.create({
+                    model: REFLECTION_MODEL,
+                    messages: [{ role: 'user', content: prompt }],
+                    temperature: 0.1,
+                    max_tokens: 300,
+                    response_format: { type: 'json_object' },
+                }),
+                'groq-8b-reflect',
+            ),
             new Promise<never>((_, reject) =>
                 setTimeout(() => reject(new Error('reflection timeout')), REFLECTION_TIMEOUT_MS)
             ),

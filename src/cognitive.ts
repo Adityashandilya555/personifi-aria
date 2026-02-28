@@ -26,6 +26,7 @@ import { ClassifierResultSchema, safeParseLLM } from './types/schemas.js'
 import { getPool } from './character/session-store.js'
 import { getGroqTools } from './tools/index.js'
 import { buildSceneHint } from './character/scene-manager.js'
+import { withGroqRetry } from './utils/retry.js'
 
 // ─── Type Coercion Helper ───────────────────────────────────────────────────
 // Groq 8B sometimes emits numbers as strings (e.g. "amount": "100").
@@ -139,24 +140,27 @@ export async function classifyMessage(
     const sceneHint = userId ? buildSceneHint(userId) : ''
 
     try {
-        const response = await client.chat.completions.create({
-            model: COGNITIVE_MODEL,
-            messages: [
-                { role: 'system', content: buildClassifierPrompt() },
-                {
-                    role: 'user',
-                    content: [
-                        historyStr ? `Recent history:\n${historyStr}` : '',
-                        sceneHint ? `Context: ${sceneHint}` : '',
-                        `User message: "${userMessage}"`,
-                    ].filter(Boolean).join('\n\n'),
-                },
-            ],
-            tools: getGroqTools(),
-            tool_choice: 'auto',
-            temperature: 0.1,
-            max_tokens: 250,
-        })
+        const response = await withGroqRetry(
+            () => client.chat.completions.create({
+                model: COGNITIVE_MODEL,
+                messages: [
+                    { role: 'system', content: buildClassifierPrompt() },
+                    {
+                        role: 'user',
+                        content: [
+                            historyStr ? `Recent history:\n${historyStr}` : '',
+                            sceneHint ? `Context: ${sceneHint}` : '',
+                            `User message: "${userMessage}"`,
+                        ].filter(Boolean).join('\n\n'),
+                    },
+                ],
+                tools: getGroqTools(),
+                tool_choice: 'auto',
+                temperature: 0.1,
+                max_tokens: 250,
+            }),
+            'groq-8b-classify',
+        )
 
         const choice = response.choices[0]
         const message = choice?.message

@@ -472,6 +472,7 @@ export async function handleMessage(
         userSignal: classification.userSignal,
         toolInvolved: !!routeDecision?.toolName,
         pulseEngagementState,
+        activeToolName: routeDecision?.toolName ?? undefined,
       })
     } catch (err) {
       console.error('[handler] Personality composition failed, using static SOUL.md', safeError(err))
@@ -525,7 +526,7 @@ export async function handleMessage(
             memories, graphContext, cognitiveState, preferences, activeGoal,
             isFirstMessage, isSimpleMessage: isSimple, toolResults: toolResultStr,
             userSignal: classification.userSignal, toolInvolved: !!routeDecision?.toolName,
-            pulseEngagementState,
+            pulseEngagementState, activeToolName: routeDecision?.toolName ?? undefined,
           })
         } catch { /* keep existing composed prompt */ }
         messages = buildMessages(systemPromptComposed, session.messages, userMessage, historyLimit)
