@@ -603,11 +603,20 @@ export async function handleMessage(
       content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
     }))
 
-    // Run LLM + inline media selection concurrently — media never blocks the response
-    const [{ text: tier2Response, provider: tier2Provider }, inlineMediaItem] = await Promise.all([
-      generateResponse(tier2Messages, { maxTokens: MAX_TOKENS, temperature: TEMPERATURE }),
-      selectInlineMedia(user.userId, userMessage, mediaHint, pulseEngagementState),
+    // Run LLM immediately — media selection must never block the text response
+    const { text: tier2Response, provider: tier2Provider } = await generateResponse(
+      tier2Messages,
+      { maxTokens: MAX_TOKENS, temperature: TEMPERATURE },
+    )
+
+    // Inline media races against an 800ms timeout — degrades to null if slow or errored
+    const MEDIA_TIMEOUT_MS = 800
+    const inlineMediaItem = await Promise.race([
+      selectInlineMedia(user.userId, userMessage, mediaHint, pulseEngagementState)
+        .catch(() => null),
+      new Promise<null>(resolve => setTimeout(() => resolve(null), MEDIA_TIMEOUT_MS)),
     ])
+
     console.log(`[handler] Tier 2 response from ${tier2Provider}${inlineMediaItem ? ` | inline media: ${inlineMediaItem.type}` : ''}`)
 
     let rawResponse = tier2Response

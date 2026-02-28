@@ -298,26 +298,31 @@ export const whatsappAdapter: ChannelAdapter = {
     const item = media[0]
     const mediaType = item.type === 'video' ? 'video' : 'image'
 
-    const resp = await fetch(`https://graph.facebook.com/v18.0/${phoneId}/messages`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        messaging_product: 'whatsapp',
-        to: chatId,
-        type: mediaType,
-        [mediaType]: {
-          link: item.url,
-          caption: item.caption,
+    try {
+      const resp = await fetch(`https://graph.facebook.com/v18.0/${phoneId}/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
         },
-      }),
-    })
+        body: JSON.stringify({
+          messaging_product: 'whatsapp',
+          to: chatId,
+          type: mediaType,
+          [mediaType]: {
+            link: item.url,
+            caption: item.caption,
+          },
+        }),
+      })
 
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}))
-      console.error(`[WhatsApp] sendMedia failed:`, (err as any)?.error?.message, 'url:', item.url)
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}))
+        console.error(`[WhatsApp] sendMedia failed:`, (err as any)?.error?.message, 'url:', item.url)
+      }
+    } catch (err: any) {
+      // Network/transport error — non-fatal, text delivery continues unaffected
+      console.error(`[WhatsApp] sendMedia transport error (url: ${item.url}):`, err?.message)
     }
   },
 }

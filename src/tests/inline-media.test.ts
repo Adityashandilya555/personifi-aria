@@ -201,4 +201,26 @@ describe('selectInlineMedia', () => {
         const result = await selectInlineMedia('u1', 'street food', true)
         expect(result!.caption).not.toContain('@unknown')
     })
+
+    // Regression test: reel.type='video' but videoUrl is null → must use thumbnailUrl
+    // and must emit type='photo', not 'video' (mediaType is derived from URL presence)
+    it('regression: video reel with null videoUrl falls back to thumbnailUrl as photo', async () => {
+        const reelVideoNoUrl = {
+            ...MOCK_REEL,
+            id: 'reel_003',
+            videoUrl: null,          // No video URL available
+            thumbnailUrl: 'https://cdn.example.com/thumb-fallback.jpg',
+            type: 'video' as const,  // reel.type claims video — should NOT drive mediaType
+        }
+        fetchReelsMock.mockResolvedValue([reelVideoNoUrl])
+        pickBestReelMock.mockResolvedValue(reelVideoNoUrl)
+
+        const result = await selectInlineMedia('u1', 'best reel tonight', true)
+
+        expect(result).not.toBeNull()
+        // URL must be the thumbnail, not null
+        expect(result!.url).toBe('https://cdn.example.com/thumb-fallback.jpg')
+        // Type must be photo because videoUrl was absent — NOT video
+        expect(result!.type).toBe('photo')
+    })
 })

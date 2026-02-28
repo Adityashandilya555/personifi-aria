@@ -6,7 +6,7 @@ Aria can send reels, images, and cards as first-class response types inside user
 
 ## How It Works
 
-```
+```text
 User message
     → Classifier (8B) + Influence Strategy Engine
         → InfluenceStrategy.mediaHint = true (when applicable)
@@ -56,7 +56,7 @@ The main conversation pipeline is **never blocked or degraded** by media selecti
 
 Media is fetched via `fetchReels()` which uses this priority chain:
 
-```
+```text
 1. scraped_media DB (pre-scraped, free, instant)
 2. Instagram via RapidAPI (if DB empty)
 3. TikTok via RapidAPI (fallback)
