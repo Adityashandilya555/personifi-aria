@@ -14,6 +14,26 @@ function compactText(value: string, maxLen: number): string {
   return `${normalized.slice(0, Math.max(0, maxLen - 1)).trim()}…`
 }
 
+/**
+ * Sanitize user-sourced text before injecting into the system prompt.
+ * Strips markdown headers, instruction/role-play patterns, and control characters
+ * to prevent prompt injection via goal.goal or goal.nextAction fields.
+ */
+function sanitizeForPrompt(value: string): string {
+  return value
+    // Strip markdown heading markers
+    .replace(/^#{1,6}\s+/gm, '')
+    // Strip instruction-like patterns (ignore, forget, pretend, you are, system:, etc.)
+    .replace(/\b(ignore|forget|disregard|override|bypass)\b.*?(instructions?|rules?|above|previous|prior)/gi, '[filtered]')
+    .replace(/\b(you are|act as|pretend|role[- ]?play|system\s*:)/gi, '[filtered]')
+    // Strip code fences and HTML tags
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/<[^>]+>/g, '')
+    // Strip control characters (except newline/tab)
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+    .trim()
+}
+
 export function formatAgendaForPrompt(
   goals: AgendaGoal[] | undefined,
   opts: AgendaFormatOptions = {},
@@ -36,9 +56,9 @@ export function formatAgendaForPrompt(
   for (let i = 0; i < top.length; i += 1) {
     const goal = top[i]
     const parentSuffix = goal.parentGoalId ? ` | parent:${goal.parentGoalId}` : ''
-    const baseLine = `${i + 1}. [${goal.goalType}|P${goal.priority}] ${compactText(goal.goal, 110)}${parentSuffix}`
+    const baseLine = `${i + 1}. [${goal.goalType}|P${goal.priority}] ${compactText(sanitizeForPrompt(goal.goal), 110)}${parentSuffix}`
     const nextLine = goal.nextAction
-      ? `   next: ${compactText(goal.nextAction, 90)}`
+      ? `   next: ${compactText(sanitizeForPrompt(goal.nextAction), 90)}`
       : ''
 
     const projectedLength = usedChars + 1 + baseLine.length + (nextLine ? (1 + nextLine.length) : 0)

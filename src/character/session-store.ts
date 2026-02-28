@@ -148,7 +148,7 @@ export async function runMigrations(): Promise<void> {
       user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
       session_id UUID NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
       goal TEXT NOT NULL,
-      status VARCHAR(20) DEFAULT 'active'
+      status VARCHAR(20) NOT NULL DEFAULT 'active'
         CHECK (status IN ('active', 'completed', 'abandoned')),
       context JSONB DEFAULT '{}'::jsonb,
       created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -178,7 +178,36 @@ export async function runMigrations(): Promise<void> {
   `)
   await p.query(`ALTER TABLE conversation_goals ADD COLUMN IF NOT EXISTS next_action TEXT`)
   await p.query(`ALTER TABLE conversation_goals ADD COLUMN IF NOT EXISTS deadline TIMESTAMPTZ`)
-  await p.query(`ALTER TABLE conversation_goals ADD COLUMN IF NOT EXISTS parent_goal_id INTEGER REFERENCES conversation_goals(id) ON DELETE SET NULL`)
+  await p.query(`ALTER TABLE conversation_goals ADD COLUMN IF NOT EXISTS parent_goal_id INTEGER`)
+  // Scope-isolation: parent_goal_id must reference a goal within the same user+session
+  await p.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_goals_scope ON conversation_goals(id, user_id, session_id)`)
+  // Drop the old simple FK if it exists, then add the composite FK
+  await p.query(`
+    DO $$ BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE constraint_name = 'conversation_goals_parent_goal_id_fkey'
+          AND table_name = 'conversation_goals'
+      ) THEN
+        ALTER TABLE conversation_goals DROP CONSTRAINT conversation_goals_parent_goal_id_fkey;
+      END IF;
+    END $$
+  `)
+  await p.query(`
+    DO $$ BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE constraint_name = 'conversation_goals_parent_scope_fk'
+          AND table_name = 'conversation_goals'
+      ) THEN
+        ALTER TABLE conversation_goals
+          ADD CONSTRAINT conversation_goals_parent_scope_fk
+          FOREIGN KEY (parent_goal_id, user_id, session_id)
+          REFERENCES conversation_goals(id, user_id, session_id)
+          ON DELETE SET NULL;
+      END IF;
+    END $$
+  `)
   await p.query(`
     ALTER TABLE conversation_goals
       ADD COLUMN IF NOT EXISTS source VARCHAR(30) NOT NULL DEFAULT 'classifier'

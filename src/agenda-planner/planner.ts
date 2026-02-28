@@ -155,7 +155,16 @@ function topicFromMessage(message: string): string | null {
 }
 
 function isCancellationMessage(message: string): boolean {
-  return /\b(not now|later|leave it|leave this|skip|stop|cancel|don't|dont)\b/i.test(message)
+  const normalized = message.trim().toLowerCase()
+  // Short messages that are clearly opt-outs (≤ 5 words)
+  const wordCount = normalized.split(/\s+/).length
+  if (wordCount <= 5) {
+    if (/^(not now|no thanks|nah|cancel|stop|leave it|leave this|nope|nevermind|never mind)$/i.test(normalized)) {
+      return true
+    }
+  }
+  // Explicit multi-word cancellation phrases (safe in any sentence length)
+  return /\b(cancel (this|that|it)|stop (this|that)|leave it|not interested|i('m| am) done|drop it|forget it|never\s*mind)\b/i.test(normalized)
 }
 
 function isPriceIntentMessage(message: string, activeToolName?: string, hasToolResult?: boolean): boolean {
@@ -194,7 +203,7 @@ export class AgendaPlannerService {
   constructor(
     private readonly getDbPool: () => DbPool = getPool as unknown as () => DbPool,
     private readonly cacheTtlMs: number = CACHE_TTL_MS,
-  ) {}
+  ) { }
 
   async getStack(userId: string, sessionId: string, limit = DEFAULT_STACK_LIMIT): Promise<AgendaGoal[]> {
     const key = this.cacheKey(userId, sessionId)
@@ -301,15 +310,35 @@ export class AgendaPlannerService {
       }
 
       if (message.length > 0 && isCancellationMessage(message)) {
-        const abandoned = await this.completeAllActiveGoals(client, input.userId, input.sessionId, 'abandoned')
-        if (abandoned.length > 0) {
-          abandonedGoalIds.push(...abandoned)
-          actions.push(`abandoned_user_opt_out:${abandoned.length}`)
-          for (const goalId of abandoned) {
-            await this.appendJournal(client, input.userId, input.sessionId, goalId, 'abandoned', {
-              reason: 'user_opt_out',
-              messagePreview: message.slice(0, 120),
-            })
+        // Explicit "cancel everything" → abandon all; otherwise only the most recent goal
+        const cancelAll = /\b(cancel (everything|all)|stop (everything|all)|abandon all)\b/i.test(message)
+
+        if (cancelAll) {
+          const abandoned = await this.completeAllActiveGoals(client, input.userId, input.sessionId, 'abandoned')
+          if (abandoned.length > 0) {
+            abandonedGoalIds.push(...abandoned)
+            actions.push(`abandoned_user_opt_out_all:${abandoned.length}`)
+            for (const goalId of abandoned) {
+              await this.appendJournal(client, input.userId, input.sessionId, goalId, 'abandoned', {
+                reason: 'user_opt_out_all',
+                messagePreview: message.slice(0, 120),
+              })
+            }
+          }
+        } else {
+          // Only abandon the most recently updated goal
+          const activeGoals = await this.loadActiveGoals(client, input.userId, input.sessionId, 1)
+          if (activeGoals.length > 0) {
+            const topGoal = activeGoals[0]
+            const abandoned = await this.completeGoalById(client, topGoal.id, 'abandoned')
+            if (abandoned) {
+              abandonedGoalIds.push(topGoal.id)
+              actions.push('abandoned_user_opt_out_single')
+              await this.appendJournal(client, input.userId, input.sessionId, topGoal.id, 'abandoned', {
+                reason: 'user_opt_out',
+                messagePreview: message.slice(0, 120),
+              })
+            }
           }
         }
       } else {
@@ -610,6 +639,23 @@ export class AgendaPlannerService {
       [userId, sessionId, goalTypes, status],
     )
     return result.rows.map(row => row.id)
+  }
+
+  private async completeGoalById(
+    client: DbClient,
+    goalId: number,
+    status: 'completed' | 'abandoned',
+  ): Promise<boolean> {
+    const result = await client.query(
+      `UPDATE conversation_goals
+       SET status = $2,
+           updated_at = NOW()
+       WHERE id = $1
+         AND status = 'active'
+         AND COALESCE(source, 'classifier') = 'agenda_planner'`,
+      [goalId, status],
+    )
+    return (result.rowCount ?? 0) > 0
   }
 
   private async completeAllActiveGoals(
