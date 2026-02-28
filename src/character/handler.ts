@@ -66,6 +66,7 @@ import { generateResponse, type ChatMessage } from '../llm/tierManager.js'
 // Proactive content registration + activity tracking
 import { registerProactiveUser, updateUserActivity } from '../media/proactiveRunner.js'
 import { handleFunnelReply } from '../proactive-intent/index.js'
+import { handleTaskReply } from '../task-orchestrator/index.js'
 
 // Initialize Groq client
 const groq = new Groq({
@@ -278,6 +279,19 @@ export async function handleMessage(
       })
       if (funnelReply.handled) {
         return { text: funnelReply.responseText ?? 'Got it da, I will park that flow for now 👍 Tell me what you want next.' }
+      }
+    }
+
+    // ─── Step 4.6: Task orchestrator interception (Issue #64) ──────
+    // If the user is in an active task workflow, route reply before the
+    // classifier/memory pipeline. Supports multi-step actionable flows.
+    if (channel === 'telegram') {
+      const taskReply = await handleTaskReply(channelUserId, userMessage).catch(err => {
+        console.warn('[handler] Task orchestrator reply handling failed, continuing normal pipeline:', safeError(err))
+        return { handled: false as const } as const
+      })
+      if (taskReply.handled && taskReply.response) {
+        return taskReply.response
       }
     }
 

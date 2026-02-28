@@ -8,6 +8,7 @@
 
 import { handleMessage } from './handler.js'
 import { handleFunnelCallback } from '../proactive-intent/index.js'
+import { handleTaskCallback } from '../task-orchestrator/index.js'
 
 // What each button tap means as a message Aria receives
 const CALLBACK_INTENTS: Record<string, string> = {
@@ -41,6 +42,12 @@ export async function handleCallbackAction(
   userId: string,
   callbackData: string
 ): Promise<{ text: string } | null> {
+  if (callbackData.startsWith('task:')) {
+    const taskResult = await handleTaskCallback(userId, callbackData)
+    if (!taskResult) return null
+    return { text: taskResult.text }
+  }
+
   if (callbackData.startsWith('funnel:')) {
     const funnelResult = await handleFunnelCallback(userId, callbackData)
     if (!funnelResult) return null
