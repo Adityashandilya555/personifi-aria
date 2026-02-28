@@ -45,8 +45,25 @@ function defaultRecord(userId: string, now: Date): PulseRecord {
 
 export class PulseService {
   private readonly cache = new Map<string, PulseRecord>()
+  private readonly locks = new Map<string, Promise<unknown>>()
 
   async recordEngagement(input: PulseInput): Promise<PulseRecord> {
+    const previous = this.locks.get(input.userId) ?? Promise.resolve()
+    const operation = previous
+      .catch(() => undefined)
+      .then(() => this.recordEngagementUnlocked(input))
+
+    this.locks.set(input.userId, operation)
+    try {
+      return await operation
+    } finally {
+      if (this.locks.get(input.userId) === operation) {
+        this.locks.delete(input.userId)
+      }
+    }
+  }
+
+  private async recordEngagementUnlocked(input: PulseInput): Promise<PulseRecord> {
     const now = input.now ?? new Date()
     const current = (await this.loadRecord(input.userId)) ?? defaultRecord(input.userId, now)
     const signals = extractEngagementSignals({ ...input, now })
@@ -76,8 +93,8 @@ export class PulseService {
       signalHistory: [...current.signalHistory, historyEntry].slice(-MAX_SIGNAL_HISTORY),
     }
 
-    this.cache.set(input.userId, next)
     await this.persistRecord(next)
+    this.cache.set(input.userId, next)
 
     if (current.state !== nextState) {
       console.log(

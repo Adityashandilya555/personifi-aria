@@ -41,6 +41,18 @@ describe('extractEngagementSignals', () => {
     expect(signals.breakdown.rejection).toBeLessThan(0)
     expect(signals.scoreDelta).toBeLessThan(0)
   })
+
+  it('falls back to normal weight for unknown classifier signals', () => {
+    const signals = extractEngagementSignals({
+      userId: 'u1',
+      message: 'hello there',
+      classifierSignal: 'excited',
+    })
+
+    expect(signals.breakdown.classifierSignal).toBe(0)
+    expect(Number.isFinite(signals.scoreDelta)).toBe(true)
+    expect(signals.scoreDelta).toBe(0)
+  })
 })
 
 describe('stateMachine', () => {
@@ -143,5 +155,76 @@ describe('PulseService', () => {
 
     expect(record.score).toBe(0)
     expect(record.state).toBe('PASSIVE')
+  })
+
+  it('serializes concurrent updates for the same user to avoid lost writes', async () => {
+    let call = 0
+    mockQuery.mockImplementation(async () => {
+      call += 1
+      if (call === 1) return { rows: [] } // initial select
+      if (call === 2) {
+        await new Promise(resolve => setTimeout(resolve, 20)) // slow first persist
+        return { rows: [] }
+      }
+      return { rows: [] } // second persist
+    })
+
+    const service = new PulseService()
+    const firstAt = new Date('2026-02-28T10:00:00Z')
+    const secondAt = new Date('2026-02-28T10:00:01Z')
+
+    const firstPromise = service.recordEngagement({
+      userId: 'u-race',
+      message: 'urgent compare this now',
+      now: firstAt,
+      classifierSignal: 'stressed',
+    })
+
+    const secondPromise = service.recordEngagement({
+      userId: 'u-race',
+      message: 'please book this now',
+      now: secondAt,
+      previousMessageAt: firstAt,
+      previousUserMessage: 'urgent compare this now',
+      classifierSignal: 'stressed',
+    })
+
+    const [first, second] = await Promise.all([firstPromise, secondPromise])
+
+    expect(first.messageCount).toBe(1)
+    expect(second.messageCount).toBe(2)
+    expect(second.score).toBeGreaterThan(first.score)
+    expect(mockQuery).toHaveBeenCalledTimes(3)
+  })
+
+  it('does not poison cache when persist fails', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [] }) // load for recordEngagement
+      .mockRejectedValueOnce(new Error('db unavailable')) // persist fails
+      .mockResolvedValueOnce({
+        rows: [{
+          user_id: 'u-db-fail',
+          engagement_score: 26,
+          current_state: 'CURIOUS' as EngagementState,
+          last_message_at: new Date('2026-02-28T11:59:00Z'),
+          updated_at: new Date('2026-02-28T11:59:00Z'),
+          message_count: 9,
+          last_topic: 'biryani',
+          signal_history: [],
+        }],
+      }) // load for getState fallback
+
+    const service = new PulseService()
+
+    await expect(service.recordEngagement({
+      userId: 'u-db-fail',
+      message: 'urgent booking please',
+      now: new Date('2026-02-28T12:00:00Z'),
+      classifierSignal: 'stressed',
+    })).rejects.toThrow('db unavailable')
+
+    const state = await service.getState('u-db-fail')
+    expect(state).toBe('CURIOUS')
+    expect(mockQuery).toHaveBeenCalledTimes(3)
   })
 })

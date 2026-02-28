@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS pulse_engagement_scores (
       CHECK (current_state IN ('PASSIVE', 'CURIOUS', 'ENGAGED', 'PROACTIVE')),
     last_message_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    message_count INTEGER NOT NULL DEFAULT 0,
+    message_count INTEGER NOT NULL DEFAULT 0 CHECK (message_count >= 0),
     last_topic TEXT,
     signal_history JSONB NOT NULL DEFAULT '[]'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

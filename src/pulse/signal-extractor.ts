@@ -70,7 +70,13 @@ export function extractEngagementSignals(input: PulseInput): EngagementSignals {
   const overlap = topicOverlap(currentTokens, previousTokens)
   const topicPersistence = overlap >= TOPIC_MATCH_THRESHOLD ? SIGNAL_WEIGHTS.topicPersistence : 0
 
-  const classifierSignal = CLASSIFIER_SIGNAL_WEIGHTS[input.classifierSignal ?? 'normal']
+  const classifierSignalKey = input.classifierSignal ?? 'normal'
+  const classifierSignal = Object.prototype.hasOwnProperty.call(
+    CLASSIFIER_SIGNAL_WEIGHTS,
+    classifierSignalKey,
+  )
+    ? CLASSIFIER_SIGNAL_WEIGHTS[classifierSignalKey as keyof typeof CLASSIFIER_SIGNAL_WEIGHTS]
+    : CLASSIFIER_SIGNAL_WEIGHTS.normal
 
   const scoreDelta = urgency + desire + rejection + fastReply + topicPersistence + classifierSignal
 
@@ -80,7 +86,7 @@ export function extractEngagementSignals(input: PulseInput): EngagementSignals {
   if (rejection !== 0) matchedSignals.push('rejection')
   if (fastReply !== 0) matchedSignals.push('fast_reply')
   if (topicPersistence !== 0) matchedSignals.push('topic_persistence')
-  if (classifierSignal !== 0) matchedSignals.push(`classifier_${input.classifierSignal ?? 'normal'}`)
+  if (classifierSignal !== 0) matchedSignals.push(`classifier_${classifierSignalKey}`)
 
   return {
     scoreDelta,

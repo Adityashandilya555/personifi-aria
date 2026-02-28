@@ -8,7 +8,8 @@ export interface PulseInput {
   now?: Date
   previousMessageAt?: string | Date | null
   previousUserMessage?: string | null
-  classifierSignal?: ClassifierUserSignal
+  // Keep this runtime-flexible so unknown future classifier outputs do not break scoring.
+  classifierSignal?: ClassifierUserSignal | string
 }
 
 export interface PulseSignalBreakdown {
