@@ -288,6 +288,43 @@ export const whatsappAdapter: ChannelAdapter = {
       }),
     })
   },
+
+  sendMedia: async (chatId: string, media: MediaItem[]) => {
+    const token = process.env.WHATSAPP_API_TOKEN
+    const phoneId = process.env.WHATSAPP_PHONE_ID
+    if (!token || !phoneId || media.length === 0) return
+
+    // WhatsApp Cloud API supports sending one media item at a time
+    const item = media[0]
+    const mediaType = item.type === 'video' ? 'video' : 'image'
+
+    try {
+      const resp = await fetch(`https://graph.facebook.com/v18.0/${phoneId}/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          messaging_product: 'whatsapp',
+          to: chatId,
+          type: mediaType,
+          [mediaType]: {
+            link: item.url,
+            caption: item.caption,
+          },
+        }),
+      })
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}))
+        console.error(`[WhatsApp] sendMedia failed (${mediaType}):`, (err as any)?.error?.message)
+      }
+    } catch (err: any) {
+      // Network/transport error — non-fatal, text delivery continues unaffected
+      console.error(`[WhatsApp] sendMedia transport error:`, err?.message)
+    }
+  },
 }
 
 // ============================================
