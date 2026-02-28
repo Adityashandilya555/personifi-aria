@@ -17,6 +17,7 @@ import { runProactiveForAllUsers, loadUsersFromDB } from './media/proactiveRunne
 import { registerMediaCron } from './cron/media-cron.js'
 import { runMigrations, cleanupExpiredRateLimits } from './character/session-store.js'
 import { checkPriceAlerts } from './alerts/price-alerts.js'
+import { runSocialOutbound } from './social/index.js'
 
 // ─── Core scheduler ────────────────────────────────────────────────────────
 
@@ -39,6 +40,15 @@ export function initScheduler(_databaseUrl: string) {
 
   // ── 3. Media scraping cron — every 6 hours ────────────────────────────
   registerMediaCron()
+
+  // ── 3b. Social outbound worker — every 15 minutes (#58) ───────────────
+  cron.schedule('*/15 * * * *', async () => {
+    try {
+      await runSocialOutbound()
+    } catch (err) {
+      console.error('[SCHEDULER] Social outbound error:', err)
+    }
+  })
 
   // ── 5. Rate limit cleanup — every hour ────────────────────────────────
   cron.schedule('0 * * * *', async () => {

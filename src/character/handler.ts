@@ -67,6 +67,9 @@ import { generateResponse, type ChatMessage } from '../llm/tierManager.js'
 import { registerProactiveUser, updateUserActivity } from '../media/proactiveRunner.js'
 import { handleFunnelReply } from '../proactive-intent/index.js'
 import { handleTaskReply } from '../task-orchestrator/index.js'
+import { addFriend, acceptFriend, removeFriend, getFriends, getPendingRequests, resolveUserByPlatformId } from '../social/friend-graph.js'
+import { createSquad, inviteToSquad, acceptSquadInvite, leaveSquad, getSquadsForUser, getPendingSquadInvites } from '../social/squad.js'
+import { detectIntentCategory, recordIntentForUserSquads } from '../social/squad-intent.js'
 
 // Initialize Groq client
 const groq = new Groq({
@@ -234,10 +237,22 @@ export async function handleMessage(
   rawMessage: string
 ): Promise<MessageResponse> {
   try {
-    // ─── Step 0: Detect /link command (before sanitization) ────
+    // ─── Step 0: Detect slash commands (before sanitization) ────
     const linkMatch = rawMessage.trim().match(/^\/link(?:\s+(\d{6}))?$/i)
     if (linkMatch) {
       return { text: await handleLinkCommand(channel, channelUserId, linkMatch[1] || null) }
+    }
+
+    const friendMatch = rawMessage.trim().match(/^\/friend(?:\s+(.+))?$/i)
+    if (friendMatch) {
+      const user = await getOrCreateUser(channel, channelUserId)
+      return { text: await handleFriendCommand(user.userId, channel, friendMatch[1]?.trim() || null) }
+    }
+
+    const squadMatch = rawMessage.trim().match(/^\/squad(?:\s+(.+))?$/i)
+    if (squadMatch) {
+      const user = await getOrCreateUser(channel, channelUserId)
+      return { text: await handleSquadCommand(user.userId, channel, squadMatch[1]?.trim() || null) }
     }
 
     // ─── Step 1: Input sanitization ───────────────────────────────
@@ -682,6 +697,165 @@ export async function handleMessage(
   } catch (error) {
     console.error('[ERROR] Message handling failed:', safeError(error))
     return { text: "Oops, something went wrong on my end! Mind trying that again? 😅" }
+  }
+}
+
+/**
+ * Handle /friend command — add, remove, list friends.
+ * Usage: /friend, /friend add <username>, /friend remove <username>, /friend list
+ */
+async function handleFriendCommand(
+  userId: string,
+  channel: string,
+  args: string | null,
+): Promise<string> {
+  try {
+    if (!args || args === 'list') {
+      // List friends + pending requests
+      const friends = await getFriends(userId)
+      const pending = await getPendingRequests(userId)
+      const lines: string[] = ['👥 **Your Friends**\n']
+
+      if (friends.length === 0 && pending.length === 0) {
+        return '👥 No friends yet! Use `/friend add <username>` to add a friend.'
+      }
+
+      if (friends.length > 0) {
+        for (const f of friends) {
+          const name = f.displayName ?? f.channelUserId
+          lines.push(`• ${f.alias ?? name}`)
+        }
+      }
+
+      if (pending.length > 0) {
+        lines.push(`\n📩 **Pending Requests (${pending.length})**`)
+        for (const p of pending) {
+          const name = p.displayName ?? p.channelUserId
+          lines.push(`• ${name} — tap to accept`)
+        }
+      }
+
+      return lines.join('\n')
+    }
+
+    const addMatch = args.match(/^add\s+(.+)$/i)
+    if (addMatch) {
+      const targetId = addMatch[1].trim()
+      const friendUserId = await resolveUserByPlatformId(channel, targetId)
+      if (!friendUserId) {
+        return `Couldn't find user "${targetId}". They need to have chatted with Aria first!`
+      }
+      const result = await addFriend(userId, friendUserId)
+      return result.message
+    }
+
+    const removeMatch = args.match(/^remove\s+(.+)$/i)
+    if (removeMatch) {
+      const targetId = removeMatch[1].trim()
+      const friendUserId = await resolveUserByPlatformId(channel, targetId)
+      if (!friendUserId) {
+        return `Couldn't find user "${targetId}".`
+      }
+      const result = await removeFriend(userId, friendUserId)
+      return result.message
+    }
+
+    const acceptMatch = args.match(/^accept\s+(.+)$/i)
+    if (acceptMatch) {
+      const targetId = acceptMatch[1].trim()
+      const friendUserId = await resolveUserByPlatformId(channel, targetId)
+      if (!friendUserId) {
+        return `Couldn't find user "${targetId}".`
+      }
+      const result = await acceptFriend(userId, friendUserId)
+      return result.message
+    }
+
+    return '👥 **Friend Commands:**\n`/friend` — list friends\n`/friend add <username>` — add friend\n`/friend remove <username>` — remove friend\n`/friend accept <username>` — accept request'
+  } catch (error) {
+    console.error('[handler] Friend command failed:', safeError(error))
+    return "Something went wrong with the friend command. Please try again!"
+  }
+}
+
+/**
+ * Handle /squad command — create, invite, list, leave.
+ * Usage: /squad, /squad create <name>, /squad invite <squad_name> <username>, /squad leave <name>
+ */
+async function handleSquadCommand(
+  userId: string,
+  _channel: string,
+  args: string | null,
+): Promise<string> {
+  try {
+    if (!args || args === 'list') {
+      const squads = await getSquadsForUser(userId)
+      const pending = await getPendingSquadInvites(userId)
+
+      if (squads.length === 0 && pending.length === 0) {
+        return '👥 No squads yet! Use `/squad create <name>` to create one.'
+      }
+
+      const lines: string[] = ['👥 **Your Squads**\n']
+      for (const squad of squads) {
+        const memberNames = squad.members.map(m => m.displayName ?? m.channelUserId ?? 'Unknown').join(', ')
+        lines.push(`• **${squad.name}** (${squad.members.length} members): ${memberNames}`)
+      }
+
+      if (pending.length > 0) {
+        lines.push(`\n📩 **Pending Invites (${pending.length})**`)
+        for (const p of pending) {
+          lines.push(`• ${p.squadName} — use \`/squad join ${p.squadName}\` to accept`)
+        }
+      }
+
+      return lines.join('\n')
+    }
+
+    const createMatch = args.match(/^create\s+(.+)$/i)
+    if (createMatch) {
+      const result = await createSquad(userId, createMatch[1].trim())
+      return result.message
+    }
+
+    const inviteMatch = args.match(/^invite\s+(\S+)\s+(\S+)$/i)
+    if (inviteMatch) {
+      const squadName = inviteMatch[1]
+      const targetId = inviteMatch[2]
+      // Find the squad by name
+      const squads = await getSquadsForUser(userId)
+      const squad = squads.find(s => s.name.toLowerCase() === squadName.toLowerCase())
+      if (!squad) return `Squad "${squadName}" not found in your squads.`
+      const friendUserId = await resolveUserByPlatformId('telegram', targetId)
+      if (!friendUserId) return `Couldn't find user "${targetId}".`
+      const result = await inviteToSquad(squad.id, userId, friendUserId)
+      return result.message
+    }
+
+    const joinMatch = args.match(/^join\s+(.+)$/i)
+    if (joinMatch) {
+      const squadName = joinMatch[1].trim()
+      const pending = await getPendingSquadInvites(userId)
+      const invite = pending.find(p => p.squadName.toLowerCase() === squadName.toLowerCase())
+      if (!invite) return `No pending invite for squad "${squadName}".`
+      const result = await acceptSquadInvite(invite.squadId, userId)
+      return result.message
+    }
+
+    const leaveMatch = args.match(/^leave\s+(.+)$/i)
+    if (leaveMatch) {
+      const squadName = leaveMatch[1].trim()
+      const squads = await getSquadsForUser(userId)
+      const squad = squads.find(s => s.name.toLowerCase() === squadName.toLowerCase())
+      if (!squad) return `Squad "${squadName}" not found.`
+      const result = await leaveSquad(squad.id, userId)
+      return result.message
+    }
+
+    return '👥 **Squad Commands:**\n`/squad` — list squads\n`/squad create <name>` — create squad\n`/squad invite <squad> <user>` — invite member\n`/squad join <name>` — accept invite\n`/squad leave <name>` — leave squad'
+  } catch (error) {
+    console.error('[handler] Squad command failed:', safeError(error))
+    return "Something went wrong with the squad command. Please try again!"
   }
 }
 
