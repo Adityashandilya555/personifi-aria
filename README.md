@@ -30,6 +30,7 @@ cp .env.example .env
 psql "$DATABASE_URL" < database/schema.sql
 psql "$DATABASE_URL" < database/proactive.sql
 psql "$DATABASE_URL" < database/memory.sql
+psql "$DATABASE_URL" < database/proactive-intent.sql
 
 # 3. Deploy
 docker-compose up -d
@@ -58,9 +59,11 @@ curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook?url=https://you
 ├── database/
 │   ├── schema.sql            # Core tables
 │   ├── proactive.sql         # Proactive messaging tables
-│   └── memory.sql            # Memory & personalization tables
+│   ├── memory.sql            # Memory & personalization tables
+│   └── proactive-intent.sql  # Intent funnel state + analytics
 ├── docs/
-│   └── MEMORY_SYSTEM.md      # Memory system documentation
+│   ├── MEMORY_SYSTEM.md      # Memory system documentation
+│   └── proactive-intent.md   # Intent-driven funnel architecture
 └── docker-compose.yml
 ```
 

@@ -32,6 +32,7 @@ import { fetchReels, pickBestReel, markMediaSent, markReelSent } from './reelPip
 import { sendMediaViaPipeline } from './mediaDownloader.js'
 import { sendProactiveContent } from '../channels.js'
 import { sleep } from '../tools/scrapers/retry.js'
+import { expireStaleIntentFunnels, tryStartIntentDrivenFunnel } from '../proactive-intent/index.js'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -277,6 +278,23 @@ async function runProactiveForUser(userId: string, chatId: string): Promise<void
     if (!gate.ok) {
         console.log(`[Proactive] Skip ${userId}: ${gate.reason}`)
         return
+    }
+
+    // Intent-driven funnel path (new) — runs before legacy content blast path.
+    // If no funnel is selected/eligible, we continue to the existing pipeline untouched.
+    try {
+        const funnelStart = await tryStartIntentDrivenFunnel(userId, chatId)
+        if (funnelStart.started && funnelStart.category && funnelStart.hashtag) {
+            console.log(`[Proactive] Funnel started for ${userId}: ${funnelStart.funnelKey} (${funnelStart.reason})`)
+            await updateStateAfterSend(state, userId, funnelStart.category, funnelStart.hashtag)
+            return
+        }
+        if (funnelStart.started) {
+            console.log(`[Proactive] Funnel started for ${userId}: ${funnelStart.funnelKey}`)
+            return
+        }
+    } catch (err: any) {
+        console.warn(`[Proactive] Funnel path failed for ${userId}, falling back to legacy path:`, err?.message)
     }
 
     // Get content selection from intelligence layer, enriched with user preferences
@@ -599,6 +617,15 @@ export function handleProactiveFeedback(userId: string, category: ContentCategor
  * Processes max 5 users per slot, 500ms delay between.
  */
 export async function runProactiveForAllUsers(): Promise<void> {
+    try {
+        const expired = await expireStaleIntentFunnels(45)
+        if (expired > 0) {
+            console.log(`[Proactive] Expired ${expired} stale proactive funnels`)
+        }
+    } catch (err: any) {
+        console.warn('[Proactive] Funnel expiry sweep failed:', err?.message)
+    }
+
     if (activeUsers.length === 0) {
         console.log('[Proactive] No active users registered')
         return
