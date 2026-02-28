@@ -44,6 +44,7 @@ import { classifyMessage } from '../cognitive.js'
 import { getActiveGoal, updateConversationGoal } from '../cognitive.js'
 import { composeSystemPrompt, getRawSoulPrompt } from '../personality.js'
 import { loadPreferences, processUserMessage } from '../memory.js'
+import { pulseService } from '../pulse/index.js'
 import { getPool } from './session-store.js'
 
 // Cross-channel identity
@@ -586,6 +587,26 @@ export async function handleMessage(
 
     // ─── Step 17: Extract auth info (existing) ────────────────────
     await extractAndSaveUserInfo(user.userId, userMessage, user)
+
+    // ─── Step 17b: Pulse engagement scoring (always fire-and-forget) ─
+    const previousUserMessage = [...session.messages]
+      .reverse()
+      .find(msg => msg.role === 'user')?.content ?? null
+    const previousMessageAt = [...session.messages]
+      .reverse()
+      .find(msg => !!msg.timestamp)?.timestamp ?? null
+
+    setImmediate(() => {
+      pulseService.recordEngagement({
+        userId: user.userId,
+        message: userMessage,
+        previousUserMessage,
+        previousMessageAt,
+        classifierSignal: classification.userSignal,
+      }).catch(err => {
+        console.error('[handler] Pulse scoring failed:', safeError(err))
+      })
+    })
 
     // ─── Steps 18-21: Fire-and-forget writes (SKIPPED for simple) ──
     if (!isSimple) {
