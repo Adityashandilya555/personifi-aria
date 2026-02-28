@@ -25,8 +25,9 @@ export async function getWeather(params: WeatherParams): Promise<ToolExecutionRe
 
         if (data.cod !== 200) {
             return {
-                success: true,
-                data: `Could not find weather for "${location}".`,
+                success: false,
+                data: null,
+                error: `Could not find weather for "${location}".`,
             }
         }
 
