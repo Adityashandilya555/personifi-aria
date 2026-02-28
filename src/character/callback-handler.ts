@@ -43,7 +43,7 @@ export async function handleCallbackAction(
   channel: string,
   userId: string,
   callbackData: string
-): Promise<{ text: string } | null> {
+): Promise<{ text: string; choices?: { label: string; action: string }[] } | null> {
   // Social callbacks — friend and squad invites
   if (callbackData.startsWith('friend:accept:')) {
     const friendId = callbackData.replace('friend:accept:', '')
@@ -60,13 +60,13 @@ export async function handleCallbackAction(
   if (callbackData.startsWith('task:')) {
     const taskResult = await handleTaskCallback(userId, callbackData)
     if (!taskResult) return null
-    return { text: taskResult.text }
+    return { text: taskResult.text, choices: taskResult.choices }
   }
 
   if (callbackData.startsWith('funnel:')) {
     const funnelResult = await handleFunnelCallback(userId, callbackData)
     if (!funnelResult) return null
-    return { text: funnelResult.text }
+    return { text: funnelResult.text, choices: funnelResult.choices }
   }
 
   const intent = CALLBACK_INTENTS[callbackData]

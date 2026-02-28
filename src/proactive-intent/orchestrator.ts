@@ -362,7 +362,12 @@ export async function handleFunnelCallback(
     scheduleInMemoryExpiry(active.id)
     await safeRecordEvent(active.id, platformUserId, 'step_advanced', decision.nextStepIndex, { reason: decision.reason })
     await safeRecordEvent(active.id, platformUserId, 'step_sent', decision.nextStepIndex)
-    return { text: formatStepText(nextStep.text, nextStep.choices) }
+
+    const nextChoices = nextStep.choices?.map(choice => ({
+      ...choice,
+      action: stepWithCallbackAction(funnel, choice.action),
+    }))
+    return { text: formatStepText(nextStep.text, nextStep.choices), choices: nextChoices }
   }
 
   return { text: 'Understood. If you want to continue, choose an option or send a quick reply.' }

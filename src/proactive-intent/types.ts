@@ -67,16 +67,16 @@ export interface FunnelInstance {
 
 export type FunnelStartResult =
   | {
-      started: false
-      reason: string
-    }
+    started: false
+    reason: string
+  }
   | {
-      started: true
-      reason: string
-      funnelKey: string
-      category: ContentCategory
-      hashtag: string
-    }
+    started: true
+    reason: string
+    funnelKey: string
+    category: ContentCategory
+    hashtag: string
+  }
 
 export interface FunnelReplyResult {
   handled: boolean
@@ -86,4 +86,5 @@ export interface FunnelReplyResult {
 
 export interface FunnelCallbackResult {
   text: string
+  choices?: FunnelChoice[]
 }

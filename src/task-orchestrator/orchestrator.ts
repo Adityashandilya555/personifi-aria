@@ -479,7 +479,11 @@ export async function handleTaskCallback(
         await safeRecordEvent(active.id, platformUserId, 'step_advanced', decision.nextStepIndex, { reason: decision.reason })
         await safeRecordEvent(active.id, platformUserId, 'step_sent', decision.nextStepIndex)
 
-        return { text: formatStepText(nextStep.text, nextStep.choices) }
+        const nextChoices = nextStep.choices?.map(choice => ({
+            ...choice,
+            action: stepWithCallbackAction(workflow, choice.action),
+        }))
+        return { text: formatStepText(nextStep.text, nextStep.choices), choices: nextChoices }
     }
 
     return { text: 'Got it. Pick an option or send a reply to continue 👆' }

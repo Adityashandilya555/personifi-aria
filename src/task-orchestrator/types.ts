@@ -133,5 +133,6 @@ export interface TaskReplyResult {
 
 export interface TaskCallbackResult {
     text: string
+    choices?: TaskChoice[]
     media?: Array<{ type: 'photo'; url: string; caption?: string }>
 }

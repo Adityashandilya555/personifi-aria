@@ -81,15 +81,15 @@ function sendChatAction(chatId: string, action: string): void {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ chat_id: chatId, action }),
-  }).catch(() => {})
+  }).catch(() => { })
 }
 
 /** Determine typing action from message text before 8B runs. */
 function typingActionFor(text: string): string {
   const t = text.toLowerCase()
-  if (/flight|fly|airline/.test(t))                   return 'upload_document'
-  if (/where|place|restaurant|cafe|spot/.test(t))     return 'find_location'
-  if (/photo|picture|image|gallery/.test(t))          return 'upload_photo'
+  if (/flight|fly|airline/.test(t)) return 'upload_document'
+  if (/where|place|restaurant|cafe|spot/.test(t)) return 'find_location'
+  if (/photo|picture|image|gallery/.test(t)) return 'upload_photo'
   return 'typing'
 }
 
@@ -119,11 +119,11 @@ const THINKING_BUBBLES = [
 /** Placeholder text matched to query type — falls back to a thinking bubble. */
 function placeholderFor(text: string): string {
   const t = text.toLowerCase()
-  if (/flight|fly/.test(t))            return '✈️ Checking flights...'
-  if (/hotel|stay/.test(t))            return '🏨 Looking up stays...'
-  if (/weather|rain/.test(t))          return '🌤️ Checking the sky...'
+  if (/flight|fly/.test(t)) return '✈️ Checking flights...'
+  if (/hotel|stay/.test(t)) return '🏨 Looking up stays...'
+  if (/weather|rain/.test(t)) return '🌤️ Checking the sky...'
   if (/food|order|restaurant/.test(t)) return '🍽️ Hunting for the best bites...'
-  if (/place|where|cafe/.test(t))      return '📍 Finding spots near you...'
+  if (/place|where|cafe/.test(t)) return '📍 Finding spots near you...'
   if (/grocery|blinkit|zepto/.test(t)) return '🛒 Checking grocery prices...'
   return pick(THINKING_BUBBLES)
 }
@@ -211,7 +211,7 @@ server.post('/webhook/telegram', async (request, reply) => {
     const headerSecret = request.headers['x-telegram-bot-api-secret-token']
     const incomingToken = Array.isArray(headerSecret) ? headerSecret[0] : (headerSecret || '')
     const expectedDigest = createHash('sha256').update(webhookSecret).digest()
-    const actualDigest   = createHash('sha256').update(incomingToken).digest()
+    const actualDigest = createHash('sha256').update(incomingToken).digest()
     if (!timingSafeEqual(expectedDigest, actualDigest)) {
       server.log.warn('Telegram webhook: invalid secret token')
       return reply.code(403).send({ ok: false, error: 'Forbidden' })
@@ -222,9 +222,9 @@ server.post('/webhook/telegram', async (request, reply) => {
 
   // ── Inline button tap (callback_query) ─────────────────────────────────────
   if (body?.callback_query) {
-    const query    = body.callback_query
-    const chatId   = String(query.message?.chat?.id ?? '')
-    const userId   = String(query.from?.id ?? '')
+    const query = body.callback_query
+    const chatId = String(query.message?.chat?.id ?? '')
+    const userId = String(query.from?.id ?? '')
     const data: string = query.data ?? ''
 
     // Acknowledge immediately — removes spinner on button
@@ -234,7 +234,14 @@ server.post('/webhook/telegram', async (request, reply) => {
       const { handleCallbackAction } = await import('./character/callback-handler.js')
       const response = await handleCallbackAction('telegram', userId, data)
       if (response?.text) {
-        await channels.telegram.sendMessage(chatId, response.text)
+        if (response.choices?.length) {
+          // Send with inline keyboard so the next step's buttons are interactive
+          await sendTelegramWithKeyboard(chatId, response.text, {
+            inline_keyboard: response.choices.map(c => [{ text: c.label, callback_data: c.action }]),
+          })
+        } else {
+          await channels.telegram.sendMessage(chatId, response.text)
+        }
       }
     }
     return { ok: true }
@@ -242,11 +249,11 @@ server.post('/webhook/telegram', async (request, reply) => {
 
   // ── Emoji reaction on a message ────────────────────────────────────────────
   if (body?.message_reaction) {
-    const reaction      = body.message_reaction
-    const chatId        = String(reaction.chat?.id ?? '')
-    const userId        = String(reaction.user?.id ?? '')
+    const reaction = body.message_reaction
+    const chatId = String(reaction.chat?.id ?? '')
+    const userId = String(reaction.user?.id ?? '')
     const positiveEmoji = ['🔥', '👍', '❤️', '😍', '🤩', '🫡', '💯']
-    const isPositive    = (reaction.new_reaction ?? [])
+    const isPositive = (reaction.new_reaction ?? [])
       .some((r: any) => r.type === 'emoji' && positiveEmoji.includes(r.emoji))
 
     if (isPositive && chatId && userId) {
@@ -520,6 +527,6 @@ const start = async () => {
 }
 
 process.on('SIGTERM', async () => { await closeBrowser(); await server.close(); process.exit(0) })
-process.on('SIGINT',  async () => { await closeBrowser(); await server.close(); process.exit(0) })
+process.on('SIGINT', async () => { await closeBrowser(); await server.close(); process.exit(0) })
 
 start()
