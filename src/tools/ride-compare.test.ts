@@ -35,13 +35,26 @@ describe('compareRides', () => {
         else process.env.OPENWEATHERMAP_API_KEY = ORIGINAL_OPENWEATHER_KEY
     })
 
-    it('returns a configuration error when Google key is missing', async () => {
+    it('falls back to Haversine estimates when Google key is missing for known Bengaluru areas', async () => {
         delete process.env.GOOGLE_PLACES_API_KEY
+        // No fetch mock needed — Haversine uses local coordinate lookup, no API calls
 
         const result = await compareRides({ origin: 'Koramangala', destination: 'Whitefield' })
 
+        // Should still succeed using Haversine fallback
+        expect(result.success).toBe(true)
+        const data = result.data as { formatted: string; raw: { distanceSource: string } }
+        expect(data.raw.distanceSource).toBe('haversine')
+        expect(data.formatted).toContain('estimated road distance')
+    })
+
+    it('returns an error for completely unknown locations when Google key is missing', async () => {
+        delete process.env.GOOGLE_PLACES_API_KEY
+
+        const result = await compareRides({ origin: 'NonExistentPlaceXYZ', destination: 'AnotherFakePlace123' })
+
         expect(result.success).toBe(false)
-        expect(result.error).toContain('Google Places API key is missing')
+        expect(result.error).toBeDefined()
     })
 
     it('applies rain surge (1.5-2.0x heuristic midpoint) on Ola/Uber when Bengaluru weather indicates rain', async () => {

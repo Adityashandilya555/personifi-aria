@@ -165,18 +165,82 @@ export async function closeBrowser(): Promise<void> {
   }
 }
 
+// ─── Realistic User-Agent Pool ────────────────────────────────────────────────
+// Rotated randomly per-context to avoid fingerprinting.
+// Mix of desktop Chrome (for Zomato SSR) and Android Chrome (for Swiggy mobile API).
+
+const DESKTOP_UAS = [
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36 Edg/129.0.0.0',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+]
+
+const MOBILE_UAS = [
+  'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
+  'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36',
+  'Mozilla/5.0 (Linux; Android 14; Pixel 7 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1',
+]
+
+const DESKTOP_VIEWPORTS = [
+  { width: 1280, height: 800 },
+  { width: 1440, height: 900 },
+  { width: 1366, height: 768 },
+  { width: 1920, height: 1080 },
+]
+
+const MOBILE_VIEWPORTS = [
+  { width: 390, height: 844 },   // iPhone 14
+  { width: 412, height: 915 },   // Pixel 7
+  { width: 393, height: 852 },   // iPhone 15 Pro
+]
+
+function pick<T>(arr: T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)]
+}
+
+export interface PageOptions {
+  /** Use a mobile user-agent and viewport. Swiggy's mobile dapi works better this way. */
+  mobile?: boolean
+  /** Optional locale override (default: en-IN) */
+  locale?: string
+  /** Extra HTTP headers injected on every request from this context */
+  extraHeaders?: Record<string, string>
+}
+
 /**
- * Get a new page with stealth settings.
+ * Get a new page with stealth settings and randomized identity.
  * Returns both page and context so callers can close the context to avoid leaks.
  */
-export async function getPage(): Promise<{ page: Page; context: BrowserContext }> {
+export async function getPage(options: PageOptions = {}): Promise<{ page: Page; context: BrowserContext }> {
   if (!browser) {
     await initBrowser()
   }
+
+  const mobile = options.mobile ?? false
+  const ua = mobile ? pick(MOBILE_UAS) : pick(DESKTOP_UAS)
+  const viewport = mobile ? pick(MOBILE_VIEWPORTS) : pick(DESKTOP_VIEWPORTS)
+  const locale = options.locale ?? 'en-IN'
+
   const context = await browser!.newContext({
-    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
-    viewport: { width: 1280, height: 800 },
+    userAgent: ua,
+    viewport,
+    locale,
+    timezoneId: 'Asia/Kolkata',
+    extraHTTPHeaders: {
+      'Accept-Language': 'en-IN,en-US;q=0.9,en;q=0.8',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Sec-CH-UA-Platform': mobile ? '"Android"' : '"macOS"',
+      ...options.extraHeaders,
+    },
   })
+
+  // Block unnecessary resource types to speed up scraping
+  await context.route('**/*.{png,jpg,jpeg,gif,svg,woff,woff2,ttf,eot,ico}', (route) => {
+    route.abort()
+  })
+
   const page = await context.newPage()
   return { page, context }
 }
@@ -233,16 +297,26 @@ interface InterceptionOptions {
   urlPatterns: string[]
   /** Max time to wait for intercepted responses (ms) */
   timeout?: number
+  /** Use mobile user-agent / viewport (better for Swiggy mobile dapi) */
+  mobile?: boolean
+  /** Stop waiting once this many responses have been collected */
+  minResponses?: number
 }
 
 /**
  * Navigate to a page and intercept JSON API responses matching URL patterns.
  * Returns collected JSON payloads. Context is closed after scraping.
+ *
+ * Improvements over the original:
+ *  - Mobile UA/viewport support (better for Swiggy)
+ *  - Early exit once minResponses collected (cuts wait time in half on fast networks)
+ *  - Image/font blocking (faster page loads)
+ *  - Random human-like jitter on the post-nav wait
  */
 export async function scrapeWithInterception(options: InterceptionOptions): Promise<InterceptedResponse[]> {
-  const { url, urlPatterns, timeout = 15000 } = options
+  const { url, urlPatterns, timeout = 15000, mobile = false, minResponses = 1 } = options
   await validateUrl(url)
-  const { page, context } = await getPage()
+  const { page, context } = await getPage({ mobile })
   const collected: InterceptedResponse[] = []
 
   try {
@@ -254,21 +328,27 @@ export async function scrapeWithInterception(options: InterceptionOptions): Prom
 
       try {
         const body = await response.json()
-        collected.push({ url: respUrl, body })
+        if (body && typeof body === 'object') {
+          collected.push({ url: respUrl, body })
+        }
       } catch {
         // Not JSON or response already disposed — skip
       }
     })
 
-    console.log(`[BROWSER] Scraping ${url}`)
+    console.log(`[BROWSER] Scraping ${url} (mobile=${mobile})`)
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout })
 
-    // Wait for API responses to arrive
-    await page.waitForTimeout(Math.min(timeout / 2, 5000))
+    // Wait until we have what we need, with a timeout ceiling
+    const waitStart = Date.now()
+    const maxWait = Math.min(timeout - 2000, 8000)
+    while (collected.length < minResponses && Date.now() - waitStart < maxWait) {
+      await page.waitForTimeout(400 + Math.random() * 200)
+    }
 
-    // If nothing intercepted yet, wait a bit more
+    // If still nothing, one last patience wait
     if (collected.length === 0) {
-      await page.waitForTimeout(3000)
+      await page.waitForTimeout(2500)
     }
   } catch (error) {
     console.error(`[BROWSER] Interception scrape failed for ${url}:`, error)
