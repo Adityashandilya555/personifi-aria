@@ -315,12 +315,12 @@ export async function handleMessage(
     }
     let preferences: Partial<Record<string, string>> = {}
     let activeGoal: Awaited<ReturnType<typeof getActiveGoal>> = null
+    let pulseEngagementState: 'PASSIVE' | 'CURIOUS' | 'ENGAGED' | 'PROACTIVE' = 'PASSIVE'
 
     const isSimple = classification.message_complexity === 'simple'
 
     if (!isSimple) {
-      // 4-way parallel pipeline: memory, graph, preferences, active goal.
-      // Cognitive is already resolved from the classifier — no 5th call.
+      // 5-way parallel pipeline: memory, graph, preferences, active goal, pulse state.
       const pipelineResults = await Promise.all([
         // Memory search (skip if classifier says so)
         classification.skip_memory
@@ -346,12 +346,15 @@ export async function handleMessage(
           console.error('[handler] Goal fetch failed:', safeError(err))
           return null
         }),
+        // Pulse engagement state — non-blocking read from in-memory hot cache
+        pulseService.getState(user.userId).catch(() => 'PASSIVE' as const),
       ])
 
       memories = pipelineResults[0]
       graphContext = pipelineResults[1]
       preferences = pipelineResults[2]
       activeGoal = pipelineResults[3]
+      pulseEngagementState = pipelineResults[4] as 'PASSIVE' | 'CURIOUS' | 'ENGAGED' | 'PROACTIVE'
     }
 
     // ─── Step 7: Brain hooks — route message (Dev 1) ──────────────
@@ -468,6 +471,7 @@ export async function handleMessage(
         toolResults: toolResultStr,
         userSignal: classification.userSignal,
         toolInvolved: !!routeDecision?.toolName,
+        pulseEngagementState,
       })
     } catch (err) {
       console.error('[handler] Personality composition failed, using static SOUL.md', safeError(err))
@@ -483,6 +487,7 @@ export async function handleMessage(
       mood: cognitiveState.emotionalState,
       goal: cognitiveState.conversationGoal,
       activeGoalId: activeGoal?.id ?? null,
+      pulseState: pulseEngagementState,
       hasToolResult: !!toolResultStr,
       promptLength: systemPromptComposed.length,
     })
@@ -520,6 +525,7 @@ export async function handleMessage(
             memories, graphContext, cognitiveState, preferences, activeGoal,
             isFirstMessage, isSimpleMessage: isSimple, toolResults: toolResultStr,
             userSignal: classification.userSignal, toolInvolved: !!routeDecision?.toolName,
+            pulseEngagementState,
           })
         } catch { /* keep existing composed prompt */ }
         messages = buildMessages(systemPromptComposed, session.messages, userMessage, historyLimit)
