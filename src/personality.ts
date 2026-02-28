@@ -5,7 +5,7 @@
  *   Layer 1 — Static identity (from SOUL.md: Identity, Voice, Emotional Range, Boundaries)
  *   Layer 2 — User context (name, location, auth status)
  *   Layer 3 — User preferences (from user_preferences table)
- *   Layer 4 — Conversation goal (from conversation_goals table)
+ *   Layer 4 — Conversation agenda stack (Issue #67)
  *   Layer 5 — Vector memories (what we remember about the user)
  *   Layer 6 — Graph context (entity relationships)
  *   Layer 7 — Cognitive guidance + tone directive (internal monologue, mood, tone)
@@ -28,12 +28,14 @@ import type { MemoryItem } from './memory-store.js'
 import type { GraphSearchResult } from './graph-memory.js'
 import type { PreferencesMap } from './types/database.js'
 import type { ConversationGoalRecord } from './types/cognitive.js'
+import type { AgendaGoal } from './agenda-planner/types.js'
 import { formatMemoriesForPrompt } from './memory-store.js'
 import { formatGraphForPrompt } from './graph-memory.js'
 import { selectResponseTone } from './cognitive.js'
 import { computeMoodWeights, getMoodInstruction } from './character/mood-engine.js'
 import { getBangaloreContext } from './utils/bangalore-context.js'
 import { selectStrategy, formatStrategyForPrompt } from './influence-engine.js'
+import { formatAgendaForPrompt } from './agenda-planner/formatter.js'
 
 // ─── SOUL.md Cache ──────────────────────────────────────────────────────────
 
@@ -126,8 +128,10 @@ export interface ComposeOptions {
     // ─── NEW: Preferences and goals (fetched in handler's Promise.all) ───
     /** User preferences from user_preferences table */
     preferences?: Partial<PreferencesMap>
-    /** Active conversation goal from conversation_goals table */
+    /** Active classifier goal fallback from conversation_goals table */
     activeGoal?: ConversationGoalRecord | null
+    /** Agenda planner stack (top goals) */
+    agendaStack?: AgendaGoal[]
 
     // ─── Mood engine inputs ───
     /** Communication style signal from 8B classifier */
@@ -163,7 +167,7 @@ export interface ComposeOptions {
  * Token budget:
  *   Static (Identity+Voice+Emotional+Boundaries): ~300 tokens
  *   User preferences:                             ~200 tokens
- *   Conversation goal:                             ~50 tokens
+ *   Conversation agenda:                          ~150 tokens
  *   Cognitive state + tone:                        ~100 tokens
  *   TOTAL (without tool results):                  ~650 tokens
  *
@@ -182,8 +186,10 @@ export function composeSystemPrompt(opts: ComposeOptions): string {
     const userCtx = buildUserContext(opts)
     if (userCtx) sections.push(userCtx)
 
-    // ─── Fast path for simple messages: only Layer 1 + Layer 2 (~300 tokens) ──
+    // ─── Fast path for simple messages: Layer 1 + Layer 2 + compact agenda ───
     if (opts.isSimpleMessage) {
+        const compactAgenda = formatAgendaForPrompt(opts.agendaStack, { maxGoals: 1, maxChars: 220 })
+        if (compactAgenda) sections.push(compactAgenda)
         return sections.filter(s => s.length > 0).join('\n\n')
     }
 
@@ -192,8 +198,12 @@ export function composeSystemPrompt(opts: ComposeOptions): string {
         sections.push(formatPreferences(opts.preferences))
     }
 
-    // ─── Layer 4: Conversation Goal (NEW) ───────────────────────
-    if (opts.activeGoal) {
+    // ─── Layer 4: Conversation Agenda (Issue #67) ───────────────
+    const agendaSection = formatAgendaForPrompt(opts.agendaStack, { maxGoals: 3, maxChars: 600 })
+    if (agendaSection) {
+        sections.push(agendaSection)
+    } else if (opts.activeGoal) {
+        // Backward-compatible fallback while agenda stack is empty/unavailable.
         sections.push(formatGoal(opts.activeGoal))
     }
 

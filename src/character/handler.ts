@@ -45,6 +45,7 @@ import { classifyMessage, getActiveGoal } from '../cognitive.js'
 import { composeSystemPrompt, getRawSoulPrompt } from '../personality.js'
 import { loadPreferences } from '../memory.js'
 import { pulseService } from '../pulse/index.js'
+import { agendaPlanner } from '../agenda-planner/index.js'
 import { getPool } from './session-store.js'
 
 // Cross-channel identity
@@ -344,12 +345,13 @@ export async function handleMessage(
     }
     let preferences: Partial<Record<string, string>> = {}
     let activeGoal: Awaited<ReturnType<typeof getActiveGoal>> = null
+    let agendaStack: Awaited<ReturnType<typeof agendaPlanner.getStack>> = []
     let pulseEngagementState: 'PASSIVE' | 'CURIOUS' | 'ENGAGED' | 'PROACTIVE' = 'PASSIVE'
 
     const isSimple = classification.message_complexity === 'simple'
 
     if (!isSimple) {
-      // 5-way parallel pipeline: memory, graph, preferences, active goal, pulse state.
+      // 6-way parallel pipeline: memory, graph, preferences, active goal, agenda stack, pulse state.
       const pipelineResults = await Promise.all([
         // Memory search — composite-scored (cosine 0.6 + recency 0.2 + importance 0.2)
         classification.skip_memory
@@ -378,6 +380,11 @@ export async function handleMessage(
           console.error('[handler] Goal fetch failed:', safeError(err))
           return null
         }),
+        // Fetch agenda stack (top priorities) — separate from classifier activeGoal.
+        agendaPlanner.getStack(user.userId, session.sessionId).catch(err => {
+          console.error('[handler] Agenda stack fetch failed:', safeError(err))
+          return []
+        }),
         // Pulse engagement state — non-blocking read from in-memory hot cache
         pulseService.getState(user.userId).catch(() => 'PASSIVE' as const),
       ])
@@ -386,7 +393,11 @@ export async function handleMessage(
       graphContext = pipelineResults[1]
       preferences = pipelineResults[2]
       activeGoal = pipelineResults[3]
-      pulseEngagementState = pipelineResults[4] as 'PASSIVE' | 'CURIOUS' | 'ENGAGED' | 'PROACTIVE'
+      agendaStack = pipelineResults[4]
+      pulseEngagementState = pipelineResults[5] as 'PASSIVE' | 'CURIOUS' | 'ENGAGED' | 'PROACTIVE'
+    } else {
+      // Agenda is consulted on every message (Issue #67), including simple turns.
+      agendaStack = await agendaPlanner.getStack(user.userId, session.sessionId).catch(() => [])
     }
 
     // ─── Step 7: Brain hooks — route message (Dev 1) ──────────────
@@ -498,6 +509,7 @@ export async function handleMessage(
         cognitiveState,
         preferences,
         activeGoal,
+        agendaStack,
         isFirstMessage,
         isSimpleMessage: isSimple,
         toolResults: toolResultStr,
@@ -520,6 +532,7 @@ export async function handleMessage(
       mood: cognitiveState.emotionalState,
       goal: cognitiveState.conversationGoal,
       activeGoalId: activeGoal?.id ?? null,
+      agendaGoals: agendaStack.length,
       pulseState: pulseEngagementState,
       hasToolResult: !!toolResultStr,
       promptLength: systemPromptComposed.length,
@@ -555,7 +568,7 @@ export async function handleMessage(
           systemPromptComposed = composeSystemPrompt({
             userMessage, isAuthenticated: !!(user.displayName && user.homeLocation),
             displayName: user.displayName, homeLocation: user.homeLocation,
-            memories, graphContext, cognitiveState, preferences, activeGoal,
+            memories, graphContext, cognitiveState, preferences, activeGoal, agendaStack,
             isFirstMessage, isSimpleMessage: isSimple, toolResults: toolResultStr,
             userSignal: classification.userSignal, toolInvolved: !!routeDecision?.toolName,
             pulseEngagementState, activeToolName: routeDecision?.toolName ?? undefined,
@@ -658,6 +671,21 @@ export async function handleMessage(
         classifierSignal: classification.userSignal,
       }).catch(err => {
         console.error('[handler] Pulse scoring failed:', safeError(err))
+      })
+
+      agendaPlanner.evaluate({
+        userId: user.userId,
+        sessionId: session.sessionId,
+        message: userMessage,
+        displayName: user.displayName,
+        homeLocation: user.homeLocation,
+        pulseState: pulseEngagementState,
+        classifierGoal: cognitiveState.conversationGoal,
+        messageComplexity: classification.message_complexity,
+        activeToolName: routeDecision?.toolName ?? undefined,
+        hasToolResult: !!toolResultStr,
+      }).catch(err => {
+        console.error('[handler] Agenda planner evaluation failed:', safeError(err))
       })
     })
 
