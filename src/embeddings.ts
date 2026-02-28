@@ -12,6 +12,7 @@
  */
 
 import { getPool } from './character/session-store.js'
+import { getCachedEmbedding, cacheEmbedding } from './archivist/redis-cache.js'
 
 // ─── Configuration ──────────────────────────────────────────────────────────
 
@@ -135,12 +136,21 @@ export async function embed(
     text: string,
     task: 'retrieval.passage' | 'retrieval.query' = 'retrieval.passage'
 ): Promise<number[] | null> {
+    // L1: in-process LRU (zero latency, single instance)
     const cached = cacheGet(text)
     if (cached) return cached
+
+    // L2: Redis (shared across instances, survives restarts)
+    const redisCached = await getCachedEmbedding(text)
+    if (redisCached) {
+        cacheSet(text, redisCached) // promote to L1
+        return redisCached
+    }
 
     const result = await embedBatch([text], task)
     if (result && result[0]) {
         cacheSet(text, result[0])
+        cacheEmbedding(text, result[0]).catch(() => {}) // async Redis write, never blocks
         return result[0]
     }
     return null

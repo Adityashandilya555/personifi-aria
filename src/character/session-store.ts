@@ -140,6 +140,53 @@ export async function runMigrations(): Promise<void> {
   `)
   await p.query(`CREATE INDEX IF NOT EXISTS idx_proactive_funnel_events_user_time ON proactive_funnel_events(platform_user_id, created_at DESC)`)
   await p.query(`CREATE INDEX IF NOT EXISTS idx_proactive_funnel_events_funnel_time ON proactive_funnel_events(funnel_id, created_at DESC)`)
+
+  // ── Archivist: memory write queue + session summaries (#61) ───────────
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS memory_write_queue (
+      queue_id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id         UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+      operation_type  VARCHAR(30) NOT NULL
+                      CHECK (operation_type IN ('ADD_MEMORY', 'GRAPH_WRITE', 'SAVE_PREFERENCE', 'UPDATE_GOAL')),
+      payload         JSONB NOT NULL,
+      status          VARCHAR(20) NOT NULL DEFAULT 'pending'
+                      CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
+      attempts        INTEGER NOT NULL DEFAULT 0,
+      max_attempts    INTEGER NOT NULL DEFAULT 3,
+      error_message   TEXT,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      processed_at    TIMESTAMPTZ
+    )
+  `)
+  await p.query(`CREATE INDEX IF NOT EXISTS mwq_status_created_idx ON memory_write_queue (status, created_at) WHERE status IN ('pending', 'failed')`)
+  await p.query(`CREATE INDEX IF NOT EXISTS mwq_user_id_idx ON memory_write_queue (user_id)`)
+
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS session_summaries (
+      summary_id      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      session_id      UUID NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+      user_id         UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+      summary_text    TEXT NOT NULL,
+      vector          vector(768),
+      message_count   INTEGER NOT NULL DEFAULT 0,
+      archived_to_s3  BOOLEAN NOT NULL DEFAULT FALSE,
+      s3_key          TEXT,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `)
+  await p.query(`CREATE INDEX IF NOT EXISTS session_summaries_hnsw_idx ON session_summaries USING hnsw (vector vector_cosine_ops)`)
+  await p.query(`CREATE INDEX IF NOT EXISTS session_summaries_session_idx ON session_summaries (session_id)`)
+  await p.query(`CREATE INDEX IF NOT EXISTS session_summaries_user_idx ON session_summaries (user_id)`)
+
+  // ── MCP token persistence (idempotent) ────────────────────────────────
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS mcp_tokens (
+      key         VARCHAR(100) PRIMARY KEY,
+      value       TEXT         NOT NULL,
+      updated_at  TIMESTAMPTZ  DEFAULT NOW()
+    )
+  `)
+
   console.log('[DB] Migrations complete')
 }
 

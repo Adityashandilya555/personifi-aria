@@ -38,12 +38,12 @@ import { filterOutput, needsHumanReview } from './output-filter.js'
 import { safeError } from '../utils/safe-log.js'
 
 // DEV 3: The Soul — memory, cognition, personality
-import { searchMemories, addMemories } from '../memory-store.js'
-import { searchGraph, addToGraph } from '../graph-memory.js'
-import { classifyMessage } from '../cognitive.js'
-import { getActiveGoal, updateConversationGoal } from '../cognitive.js'
+import { searchMemories } from '../memory-store.js'
+import { scoredMemorySearch, enqueueMemoryWrite } from '../archivist/index.js'
+import { searchGraph } from '../graph-memory.js'
+import { classifyMessage, getActiveGoal } from '../cognitive.js'
 import { composeSystemPrompt, getRawSoulPrompt } from '../personality.js'
-import { loadPreferences, processUserMessage } from '../memory.js'
+import { loadPreferences } from '../memory.js'
 import { pulseService } from '../pulse/index.js'
 import { getPool } from './session-store.js'
 
@@ -351,12 +351,15 @@ export async function handleMessage(
     if (!isSimple) {
       // 5-way parallel pipeline: memory, graph, preferences, active goal, pulse state.
       const pipelineResults = await Promise.all([
-        // Memory search (skip if classifier says so)
+        // Memory search — composite-scored (cosine 0.6 + recency 0.2 + importance 0.2)
         classification.skip_memory
           ? Promise.resolve([])
-          : searchMemories(searchUserIds.length > 1 ? searchUserIds : user.userId, userMessage, 5).catch(err => {
-            console.error('[handler] Memory search failed:', safeError(err))
-            return [] as Awaited<ReturnType<typeof searchMemories>>
+          : scoredMemorySearch(searchUserIds.length > 1 ? searchUserIds : user.userId, userMessage, 5).catch(err => {
+            console.warn('[handler] Composite memory search failed, falling back to cosine:', safeError(err))
+            return searchMemories(searchUserIds.length > 1 ? searchUserIds : user.userId, userMessage, 5).catch(err2 => {
+              console.error('[handler] Memory search failed:', safeError(err2))
+              return [] as Awaited<ReturnType<typeof searchMemories>>
+            })
           }),
         // Graph search (skip if classifier says so)
         classification.skip_graph
@@ -658,34 +661,30 @@ export async function handleMessage(
       })
     })
 
-    // ─── Steps 18-21: Fire-and-forget writes (SKIPPED for simple) ──
+    // ─── Steps 18-21: Durable memory writes via Archivist queue ───────
+    // Replaced fire-and-forget setImmediate() with enqueueMemoryWrite().
+    // The Archivist worker (scheduler cron, every 30s) picks these up and
+    // retries on failure — no more silent memory loss (#61).
     if (!isSimple) {
       const conversationHistory = session.messages.slice(-6)
-      setImmediate(() => {
-        // Step 18: Vector memory write
-        addMemories(user.userId, userMessage, conversationHistory).catch(err => {
-          console.error('[handler] Memory write failed:', safeError(err))
-        })
-        // Step 19: Graph memory write
-        addToGraph(user.userId, userMessage).catch(err => {
-          console.error('[handler] Graph write failed:', safeError(err))
-        })
-        // Step 20: Preference extraction
-        processUserMessage(pool, user.userId, userMessage).catch(err => {
-          console.error('[handler] Preference extraction failed:', safeError(err))
-        })
-        // Step 21: Persist conversation goal
-        const goalDescription = cognitiveState.internalMonologue
-          ? cognitiveState.internalMonologue.substring(0, 120)
-          : cognitiveState.conversationGoal
-        updateConversationGoal(
-          user.userId,
-          session.sessionId,
-          goalDescription,
-          { destination: user.homeLocation, mood: cognitiveState.emotionalState }
-        ).catch(err => {
-          console.error('[handler] Goal update failed:', safeError(err))
-        })
+      // Step 18: Vector memory write → durable queue
+      enqueueMemoryWrite(user.userId, 'ADD_MEMORY', { userId: user.userId, message: userMessage, history: conversationHistory })
+      // Step 19: Graph memory write → durable queue
+      enqueueMemoryWrite(user.userId, 'GRAPH_WRITE', { userId: user.userId, message: userMessage })
+      // Step 20: Preference extraction → durable queue (no history — processUserMessage only uses the message)
+      enqueueMemoryWrite(user.userId, 'SAVE_PREFERENCE', { userId: user.userId, message: userMessage })
+      // Step 21: Persist conversation goal → durable queue
+      // Field names must match executeOperation's UPDATE_GOAL destructuring: { sessionId, newGoal, context }
+      const goalDescription = cognitiveState.internalMonologue
+        ? cognitiveState.internalMonologue.substring(0, 120)
+        : cognitiveState.conversationGoal
+      enqueueMemoryWrite(user.userId, 'UPDATE_GOAL', {
+        userId: user.userId,
+        goalData: {
+          sessionId: session.sessionId,
+          newGoal: goalDescription,
+          context: { destination: user.homeLocation, mood: cognitiveState.emotionalState },
+        },
       })
     }
 

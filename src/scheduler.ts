@@ -18,6 +18,8 @@ import { registerMediaCron } from './cron/media-cron.js'
 import { runMigrations, cleanupExpiredRateLimits } from './character/session-store.js'
 import { checkPriceAlerts } from './alerts/price-alerts.js'
 import { runSocialOutbound } from './social/index.js'
+import { processMemoryWriteQueue } from './archivist/memory-queue.js'
+import { checkAndSummarizeSessions } from './archivist/session-summaries.js'
 
 // ─── Core scheduler ────────────────────────────────────────────────────────
 
@@ -74,6 +76,24 @@ export function initScheduler(_databaseUrl: string) {
     }
   })
 
+  // ── 7. Archivist: memory write queue — every 30 seconds (#61) ────────
+  cron.schedule('*/30 * * * * *', async () => {
+    try {
+      await processMemoryWriteQueue(20)
+    } catch (err) {
+      console.error('[SCHEDULER] Memory queue worker failed:', err)
+    }
+  })
+
+  // ── 8. Archivist: session summarization — every 5 minutes (#61) ───────
+  cron.schedule('*/5 * * * *', async () => {
+    try {
+      await checkAndSummarizeSessions()
+    } catch (err) {
+      console.error('[SCHEDULER] Session summarization failed:', err)
+    }
+  })
+
   // ── 4. Migrations + load active users on startup ──────────────────────
   setTimeout(async () => {
     try {
@@ -84,5 +104,5 @@ export function initScheduler(_databaseUrl: string) {
     }
   }, 8000) // after DB pool is ready
 
-  console.log('[SCHEDULER] Initialized — heartbeat (30s) + proactive pipeline (*/10) + media cron (*/6h) + price alerts (*/30)')
+  console.log('[SCHEDULER] Initialized — heartbeat (30s) + proactive (*/10) + media (*/6h) + price alerts (*/30) + memory queue (*/30s) + session summaries (*/5m)')
 }

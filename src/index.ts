@@ -10,6 +10,7 @@ import { getOrCreateUser } from './character/session-store.js'
 import { brainHooks } from './brain/index.js'
 import { initScheduler } from './scheduler.js'
 import { initMCPTokenStore } from './tools/mcp-client.js'
+import { initArchivist } from './archivist/index.js'
 import { initBrowser, closeBrowser } from './browser.js'
 import './tools/index.js'  // Register body hooks (DEV 2 tools)
 import { verifySlackSignature } from './slack-verify.js'
@@ -498,6 +499,7 @@ const start = async () => {
     initDatabase(dbUrl)
 
     await initMCPTokenStore(dbUrl)
+    initArchivist()
     registerBrainHooks(brainHooks)
 
     if (process.env.BROWSER_SCRAPING_ENABLED !== 'false') {
