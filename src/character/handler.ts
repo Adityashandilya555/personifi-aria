@@ -46,6 +46,8 @@ import { composeSystemPrompt, getRawSoulPrompt } from '../personality.js'
 import { loadPreferences } from '../memory.js'
 import { pulseService } from '../pulse/index.js'
 import { getPool } from './session-store.js'
+import { selectInlineMedia } from '../inline-media.js'
+import { selectStrategy } from '../influence-engine.js'
 
 // Cross-channel identity
 import { generateLinkCode, redeemLinkCode, getLinkedUserIds } from '../identity.js'
@@ -128,7 +130,8 @@ function buildMessages(
  */
 export interface MessageResponse {
   text: string
-  media?: { type: 'photo'; url: string; caption?: string }[]
+  /** Inline media items (photo or video) to deliver alongside the text response. */
+  media?: { type: 'photo' | 'video'; url: string; caption?: string }[]
   /** When true, the channel layer should send a location-request keyboard */
   requestLocation?: boolean
 }
@@ -582,20 +585,30 @@ export async function handleMessage(
       console.log(`[handler] After truncation: ~${Math.round(estimatedTokens)} tokens, history=${historyLimit}`)
     }
 
-    // ─── Step 11: Call Tier 2 (70B with fallback chain) ───────────
+    // ─── Step 11: Call Tier 2 (70B) + inline media fetch concurrently ─
+    // Resolve influence media hint (pure/sync — no extra cost)
+    const _influenceStrategy = selectStrategy(pulseEngagementState, {
+      toolName: routeDecision?.toolName ?? undefined,
+      hasToolResult: !!toolResultStr,
+      toolInvolved: !!routeDecision?.toolName,
+      istHour: (new Date().getUTCHours() + 5) % 24,
+      isWeekend: [0, 6].includes(new Date().getDay()),
+      hasPreferences: Object.keys(preferences).length > 0,
+      userSignal: classification.userSignal,
+    })
+    const mediaHint = _influenceStrategy?.mediaHint ?? false
+
     const tier2Messages: ChatMessage[] = messages.map(m => ({
       role: m.role as 'system' | 'user' | 'assistant',
       content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
     }))
 
-    const { text: tier2Response, provider: tier2Provider } = await generateResponse(
-      tier2Messages,
-      {
-        maxTokens: MAX_TOKENS,
-        temperature: TEMPERATURE,
-      }
-    )
-    console.log(`[handler] Tier 2 response from ${tier2Provider}`)
+    // Run LLM + inline media selection concurrently — media never blocks the response
+    const [{ text: tier2Response, provider: tier2Provider }, inlineMediaItem] = await Promise.all([
+      generateResponse(tier2Messages, { maxTokens: MAX_TOKENS, temperature: TEMPERATURE }),
+      selectInlineMedia(user.userId, userMessage, mediaHint, pulseEngagementState),
+    ])
+    console.log(`[handler] Tier 2 response from ${tier2Provider}${inlineMediaItem ? ` | inline media: ${inlineMediaItem.type}` : ''}`)
 
     let rawResponse = tier2Response
 
@@ -690,7 +703,11 @@ export async function handleMessage(
 
     return {
       text: assistantResponse,
-      media: extractMediaFromToolResult(toolRawData),
+      // Inline media (reel/image from influence strategy) takes precedence over
+      // tool-extracted product photos. Falls back gracefully when neither is available.
+      media: inlineMediaItem
+        ? [inlineMediaItem]
+        : extractMediaFromToolResult(toolRawData),
     }
 
   } catch (error) {
