@@ -45,6 +45,16 @@ let baseSoulSections: Record<string, string> = {}
 let lastSoulMtime: number = 0
 
 /**
+ * Post-onboarding guardrail:
+ * when real-time place/tool data exists, Aria should lead with a specific recommendation
+ * instead of generic open-ended prompts.
+ */
+const PROACTIVE_GREETING_DIRECTIVE = `## Proactive Response Priority
+When real-time data is available, lead with one specific recommendation grounded in that data.
+Avoid generic openers like "what are you in the mood for?" or "what's on your mind?".
+End with one concrete action question (yes/no or a clear next step).`
+
+/**
  * Load and cache SOUL.md, auto-reloading on file change.
  * @adaptedfrom clawhub - docs/soul-format.md L18-23
  *   SOUL.md as markdown with YAML frontmatter
@@ -285,6 +295,16 @@ export function composeSystemPrompt(opts: ComposeOptions): string {
     const bangaloreCtx = getBangaloreContext()
     if (bangaloreCtx) {
         sections.push(`## City Context\n${bangaloreCtx}`)
+    }
+
+    const shouldInjectProactiveGreetingDirective =
+        !!opts.isAuthenticated &&
+        !opts.isFirstMessage &&
+        !!opts.toolResults &&
+        (opts.activeToolName === 'search_places' || opts.activeToolName === 'compare_prices_proactive')
+
+    if (shouldInjectProactiveGreetingDirective) {
+        sections.push(PROACTIVE_GREETING_DIRECTIVE)
     }
 
     // ─── Layer 7d: Influence Strategy (Engagement State → Specific Behavior) ─

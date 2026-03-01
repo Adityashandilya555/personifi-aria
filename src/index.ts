@@ -321,7 +321,7 @@ server.post('/webhook/telegram', async (request, reply) => {
   if (msgText === '/start') {
     const greetings = [
       "Hey! 👋 I'm Aria — your Bengaluru bestie. Food, cafes, what's open, where to go — that's my whole thing. What should I call you?",
-      "Ayyo, you found me! 👋 I'm Aria. Bengaluru food, places, vibes — that's my thing. First up: what do I call you?",
+      "Ayy, you found me da 👋 I'm Aria. Tell me your name first — once I know your area, I can suggest what to hit right now.",
     ]
     await channels.telegram.sendMessage(chatId, pick(greetings))
     return { ok: true }

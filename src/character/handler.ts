@@ -55,7 +55,8 @@ import { generateLinkCode, redeemLinkCode, getLinkedUserIds } from '../identity.
 
 // Hook system
 import { getBrainHooks } from '../hook-registry.js'
-import type { RouteContext } from '../hooks.js'
+import type { RouteContext, RouteDecision } from '../hooks.js'
+import { getProactiveSuggestionQuery } from '../utils/bangalore-context.js'
 
 // Location utilities
 import { shouldRequestLocation } from '../location.js'
@@ -165,6 +166,30 @@ function isConfirmatoryMessage(msg: string): boolean {
 /** Does the message explicitly name a delivery platform? */
 function isExplicitPlatformRequest(msg: string): boolean {
   return /\b(swiggy|zomato|blinkit|zepto|instamart)\b/i.test(msg)
+}
+
+function extractNameCandidate(message: string): string | null {
+  const namePatterns = [
+    /(?:i'?m|my name is|call me)\s+([A-Z][a-z]+)/i,
+    /^([A-Z][a-z]+)$/,
+  ]
+  for (const pattern of namePatterns) {
+    const match = message.match(pattern)
+    if (match && match[1]) return match[1]
+  }
+  return null
+}
+
+function extractLocationCandidate(message: string): string | null {
+  const locationPatterns = [
+    /(?:i'?m in|based in|from|in|at)\s+([A-Z][a-zA-Z\s,]+)/i,
+    /^([A-Z][a-zA-Z\s,]+)$/,
+  ]
+  for (const pattern of locationPatterns) {
+    const match = message.match(pattern)
+    if (match && match[1]) return match[1].trim()
+  }
+  return null
 }
 
 // ─── Exported helper ──────────────────────────────────────────────────────────
@@ -584,6 +609,49 @@ export async function handleMessage(
     if (isFirstMessage && !user.displayName) {
       const onboardingHint = '\n\n[ARIA HINT: This is the user\'s first message. Warmly greet them, ask their name, and gently mention you\'d love to know their city so you can give local food & travel recommendations. Keep it natural and friendly — one question at a time.]'
       toolResultStr = toolResultStr ? toolResultStr + onboardingHint : onboardingHint
+    }
+
+    // ─── Step 8e: Onboarding completion → proactive city suggestion ───────────
+    // If user just provided their location (name already known), run a lightweight
+    // places query and force a specific opener instead of generic "what's on your mind?".
+    const locationCandidate = user.displayName && !user.homeLocation
+      ? extractLocationCandidate(userMessage)
+      : null
+    const onboardingJustCompleted = !!user.displayName && !user.homeLocation && !!locationCandidate
+    const isEarlyConversation = session.messages.length <= 6
+
+    if (onboardingJustCompleted && isEarlyConversation && !routeDecision.useTool) {
+      const proactive = getProactiveSuggestionQuery(locationCandidate)
+      const proactiveDecision: RouteDecision = {
+        useTool: true,
+        toolName: 'search_places',
+        toolParams: {
+          query: proactive.query,
+          location: proactive.location,
+          openNow: proactive.openNow,
+        },
+      }
+
+      const proactiveResult = await brainHooks.executeToolPipeline(proactiveDecision, routeContext).catch(err => {
+        console.warn('[handler] Proactive onboarding tool call failed:', safeError(err))
+        return null
+      })
+
+      const proactiveHint =
+        `\n\n[ARIA HINT: Onboarding just completed. The user shared their area (${proactive.location}). ` +
+        `Lead with ONE specific, opinionated suggestion grounded in current context (${proactive.moodTag}) and tool data. ` +
+        `Offer one concrete next action. Do NOT ask generic openers like "what are you in the mood for?" or "what's on your mind?"]`
+
+      if (proactiveResult?.success && proactiveResult.data) {
+        routeDecision = proactiveDecision
+        toolRawData = proactiveResult.raw
+        toolResultStr = toolResultStr
+          ? `${toolResultStr}\n\n${proactiveResult.data}${proactiveHint}`
+          : `${proactiveResult.data}${proactiveHint}`
+      } else {
+        // Tool failure should still keep the proactive onboarding behavior.
+        toolResultStr = toolResultStr ? toolResultStr + proactiveHint : proactiveHint
+      }
     }
 
     // ─── Step 9: Compose dynamic system prompt ────────────────────
@@ -1063,34 +1131,27 @@ async function extractAndSaveUserInfo(
   userId: string,
   message: string,
   currentUser: { displayName?: string; homeLocation?: string }
-): Promise<void> {
+): Promise<{ capturedName: string | null; capturedLocation: string | null }> {
+  let capturedName: string | null = null
+  let capturedLocation: string | null = null
+
   if (!currentUser.displayName) {
-    const namePatterns = [
-      /(?:i'?m|my name is|call me)\s+([A-Z][a-z]+)/i,
-      /^([A-Z][a-z]+)$/,
-    ]
-    for (const pattern of namePatterns) {
-      const match = message.match(pattern)
-      if (match && match[1]) {
-        await updateUserProfile(userId, match[1])
-        return
-      }
+    capturedName = extractNameCandidate(message)
+    if (capturedName) {
+      await updateUserProfile(userId, capturedName)
+      return { capturedName, capturedLocation: null }
     }
   }
 
   if (!currentUser.homeLocation && currentUser.displayName) {
-    const locationPatterns = [
-      /(?:i'?m in|based in|from|in|at)\s+([A-Z][a-zA-Z\s,]+)/i,
-      /^([A-Z][a-zA-Z\s,]+)$/,
-    ]
-    for (const pattern of locationPatterns) {
-      const match = message.match(pattern)
-      if (match && match[1]) {
-        await updateUserProfile(userId, undefined, match[1].trim())
-        return
-      }
+    capturedLocation = extractLocationCandidate(message)
+    if (capturedLocation) {
+      await updateUserProfile(userId, undefined, capturedLocation)
+      return { capturedName: null, capturedLocation }
     }
   }
+
+  return { capturedName: null, capturedLocation: null }
 }
 
 /**
