@@ -13,13 +13,14 @@
 
 // @ts-ignore - node-cron has no types
 import cron from 'node-cron'
-import { runProactiveForAllUsers, loadUsersFromDB } from './media/proactiveRunner.js'
+import { runProactiveForAllUsers, runTopicFollowUpsForAllUsers, loadUsersFromDB } from './media/proactiveRunner.js'
 import { registerMediaCron } from './cron/media-cron.js'
 import { runMigrations, cleanupExpiredRateLimits } from './character/session-store.js'
 import { checkPriceAlerts } from './alerts/price-alerts.js'
 import { runSocialOutbound } from './social/index.js'
 import { processMemoryWriteQueue } from './archivist/memory-queue.js'
 import { checkAndSummarizeSessions } from './archivist/session-summaries.js'
+import { sweepStaleTopics } from './topic-intent/sweep.js'
 
 // ─── Core scheduler ────────────────────────────────────────────────────────
 
@@ -29,14 +30,25 @@ export function initScheduler(_databaseUrl: string) {
     console.log(`[HEARTBEAT] alive — ${new Date().toISOString()}`)
   }, 30_000)
 
-  // ── 2. Proactive content pipeline — every 10 minutes ───────────────────
-  //    Gate checks are handled by proactiveRunner internally.
-  cron.schedule('*/10 * * * *', async () => {
-    console.log(`[SCHEDULER] Proactive pipeline triggered — ${new Date().toISOString()}`)
+  // ── 2a. Topic follow-ups — every 30 minutes (Mode A, priority) ─────────
+  //    Checks warm topics (confidence > 25%, inactive 4h+) and sends natural follow-ups.
+  cron.schedule('*/30 * * * *', async () => {
+    console.log(`[SCHEDULER] Topic follow-up run — ${new Date().toISOString()}`)
+    try {
+      await runTopicFollowUpsForAllUsers()
+    } catch (err) {
+      console.error('[SCHEDULER] Topic follow-up error:', err)
+    }
+  })
+
+  // ── 2b. Content blast pipeline — every 2 hours (Mode B, fallback) ───────
+  //    Generic content blast when no warm topics exist. Gate checks in runner.
+  cron.schedule('0 */2 * * *', async () => {
+    console.log(`[SCHEDULER] Content blast pipeline triggered — ${new Date().toISOString()}`)
     try {
       await runProactiveForAllUsers()
     } catch (err) {
-      console.error('[SCHEDULER] Proactive pipeline error:', err)
+      console.error('[SCHEDULER] Content blast pipeline error:', err)
     }
   })
 
@@ -59,6 +71,16 @@ export function initScheduler(_databaseUrl: string) {
       if (deleted > 0) console.log(`[SCHEDULER] Cleaned ${deleted} stale rate_limit rows`)
     } catch (err) {
       console.error('[SCHEDULER] Rate limit cleanup error:', err)
+    }
+  })
+
+  // ── 5b. Stale topic sweep — every hour ────────────────────────────────
+  //    Auto-abandons topics with no signal for 72h (catches inactive users).
+  cron.schedule('30 * * * *', async () => {
+    try {
+      await sweepStaleTopics()
+    } catch (err) {
+      console.error('[SCHEDULER] Stale topic sweep error:', err)
     }
   })
 
@@ -104,5 +126,5 @@ export function initScheduler(_databaseUrl: string) {
     }
   }, 8000) // after DB pool is ready
 
-  console.log('[SCHEDULER] Initialized — heartbeat (30s) + proactive (*/10) + media (*/6h) + price alerts (*/30) + memory queue (*/30s) + session summaries (*/5m)')
+  console.log('[SCHEDULER] Initialized — heartbeat (30s) + topic-followups (*/30m) + content-blast (*/2h) + media (*/6h) + price alerts (*/30) + memory queue (*/30s) + session summaries (*/5m)')
 }

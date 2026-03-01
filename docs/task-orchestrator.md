@@ -1,110 +1,122 @@
-# Multi-Step Task Orchestrator
+# Task Orchestrator
 
-> **Issue**: #64
-> **Module**: `src/task-orchestrator/`
+> **Directory:** `src/task-orchestrator/`  
+> **Files:** `orchestrator.ts`, `workflows.ts` (211 lines), `types.ts` (139 lines), `index.ts`
 
 ## Overview
 
-The Task Orchestrator enables Aria to drive users through multi-step actionable workflows — such as price comparison, booking, and selling flows — that span multiple conversational turns with rich output types.
+The Task Orchestrator manages **multi-step guided workflows** — more complex than funnels, with richer step types like presenting reels, comparing prices, showing cards, confirming actions, and collecting input.
 
-## Architecture
+## Defined Workflows
 
-```
-User Message
-     ↓
-handler.ts (Step 4.6)
-     ↓
-handleTaskReply()  ←→  task_workflows (PostgreSQL)
-     ↓
-evaluateTaskReply()  (State Machine)
-     ↓
-advance / abandon / stay / pass-through / rollback
-     ↓
-Send next step (text + choices + media)
-```
+| Key | Category | Step Count | Trigger |
+|-----|----------|-----------|---------|
+| `biryani_deal_flow` | food | 4 steps | Intent selector or proactive runner |
+| `weekend_food_plan_flow` | food | 4 steps | Weekend timing + food interest |
+| `quick_recommendation_flow` | food | 3 steps | General food interest |
 
-### Key Components
+## Step Types (`TaskStepType`)
 
-| File | Purpose |
-|------|---------|
-| `types.ts` | Step types, workflow/instance interfaces, API result types |
-| `workflows.ts` | Predefined workflow definitions (biryani deal, weekend plan, recommendation) |
-| `state-machine.ts` | Transition logic: evaluate replies & callbacks |
-| `orchestrator.ts` | DB-backed lifecycle engine (start → advance → complete) |
-| `index.ts` | Barrel exports |
+| Type | Purpose | Example |
+|------|---------|---------|
+| `present_reel` | Show a video/reel | "Here's a trending biryani video" |
+| `compare_prices` | Run price comparison tool | "Comparing biryani prices on Swiggy vs Zomato" |
+| `present_card` | Show a formatted card | "Weekend plan card with options" |
+| `confirm_action` | Ask for confirmation | "Want me to order this?" |
+| `collect_input` | Gather user input | "What's your budget range?" |
 
-### Step Types
-
-| Type | Description |
-|------|-------------|
-| `present_reel` | Fetch and send Instagram reel / media content |
-| `ask_question` | Ask user a question with optional inline keyboard choices |
-| `compare_prices` | Invoke price comparison tool mid-flow |
-| `present_card` | Rich info card with CTA buttons |
-| `confirm_action` | Yes/No confirmation gate |
-| `execute_action` | Execute a booking/order action |
-| `collect_input` | Free-text input → hand off to main pipeline |
-
-## Demo Flow: "User asked for biryani deal"
+## Workflow Structure (Example: `biryani_deal_flow`)
 
 ```
-Step 0 (present_reel):
-  Aria: "🍗 Found some fire biryani content near you!"
-  → [🔥 Compare prices] [😐 Not interested]
+Step 1: present_reel
+  text: "macha check this out 🔥 trending biryani in your area"
+  media: { type: 'reel', searchTag: 'bangalorebiryani' }
+  choices: [
+    "🤤 I want this" → advance
+    "Show me more"   → advance
+    "Not feeling it"  → advance (skip to card)
+  ]
 
-Step 1 (compare_prices):
-  Aria: "⏳ Comparing biryani prices across Swiggy & Zomato..."
-  → [🛒 Show best deal] [📋 See all options]
+Step 2: compare_prices
+  text: "Let me check the best prices for biryani near you..."
+  action: { toolName: 'compare_food_prices', toolArgs: { query: 'biryani' } }
+  → Should call tool (but doesn't actually execute)
 
-Step 2 (present_card):
-  Aria: "🏆 Here's the best biryani deal I found!"
-  → [✅ Order this] [🔄 Show more] [❌ Pass]
+Step 3: present_card
+  text: "Here's what I found da:"
+  choices: [
+    "🎯 Order from cheapest" → advance
+    "Show me different food"  → advance
+  ]
 
-Step 3 (confirm_action):
-  Aria: "📱 Just confirm your area so I get the right link:"
-  → User types area → passes through to main pipeline for execution
+Step 4: confirm_action
+  text: "Want me to...?"
+  choices: [
+    "Go ahead!" → complete
+    "Nah, maybe later" → complete
+  ]
 ```
 
-## Adding New Workflows
+## Task Instance Lifecycle
 
-Add a new entry to `TASK_WORKFLOWS` in `workflows.ts`:
-
-```typescript
-{
-  key: 'my_new_flow',
-  name: 'My New Flow',
-  category: ContentCategory.FOOD_DISCOVERY,
-  description: 'What this flow does',
-  triggerKeywords: ['keywords', 'that', 'trigger'],
-  defaultCTAUrgency: 'soft',
-  cooldownMinutes: 360,
-  steps: [
-    {
-      id: 'step_1',
-      type: 'ask_question',
-      text: 'First question?',
-      choices: [
-        { label: 'Option A', action: 'opt_a' },
-        { label: 'Option B', action: 'opt_b' },
-      ],
-      nextOnChoice: { opt_a: 1, opt_b: 1 },
-      intentKeywords: ['yes', 'sure'],
-      nextOnAnyReply: 1,
-      abandonKeywords: ['skip', 'no'],
-    },
-    // ... more steps
-  ],
-}
+```
+created → active → step 0 → step 1 → ... → completed
+                                          → expired (timeout)
+                                          → abandoned (user opts out)
 ```
 
-## Database Schema
+## Workflow Processing
 
-Tables: `task_workflows` (instances) + `task_workflow_events` (analytics).
+### Starting a Task
+```
+tryStartTask(userId, chatId, workflowKey)
+    │
+    ├── Create task_instances DB record
+    ├── Send step 0 message with choices
+    └── Return { started: true }
+```
 
-Migration: `database/task-orchestrator.sql`
+### Processing Replies (intercepted in handler Step 4.6)
+```
+handleTaskReply(channelUserId, userMessage)
+    │
+    ├── Load active task from DB
+    ├── Evaluate reply against current step choices
+    │   ├── advance → send next step
+    │   ├── abandon → close task
+    │   └── passthrough → return to main pipeline
+    └── Return MessageResponse with choices (inline keyboard)
+```
 
-## Integration Points
+## CTA Urgency System
 
-- **`handler.ts`** — Step 4.6: intercepts replies before the classifier pipeline
-- **`callback-handler.ts`** — Routes `task:` prefixed callbacks
-- **`influence-engine.ts`** — Consults CTA urgency strategy per step
+Each step can have a CTA urgency level:
+
+| Urgency | Behavior |
+|---------|----------|
+| `low` | Soft suggestion, no time pressure |
+| `medium` | Clear recommendation |
+| `high` | "Do this now — limited time!" |
+| `critical` | Strong push with scarcity/FOMO |
+
+## Task Events
+
+| Event | Meaning |
+|-------|---------|
+| `task_started` | New task instance created |
+| `step_completed` | User completed a step |
+| `task_completed` | All steps done |
+| `task_expired` | Timed out |
+| `task_abandoned` | User opted out |
+| `tool_executed` | Tool was called for a step |
+| `user_input_collected` | Input gathered from user |
+
+## Known Issues
+
+1. **Tool steps don't execute tools** — `compare_prices` step displays text but never calls `compare_food_prices`
+2. **Static text** — all step messages are pre-written, not LLM-generated
+3. **Only 3 workflows** — all Bangalore-food-specific with hardcoded content
+4. **Limited to Telegram** — inline keyboard buttons are Telegram-specific
+5. **No state persistence beyond DB** — task progress tracked in DB but no in-memory optimization
+6. **Workflows overlap with funnels** — `biryani_deal_flow` and `biryani_price_compare` are nearly identical concepts
+7. **Media steps assume reel availability** — fails silently if no reels found

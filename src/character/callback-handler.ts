@@ -57,6 +57,12 @@ export async function handleCallbackAction(
     return { text: result.message }
   }
 
+  if (callbackData.startsWith('topic:execute')) {
+    // Topic execution bridge — routes through full Aria pipeline as a confirmation
+    // so the execution bridge in handler.ts Step 7.1 fires the mapped tool.
+    return handleMessage(channel, userId, 'yes do it')
+  }
+
   if (callbackData.startsWith('task:')) {
     const taskResult = await handleTaskCallback(userId, callbackData)
     if (!taskResult) return null

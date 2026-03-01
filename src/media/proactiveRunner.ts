@@ -14,7 +14,7 @@
  *  - After 3h+ inactive: 60m check, 65% fire
  */
 
-import { callProactiveAgent, generateCaption } from '../llm/tierManager.js'
+import { callProactiveAgent, generateCaption, generateResponse } from '../llm/tierManager.js'
 import { PROACTIVE_AGENT_PROMPT } from '../llm/prompts/proactiveAgent.js'
 import { CAPTION_PROMPT } from '../llm/prompts/captionPrompt.js'
 import { sendEngagementHook, hookTypeForCategory } from '../character/engagement-hooks.js'
@@ -597,6 +597,144 @@ export async function blastReelsToAllUsers(hashtag = 'bangalorefood'): Promise<v
     console.log('[Proactive] Blast complete')
 }
 
+// ─── Mode A: Topic Follow-Up ─────────────────────────────────────────────────
+
+interface WarmTopicRow {
+    topic_id: string
+    topic: string
+    confidence: number
+    phase: string
+    channel_user_id: string
+    chat_id: string
+}
+
+/**
+ * Query all warm topics across all users:
+ * confidence > 25%, last_signal_at > 4 hours ago, not completed/abandoned.
+ */
+async function getWarmTopics(): Promise<WarmTopicRow[]> {
+    try {
+        const pool = getPool()
+        const { rows } = await pool.query<WarmTopicRow>(
+            `SELECT
+                ti.id AS topic_id,
+                ti.topic,
+                ti.confidence,
+                ti.phase,
+                u.channel_user_id,
+                COALESCE(pus.chat_id, u.channel_user_id) AS chat_id
+             FROM topic_intents ti
+             JOIN users u ON u.user_id = ti.user_id
+             LEFT JOIN proactive_user_state pus ON pus.user_id = u.channel_user_id
+             WHERE ti.confidence > 25
+               AND ti.phase NOT IN ('completed', 'abandoned')
+               AND ti.last_signal_at < NOW() - INTERVAL '4 hours'
+               AND u.channel = 'telegram'
+               AND u.authenticated = TRUE
+             ORDER BY ti.confidence DESC
+             LIMIT 20`
+        )
+        return rows
+    } catch (err: any) {
+        console.warn('[Proactive] getWarmTopics failed:', err?.message)
+        return []
+    }
+}
+
+/**
+ * Compose a natural topic follow-up message using the 70B model.
+ * Uses the same personality pipeline (SOUL.md + strategy directive).
+ */
+async function composeTopicFollowUp(topic: string, confidence: number, phase: string): Promise<string | null> {
+    const soulPrompt = `You are Aria — a sharp, opinionated companion who remembers what people care about.
+You're following up on something the user mentioned earlier. Keep it SHORT (1–2 lines), natural, casual.
+Don't be robotic. Don't say "Following up on..." — sound like a friend who remembered.
+Examples of good follow-ups:
+  - "still thinking about that rooftop place? heard they're actually solid on weekends"
+  - "that biryani spot you mentioned — my source says the dum biryani is the one to order"
+  - "yo the goa thing — did anything get planned or still floating?"
+Never use formal language. Sarcasm is fine. Keep it under 2 lines.`
+
+    const context = `Topic the user mentioned earlier: "${topic}"
+Intent confidence: ${confidence}% (Phase: ${phase.toUpperCase()})
+Follow up naturally — one punchy line or question.`
+
+    try {
+        const { text } = await generateResponse([
+            { role: 'system', content: soulPrompt },
+            { role: 'user', content: context },
+        ], { maxTokens: 100, temperature: 0.85 })
+        return text?.trim() || null
+    } catch (err: any) {
+        console.warn('[Proactive] Topic follow-up compose failed:', err?.message)
+        return null
+    }
+}
+
+/**
+ * Mode A: Run topic follow-ups for all users with warm topics.
+ * Called by scheduler every 30 minutes.
+ */
+export async function runTopicFollowUpsForAllUsers(): Promise<void> {
+    const warmTopics = await getWarmTopics()
+    if (warmTopics.length === 0) {
+        console.log('[Proactive/TopicFollowUp] No warm topics found')
+        return
+    }
+
+    const time = getCurrentTimeIST()
+    if (time.hour < 8 || time.hour >= 22) {
+        console.log(`[Proactive/TopicFollowUp] Outside active hours (${time.formatted})`)
+        return
+    }
+
+    // Process at most one follow-up per user to avoid spamming
+    const seenUsers = new Set<string>()
+
+    for (const row of warmTopics) {
+        if (seenUsers.has(row.channel_user_id)) continue
+
+        // Check user's daily send count via state
+        const state = await getOrCreateState(row.channel_user_id, row.chat_id)
+        if (state.sendCountToday >= 5) {
+            console.log(`[Proactive/TopicFollowUp] Daily limit reached for ${row.channel_user_id}`)
+            seenUsers.add(row.channel_user_id)
+            continue
+        }
+
+        // Check inactivity gate — don't interrupt active conversations
+        const lastActivity = userLastActivity.get(row.channel_user_id) ?? 0
+        const inactivityMins = lastActivity > 0 ? (Date.now() - lastActivity) / 60_000 : Infinity
+        if (lastActivity > 0 && inactivityMins < 30) {
+            console.log(`[Proactive/TopicFollowUp] User ${row.channel_user_id} active ${Math.floor(inactivityMins)}m ago, skipping`)
+            seenUsers.add(row.channel_user_id)
+            continue
+        }
+
+        seenUsers.add(row.channel_user_id)
+
+        console.log(`[Proactive/TopicFollowUp] Composing follow-up for "${row.topic}" (${row.confidence}%, ${row.phase})`)
+        const msg = await composeTopicFollowUp(row.topic, row.confidence, row.phase)
+        if (!msg) continue
+
+        const sent = await sendProactiveContent(row.chat_id, msg)
+        if (sent) {
+            console.log(`[Proactive/TopicFollowUp] Sent to ${row.channel_user_id}: "${msg.slice(0, 60)}..."`)
+            await updateStateAfterSend(state, row.channel_user_id, 'food' as ContentCategory, row.topic)
+
+            // Mark topic as recently followed up (update last_signal_at so it doesn't repeat)
+            getPool().query(
+                `UPDATE topic_intents SET last_signal_at = NOW() WHERE id = $1`,
+                [row.topic_id]
+            ).catch(() => { })
+        }
+
+        await sleep(800)
+    }
+
+    console.log(`[Proactive/TopicFollowUp] Done — processed ${seenUsers.size} users`)
+}
+
 /**
  * Handle negative feedback on proactive content.
  * Cools the category for 6 hours.
@@ -611,6 +749,10 @@ export function handleProactiveFeedback(userId: string, category: ContentCategor
 /**
  * Called by scheduler every 10 minutes.
  * Processes max 5 users per slot, 500ms delay between.
+ * 
+ * Gated by warm topics: if users have warm topics, skip generic content blast —
+ * Mode A (topic follow-ups) and organic funnels handle them instead.
+ * goal.md: "only reach out when there's a specific topic to continue."
  */
 export async function runProactiveForAllUsers(): Promise<void> {
     try {
@@ -624,6 +766,14 @@ export async function runProactiveForAllUsers(): Promise<void> {
 
     if (activeUsers.length === 0) {
         console.log('[Proactive] No active users registered')
+        return
+    }
+
+    // Gate: if warm topics exist, skip generic content blast.
+    // Topic follow-ups (Mode A, every 30 min) and organic funnels handle those users.
+    const warmTopics = await getWarmTopics()
+    if (warmTopics.length > 0) {
+        console.log(`[Proactive] Skipping generic blast — ${warmTopics.length} warm topics exist (handled by Mode A + organic funnels)`)
         return
     }
 

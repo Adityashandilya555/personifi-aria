@@ -1,8 +1,9 @@
 import { getPool } from '../character/session-store.js'
-import { FUNNEL_BY_KEY } from './funnels.js'
+import { FUNNEL_BY_KEY, generateFunnelFromTopic } from './funnels.js'
 import { recordFunnelEvent } from './analytics.js'
 import { evaluateCallback, evaluateReply } from './funnel-state.js'
 import { loadIntentContext, selectFunnelForUser } from './intent-selector.js'
+import { recordSignal } from '../topic-intent/index.js'
 import type {
   FunnelCallbackResult,
   FunnelChoice,
@@ -12,6 +13,7 @@ import type {
   FunnelStartResult,
   FunnelStatus,
 } from './types.js'
+import type { TopicIntent, TopicPhase } from '../topic-intent/types.js'
 
 interface FunnelRow {
   id: string
@@ -199,7 +201,7 @@ export async function tryStartIntentDrivenFunnel(
   const context = await loadIntentContext(platformUserId, chatId)
   if (!context) return { started: false, reason: 'user context unavailable' }
 
-  const selection = selectFunnelForUser(context)
+  const selection = await selectFunnelForUser(context)
   if (!selection) return { started: false, reason: `no eligible funnel for pulse=${context.pulseState}` }
 
   const pool = getPool()
@@ -242,8 +244,50 @@ export async function tryStartIntentDrivenFunnel(
   }
 }
 
-function findDefinition(instance: FunnelInstance): FunnelDefinition | null {
-  return FUNNEL_BY_KEY.get(instance.funnelKey) ?? null
+async function findDefinition(instance: FunnelInstance): Promise<FunnelDefinition | null> {
+  // First check static map (backward compat)
+  const staticDef = FUNNEL_BY_KEY.get(instance.funnelKey)
+  if (staticDef) return staticDef
+
+  // For topic-driven funnels (key = topic_{id}), reconstruct from DB
+  if (instance.funnelKey.startsWith('topic_')) {
+    const topicId = instance.funnelKey.replace('topic_', '')
+    try {
+      const pool = getPool()
+      const { rows } = await pool.query(
+        `SELECT * FROM topic_intents WHERE id = $1 LIMIT 1`,
+        [topicId],
+      )
+      if (rows.length > 0) {
+        const row = rows[0]
+        const topicIntent: TopicIntent = {
+          id: row.id as string,
+          userId: row.user_id as string,
+          sessionId: (row.session_id as string | null) ?? null,
+          topic: row.topic as string,
+          category: (row.category as string | null) ?? null,
+          confidence: row.confidence as number,
+          phase: row.phase as TopicPhase,
+          signals: (row.signals as any[]) ?? [],
+          strategy: (row.strategy as string | null) ?? null,
+          lastSignalAt: row.last_signal_at instanceof Date
+            ? (row.last_signal_at as Date).toISOString()
+            : String(row.last_signal_at),
+          createdAt: row.created_at instanceof Date
+            ? (row.created_at as Date).toISOString()
+            : String(row.created_at),
+          updatedAt: row.updated_at instanceof Date
+            ? (row.updated_at as Date).toISOString()
+            : String(row.updated_at),
+        }
+        return generateFunnelFromTopic(topicIntent)
+      }
+    } catch (err) {
+      console.warn('[IntentFunnel] Failed to reconstruct topic funnel:', (err as Error).message)
+    }
+  }
+
+  return null
 }
 
 export async function handleFunnelReply(
@@ -257,7 +301,7 @@ export async function handleFunnelReply(
   const active = await getActiveFunnel(platformUserId)
   if (!active) return { handled: false }
 
-  const funnel = findDefinition(active)
+  const funnel = await findDefinition(active)
   if (!funnel) return { handled: false }
   const step = funnel.steps[active.currentStepIndex]
   if (!step) return { handled: false }
@@ -291,6 +335,18 @@ export async function handleFunnelReply(
       clearInMemoryExpiry(active.id)
       await updateFunnelState(active.id, 'COMPLETED', active.currentStepIndex)
       await safeRecordEvent(active.id, platformUserId, 'funnel_completed', active.currentStepIndex, { reason: 'terminal' })
+
+      // Record committed signal back to topic_intents to push toward executing phase
+      if (active.funnelKey.startsWith('topic_')) {
+        const topicId = active.funnelKey.replace('topic_', '')
+        recordSignal(active.internalUserId, topicId, {
+          signal: 'committed',
+          delta: 22,
+          message: `[funnel completed: ${active.funnelKey}]`,
+          timestamp: new Date().toISOString(),
+        }).catch(err => console.warn('[IntentFunnel] Signal recording failed:', (err as Error).message))
+      }
+
       return { handled: true, responseText: 'Done. Flow completed.' }
     }
 
@@ -327,7 +383,7 @@ export async function handleFunnelCallback(
     return { text: 'This step is outdated. Use the latest prompt and I will continue.' }
   }
 
-  const funnel = findDefinition(active)
+  const funnel = await findDefinition(active)
   if (!funnel) return null
   const step = funnel.steps[active.currentStepIndex]
   if (!step) return null
@@ -355,6 +411,18 @@ export async function handleFunnelCallback(
       clearInMemoryExpiry(active.id)
       await updateFunnelState(active.id, 'COMPLETED', active.currentStepIndex)
       await safeRecordEvent(active.id, platformUserId, 'funnel_completed', active.currentStepIndex, { reason: 'terminal' })
+
+      // Record committed signal back to topic_intents to push toward executing phase
+      if (active.funnelKey.startsWith('topic_')) {
+        const topicId = active.funnelKey.replace('topic_', '')
+        recordSignal(active.internalUserId, topicId, {
+          signal: 'committed',
+          delta: 22,
+          message: `[funnel callback completed: ${active.funnelKey}]`,
+          timestamp: new Date().toISOString(),
+        }).catch(err => console.warn('[IntentFunnel] Signal recording failed:', (err as Error).message))
+      }
+
       return { text: 'Done. Flow completed.' }
     }
 

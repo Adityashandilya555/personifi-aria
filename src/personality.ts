@@ -29,6 +29,7 @@ import type { GraphSearchResult } from './graph-memory.js'
 import type { PreferencesMap } from './types/database.js'
 import type { ConversationGoalRecord } from './types/cognitive.js'
 import type { AgendaGoal } from './agenda-planner/types.js'
+import type { TopicIntent } from './topic-intent/types.js'
 import { formatMemoriesForPrompt } from './memory-store.js'
 import { formatGraphForPrompt } from './graph-memory.js'
 import { selectResponseTone } from './cognitive.js'
@@ -152,6 +153,18 @@ export interface ComposeOptions {
      */
     activeToolName?: string
 
+    // ─── Topic Intent (Layer 4.5 — Per-topic strategy) ───
+    /**
+     * Active topics from topic_intents table.
+     * Drives per-topic conversational strategy injection into the 70B model.
+     */
+    activeTopics?: TopicIntent[]
+    /**
+     * Pre-computed topic strategy string from topicIntentService.getStrategy().
+     * Injected as Layer 4.5 between agenda stack and memory.
+     */
+    topicStrategy?: string | null
+
     // ─── Tool results from DEV 1's router ───
     /** Tool results (if any) */
     toolResults?: string
@@ -207,6 +220,37 @@ export function composeSystemPrompt(opts: ComposeOptions): string {
         sections.push(formatGoal(opts.activeGoal))
     }
 
+    // ─── Layer 4.5: Topic Strategy (per-topic conversational directive) ─
+    // Injected between agenda stack and memories so it shapes Aria's next move
+    // without burying it in the long memory/graph context.
+    if (opts.topicStrategy) {
+        sections.push(`## Active Conversational Strategy\n${opts.topicStrategy}`)
+    } else if (opts.activeTopics && opts.activeTopics.length > 0) {
+        // Cross-session recall: when topics exist but strategy is stale or null,
+        // inject recall so Aria can pick up previous conversations.
+        const topic = opts.activeTopics[0]
+        const lastSignalMs = topic.lastSignalAt ? Date.now() - new Date(topic.lastSignalAt).getTime() : Infinity
+        const ONE_HOUR_MS = 60 * 60 * 1000
+        if (lastSignalMs > ONE_HOUR_MS) {
+            // Active recall for shifting-phase topics (60-85%) — Aria brings it up
+            if (topic.phase === 'shifting') {
+                sections.push(
+                    `## Cross-Session Topic Recall\n` +
+                    `You were discussing "${topic.topic}" recently (confidence: ${topic.confidence}%).\n` +
+                    `Naturally bring it up — mention you remember. Example: "btw still thinking about that ${topic.topic}?"\n` +
+                    `Don't be robotic about it — weave it in like a friend who remembered.`
+                )
+            } else {
+                // Passive recall for noticed/probing — don't force it
+                sections.push(
+                    `## Cross-Session Topic Recall\n` +
+                    `You were discussing "${topic.topic}" the other day (confidence: ${topic.confidence}%).\n` +
+                    `Pick up naturally if they bring it up — don't force it.`
+                )
+            }
+        }
+    }
+
     // ─── Layer 5: Memory Context ────────────────────────────────
     if (opts.memories && opts.memories.length > 0) {
         sections.push(formatMemoriesForPrompt(opts.memories))
@@ -228,11 +272,11 @@ export function composeSystemPrompt(opts: ComposeOptions): string {
         const istHour = (now.getUTCHours() + 5) % 24 // approximate IST
         const isWeekend = [0, 6].includes(now.getDay())
         const weights = computeMoodWeights({
-            userSignal:     opts.userSignal ?? 'normal',
+            userSignal: opts.userSignal ?? 'normal',
             emotionalState: opts.cognitiveState.emotionalState,
-            hourIST:        istHour,
+            hourIST: istHour,
             isWeekend,
-            toolInvolved:   !!opts.toolInvolved,
+            toolInvolved: !!opts.toolInvolved,
         })
         sections.push(`## Active Personality Mode\n${getMoodInstruction(weights)}`)
     }
@@ -256,6 +300,7 @@ export function composeSystemPrompt(opts: ComposeOptions): string {
         isWeekend,
         hasPreferences: !!(opts.preferences && Object.keys(opts.preferences).length > 0),
         userSignal: opts.userSignal,
+        activeTopics: opts.activeTopics,
     })
     const influenceSection = formatStrategyForPrompt(opts.pulseEngagementState, influenceStrategy)
     if (influenceSection) {

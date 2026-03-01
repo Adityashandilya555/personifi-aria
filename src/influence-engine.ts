@@ -27,6 +27,8 @@
 export type EngagementState = 'PASSIVE' | 'CURIOUS' | 'ENGAGED' | 'PROACTIVE'
 export type CTAStyle = 'none' | 'soft' | 'direct' | 'urgent'
 
+import type { TopicIntent } from './topic-intent/types.js'
+
 export interface InfluenceContext {
     /** What tool ran this turn, if any */
     toolName?: string
@@ -42,6 +44,8 @@ export interface InfluenceContext {
     hasPreferences: boolean
     /** 8B classifier signal about user communication style */
     userSignal?: 'dry' | 'stressed' | 'roasting' | 'normal'
+    /** Active topics from topic_intents — shapes per-topic phase directives */
+    activeTopics?: TopicIntent[]
 }
 
 export interface InfluenceStrategy {
@@ -59,12 +63,44 @@ export interface InfluenceStrategy {
 
 /**
  * Select the influence strategy for this turn.
- * Returns null for PASSIVE (no directive — SOUL.md defaults handle it).
+ * If active topics are in probing/shifting/executing phase, their strategy
+ * overrides the generic pulse-based directive.
+ * Returns null for PASSIVE with no active topics (SOUL.md defaults handle it).
  */
 export function selectStrategy(
     state: EngagementState | undefined,
     ctx: InfluenceContext,
 ): InfluenceStrategy | null {
+    // Per-topic strategy takes priority — more specific than global pulse state.
+    // The actual strategy text is injected as Layer 4.5 in personality.ts.
+    // Here we just boost the CTA style based on topic phase.
+    if (ctx.activeTopics && ctx.activeTopics.length > 0) {
+        const warmestTopic = ctx.activeTopics[0]
+        const phase = warmestTopic.phase
+
+        if (phase === 'executing') {
+            // Topic is executing — amp up to direct CTA
+            const base = state ? (state === 'PASSIVE' ? curiousStrategy(ctx) : null) : null
+            return base ?? {
+                directiveLine: `You have a committed topic: "${warmestTopic.topic}". Take action now — run tools, check availability, confirm details. The user is ready.`,
+                ctaStyle: 'direct',
+                offeredActions: ['Check availability', 'Compare prices', 'Make reservation'],
+                mediaHint: false,
+            }
+        }
+
+        if (phase === 'shifting') {
+            return {
+                directiveLine: `Topic "${warmestTopic.topic}" is warm (${warmestTopic.confidence}% confidence). Offer to plan — suggest a timeframe, ask about friends. One clear offer.`,
+                ctaStyle: 'soft',
+                offeredActions: ['Check reservations', 'Find similar options', 'Invite squad'],
+                mediaHint: true,
+            }
+        }
+
+        // probing — pulse strategy handles the conversation depth, topic strategy (Layer 4.5) handles specifics
+    }
+
     switch (state) {
         case 'PROACTIVE': return proactiveStrategy(ctx)
         case 'ENGAGED':   return engagedStrategy(ctx)

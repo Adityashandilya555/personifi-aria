@@ -73,6 +73,10 @@ import { handleTaskReply } from '../task-orchestrator/index.js'
 import { addFriend, acceptFriend, removeFriend, getFriends, getPendingRequests, resolveUserByPlatformId } from '../social/friend-graph.js'
 import { createSquad, inviteToSquad, acceptSquadInvite, leaveSquad, getSquadsForUser, getPendingSquadInvites } from '../social/squad.js'
 import { detectIntentCategory, recordIntentForUserSquads } from '../social/squad-intent.js'
+import { topicIntentService } from '../topic-intent/index.js'
+import type { TopicIntent } from '../topic-intent/types.js'
+import { resolveToolFromTopic } from '../topic-intent/tool-map.js'
+import { logExecutionBridge, logTopicCompleted } from '../topic-intent/logger.js'
 
 // Initialize Groq client
 const groq = new Groq({
@@ -350,18 +354,29 @@ export async function handleMessage(
     let activeGoal: Awaited<ReturnType<typeof getActiveGoal>> = null
     let agendaStack: Awaited<ReturnType<typeof agendaPlanner.getStack>> = []
     let pulseEngagementState: 'PASSIVE' | 'CURIOUS' | 'ENGAGED' | 'PROACTIVE' = 'PASSIVE'
+    let activeTopics: TopicIntent[] = []
+    let topicStrategy: string | null = null
 
     const isSimple = classification.message_complexity === 'simple'
 
     if (!isSimple) {
+      // Pre-fetch active topics (cached, 30s TTL) so we can augment memory search
+      activeTopics = await topicIntentService.getActiveTopics(user.userId, 3).catch(() => [] as TopicIntent[])
+      topicStrategy = activeTopics.length > 0 ? (activeTopics[0].strategy ?? null) : null
+
+      // Augment memory search query with active topic text for cross-session recall
+      const memoryQuery = activeTopics.length > 0
+        ? `${userMessage} ${activeTopics[0].topic}`
+        : userMessage
+
       // 6-way parallel pipeline: memory, graph, preferences, active goal, agenda stack, pulse state.
       const pipelineResults = await Promise.all([
         // Memory search — composite-scored (cosine 0.6 + recency 0.2 + importance 0.2)
         classification.skip_memory
           ? Promise.resolve([])
-          : scoredMemorySearch(searchUserIds.length > 1 ? searchUserIds : user.userId, userMessage, 5).catch(err => {
+          : scoredMemorySearch(searchUserIds.length > 1 ? searchUserIds : user.userId, memoryQuery, 5).catch(err => {
             console.warn('[handler] Composite memory search failed, falling back to cosine:', safeError(err))
-            return searchMemories(searchUserIds.length > 1 ? searchUserIds : user.userId, userMessage, 5).catch(err2 => {
+            return searchMemories(searchUserIds.length > 1 ? searchUserIds : user.userId, memoryQuery, 5).catch(err2 => {
               console.error('[handler] Memory search failed:', safeError(err2))
               return [] as Awaited<ReturnType<typeof searchMemories>>
             })
@@ -416,7 +431,28 @@ export async function handleMessage(
       history: session.messages.slice(-6),
     }
 
-    const routeDecision = await brainHooks.routeMessage(routeContext)
+    let routeDecision = await brainHooks.routeMessage(routeContext)
+
+    // ─── Step 7.1: Execution Bridge — override when 8B misses confirmatory intent ─
+    // When a topic is in 'executing' phase and the user sends a confirmatory message
+    // ("yeah check it", "sure", "go ahead"), the 8B classifier may not detect it as a
+    // tool request. We override routeDecision to fire the correct tool.
+    let executingTopic: TopicIntent | null = null
+    if (!routeDecision.useTool && activeTopics.length > 0) {
+      executingTopic = activeTopics.find(t => t.phase === 'executing') ?? null
+      if (executingTopic && isConfirmatoryMessage(userMessage)) {
+        const toolMapping = resolveToolFromTopic(executingTopic)
+        if (toolMapping) {
+          routeDecision = {
+            ...routeDecision,
+            useTool: true,
+            toolName: toolMapping.toolName,
+            toolParams: toolMapping.toolParams,
+          }
+          logExecutionBridge(user.userId, executingTopic.id, executingTopic.topic, toolMapping.toolName)
+        }
+      }
+    }
 
     // ─── Step 7.5: Location check — ask before running location-dependent tools ─
     if (routeDecision.useTool && routeDecision.toolName &&
@@ -520,6 +556,8 @@ export async function handleMessage(
         toolInvolved: !!routeDecision?.toolName,
         pulseEngagementState,
         activeToolName: routeDecision?.toolName ?? undefined,
+        activeTopics,
+        topicStrategy,
       })
     } catch (err) {
       console.error('[handler] Personality composition failed, using static SOUL.md', safeError(err))
@@ -575,6 +613,7 @@ export async function handleMessage(
             isFirstMessage, isSimpleMessage: isSimple, toolResults: toolResultStr,
             userSignal: classification.userSignal, toolInvolved: !!routeDecision?.toolName,
             pulseEngagementState, activeToolName: routeDecision?.toolName ?? undefined,
+            activeTopics, topicStrategy,
           })
         } catch { /* keep existing composed prompt */ }
         messages = buildMessages(systemPromptComposed, session.messages, userMessage, historyLimit)
@@ -612,6 +651,7 @@ export async function handleMessage(
       isWeekend: [0, 6].includes(new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })).getDay()),
       hasPreferences: Object.keys(preferences).length > 0,
       userSignal: classification.userSignal,
+      activeTopics,
     })
     const mediaHint = influenceStrategy?.mediaHint ?? false
 
@@ -686,6 +726,28 @@ export async function handleMessage(
       .find(msg => !!msg.timestamp)?.timestamp ?? null
 
     setImmediate(() => {
+      // Topic intent processing — fire-and-forget, NEVER block the response
+      if (!isSimple) {
+        topicIntentService.processMessage(
+          user.userId,
+          session.sessionId,
+          userMessage,
+          classification,
+        ).catch(err => {
+          console.error('[handler] Topic intent processing failed:', err)
+        })
+      }
+
+      // ─── Execution Bridge: Completion Hook ─────────────────────────
+      // When a tool fired for an executing-phase topic, mark it as completed.
+      if (routeDecision.useTool && toolResultStr && executingTopic) {
+        topicIntentService.completeTopic(user.userId, executingTopic.id)
+          .then(() => logTopicCompleted(user.userId, executingTopic!.id, executingTopic!.topic))
+          .catch(err => {
+            console.error('[handler] Topic completion failed:', err)
+          })
+      }
+
       pulseService.recordEngagement({
         userId: user.userId,
         message: userMessage,

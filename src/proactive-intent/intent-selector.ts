@@ -1,7 +1,8 @@
 import { getPool } from '../character/session-store.js'
-import { FUNNEL_DEFINITIONS } from './funnels.js'
-import { pulseStateMeetsMinimum, scoreKeywordOverlap } from './funnel-state.js'
+import { generateFunnelFromTopic } from './funnels.js'
+import { pulseStateMeetsMinimum } from './funnel-state.js'
 import type { FunnelDefinition, IntentContext, PulseState } from './types.js'
+import type { TopicIntent, TopicPhase } from '../topic-intent/types.js'
 
 interface UserRow {
   user_id: string
@@ -30,10 +31,27 @@ interface RecentFunnelRow {
   created_at: string
 }
 
+// DB row shape for warm topic query
+interface WarmTopicRow {
+  id: string
+  user_id: string
+  session_id: string | null
+  topic: string
+  category: string | null
+  confidence: number
+  phase: string
+  signals: any
+  strategy: string | null
+  last_signal_at: Date
+  created_at: Date
+  updated_at: Date
+}
+
 export interface SelectedFunnel {
   funnel: FunnelDefinition
   score: number
   reason: string
+  topicId?: string // back-reference to the source topic
 }
 
 function parseDate(value: string): Date | null {
@@ -150,36 +168,94 @@ export async function loadIntentContext(
   }
 }
 
-function hasRecentFunnelHit(context: IntentContext, funnel: FunnelDefinition): boolean {
-  const cooldownMs = funnel.cooldownMinutes * 60 * 1000
-  return context.recentFunnels.some(entry => {
-    if (entry.key !== funnel.key) return false
-    const startedAt = parseDate(entry.startedAt)
-    if (!startedAt) return false
-    return context.now.getTime() - startedAt.getTime() < cooldownMs
-  })
-}
-
-export function selectFunnelForUser(context: IntentContext): SelectedFunnel | null {
+/**
+ * Select the best funnel for a user by querying warm topics from topic_intents
+ * and generating a deterministic FunnelDefinition from the highest-confidence topic.
+ *
+ * Replaces the previous static FUNNEL_DEFINITIONS iteration.
+ * Only returns a funnel if:
+ *   - User pulse state is at least ENGAGED
+ *   - Warm topics exist (confidence >= 40%, probing/shifting, inactive 4h+)
+ *   - No recent funnel for this topic (cooldown check)
+ */
+export async function selectFunnelForUser(context: IntentContext): Promise<SelectedFunnel | null> {
+  // Gate: require at least ENGAGED pulse state for proactive outreach
   if (!pulseStateMeetsMinimum(context.pulseState, 'ENGAGED')) {
     return null
   }
 
+  // Query warm topics for this user from DB
+  const pool = getPool()
+  let warmTopics: WarmTopicRow[]
+  try {
+    const result = await pool.query<WarmTopicRow>(
+      `SELECT *
+       FROM topic_intents
+       WHERE user_id = $1
+         AND confidence >= 40
+         AND phase IN ('probing', 'shifting')
+         AND last_signal_at < NOW() - INTERVAL '4 hours'
+       ORDER BY confidence DESC
+       LIMIT 5`,
+      [context.internalUserId],
+    )
+    warmTopics = result.rows
+  } catch (err) {
+    console.warn('[IntentSelector] Warm topic query failed:', (err as Error).message)
+    return null
+  }
+
+  if (warmTopics.length === 0) return null
+
+  // Score and pick the best topic
   const scored: SelectedFunnel[] = []
-  for (const funnel of FUNNEL_DEFINITIONS) {
-    if (!pulseStateMeetsMinimum(context.pulseState, funnel.minPulseState)) continue
-    if (hasRecentFunnelHit(context, funnel)) continue
 
-    const pulseScore = context.pulseState === 'PROACTIVE' ? 24 : 14
-    const preferenceScore = scoreKeywordOverlap(context.preferences, funnel.preferenceKeywords) * 6
-    const goalScore = scoreKeywordOverlap(context.activeGoals, funnel.goalKeywords) * 5
+  for (const row of warmTopics) {
+    const topicIntent: TopicIntent = {
+      id: row.id,
+      userId: row.user_id,
+      sessionId: row.session_id,
+      topic: row.topic,
+      category: row.category,
+      confidence: row.confidence,
+      phase: row.phase as TopicPhase,
+      signals: row.signals ?? [],
+      strategy: row.strategy,
+      lastSignalAt: row.last_signal_at instanceof Date
+        ? row.last_signal_at.toISOString()
+        : String(row.last_signal_at),
+      createdAt: row.created_at instanceof Date
+        ? row.created_at.toISOString()
+        : String(row.created_at),
+      updatedAt: row.updated_at instanceof Date
+        ? row.updated_at.toISOString()
+        : String(row.updated_at),
+    }
+
+    // Generate deterministic funnel from topic
+    const funnel = generateFunnelFromTopic(topicIntent)
+    if (!funnel) continue
+
+    // Check cooldown — skip if we already sent a funnel for this topic recently
+    const hasCooldownHit = context.recentFunnels.some(entry => {
+      if (entry.key !== funnel.key) return false
+      const startedAt = parseDate(entry.startedAt)
+      if (!startedAt) return false
+      return context.now.getTime() - startedAt.getTime() < funnel.cooldownMinutes * 60 * 1000
+    })
+    if (hasCooldownHit) continue
+
+    // Score: confidence + pulse bonus - recency penalty
+    const pulseBonus = context.pulseState === 'PROACTIVE' ? 24 : 14
     const recencyPenalty = context.recentFunnels.length > 0 ? 4 : 0
+    const confidenceScore = row.confidence / 5 // normalize 0-100 to 0-20
+    const score = confidenceScore + pulseBonus - recencyPenalty
 
-    const score = pulseScore + preferenceScore + goalScore - recencyPenalty
     scored.push({
       funnel,
       score,
-      reason: `pulse=${pulseScore}, prefs=${preferenceScore}, goals=${goalScore}, penalty=${recencyPenalty}`,
+      reason: `topic="${row.topic}" confidence=${row.confidence}% phase=${row.phase} pulse=${pulseBonus} penalty=${recencyPenalty}`,
+      topicId: row.id,
     })
   }
 

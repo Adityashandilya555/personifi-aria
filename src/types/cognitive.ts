@@ -40,6 +40,20 @@ export interface ClassifierResult {
      *   normal   = everything else
      */
     userSignal?: 'dry' | 'stressed' | 'roasting' | 'normal'
+    /**
+     * Specific topic/place/experience detected in the user's message.
+     * e.g. "rooftop restaurant HSR Layout", "goa trip in December"
+     * Null if no specific topic was detected.
+     */
+    detected_topic?: string | null
+    /**
+     * User's interest signal toward the detected topic.
+     *   positive  = genuine interest, positive sentiment
+     *   committed = committed to a timeframe or logistics
+     *   neutral   = mentioned but no strong signal
+     *   negative  = rejection or disinterest
+     */
+    interest_signal?: 'positive' | 'negative' | 'neutral' | 'committed' | null
 }
 
 // ─── Emotional + Cognitive Types ─────────────────────────────────────────────

@@ -91,8 +91,8 @@ STEP 1 — Call a tool if the user needs real-time data:
 
 STEP 2 — If NO tool needed, reply with ONLY this JSON (nothing else):
 {"c":"simple"} — greetings, farewells, yes/no, thanks, one-word replies
-{"c":"moderate","m":"...","e":"...","g":"...","s":"..."} — general travel/food chat, opinions, follow-ups
-{"c":"complex","m":"...","e":"...","g":"...","s":"..."} — multi-part questions needing memory or planning
+{"c":"moderate","m":"...","e":"...","g":"...","s":"...","topic":null,"signal":null} — general travel/food chat
+{"c":"complex","m":"...","e":"...","g":"...","s":"...","topic":null,"signal":null} — multi-part questions
 
 m = Aria's 1-sentence private reasoning (e.g. "User wants Bali tips, mention the visa trick they'll love")
 e = user emotion: excited|frustrated|curious|neutral|anxious|grateful|nostalgic|overwhelmed
@@ -101,7 +101,13 @@ s = user signal: dry|stressed|roasting|normal
   dry = short/terse/lowercase messages, minimal punctuation
   stressed = words like help, urgent, stuck, confused, please
   roasting = user being sarcastic back at Aria
-  normal = everything else`
+  normal = everything else
+topic = specific place/food/experience mentioned (e.g. "rooftop restaurant in HSR", "Goa trip December") or null
+signal = user's interest toward that topic: positive|negative|neutral|committed or null
+  positive = genuine interest ("looks sick", "love that place", "want to try")
+  committed = committed to timeframe/logistics ("this friday", "book it", "let's go next week")
+  neutral = mentioned without strong feeling
+  negative = rejection ("not interested", "nah", "skip this")`
 }
 
 // ─── Public API ─────────────────────────────────────────────────────────────
@@ -223,6 +229,15 @@ export async function classifyMessage(
                     ? parsed.s as 'dry' | 'stressed' | 'roasting' | 'normal'
                     : 'normal'
 
+                // Topic intent fields
+                const detectedTopic: string | null = typeof parsed.topic === 'string' && parsed.topic.trim()
+                    ? parsed.topic.trim()
+                    : null
+                const VALID_INTEREST_SIGNALS = ['positive', 'negative', 'neutral', 'committed'] as const
+                const interestSignal = VALID_INTEREST_SIGNALS.includes(parsed.signal)
+                    ? parsed.signal as 'positive' | 'negative' | 'neutral' | 'committed'
+                    : null
+
                 return {
                     message_complexity: complexity,
                     needs_tool: false,
@@ -233,6 +248,8 @@ export async function classifyMessage(
                     skip_cognitive: true, // cognitive already done above
                     cognitiveState,
                     userSignal,
+                    detected_topic: detectedTopic,
+                    interest_signal: interestSignal,
                 }
             } catch {
                 // If content isn't valid JSON, fall through to default

@@ -1,63 +1,114 @@
-# Conversation Agenda Planner (Issue #67)
+# Agenda Planner
 
-## Purpose
-The Agenda Planner keeps a per-user, per-session goal stack so Aria can guide
-multi-step conversations instead of only reacting to the latest message.
+> **Directory:** `src/agenda-planner/`  
+> **Files:** `planner.ts` (749 lines), `types.ts`, `formatter.ts`, `index.ts`  
+> **Singleton:** `agendaPlanner` (exported from `planner.ts`)
 
-The planner is intentionally read/write state only:
-- It does not send messages.
-- It does not start proactive funnels.
-- It only updates `conversation_goals` + `conversation_goal_journal`.
+## Overview
 
-This prevents collisions with:
-- Proactive runner timing gates
-- Proactive funnel orchestrator
-- Task orchestrator intercepts
-- Classifier goal persistence
+The Agenda Planner maintains a **priority-ordered goal stack** for each user+session pair. It evaluates every user message to create, promote, complete, or abandon goals. The goal stack is injected into the system prompt so Aria knows what to work toward.
 
-## Data Model
+## Goal Types
 
-### `conversation_goals` (extended)
-Additive columns from `database/conversation-agenda.sql`:
-- `goal_type` (`trip_plan|food_search|price_watch|recommendation|onboarding|re_engagement|upsell|general`)
-- `priority` (`1..10`)
-- `next_action`
-- `deadline`
-- `parent_goal_id` (self-reference)
-- `source` (`classifier|agenda_planner|funnel|task_orchestrator|manual`)
+| Type | Trigger | Example Goal |
+|------|---------|-------------|
+| `onboarding` | Missing displayName or homeLocation | "Collect missing profile basics (name + city)" |
+| `price_watch` | Price/compare keywords or active price tool | "Guide user from biryani interest to a clear price comparison decision" |
+| `recommendation` | Child of price_watch | "Convert comparison output into one concrete recommendation" |
+| `upsell` | Booking intent keywords | "Drive clean booking confirmation and immediate follow-through" |
+| `trip_plan` | Classifier goal = "plan" | "Advance conversation objective: plan" |
+| `food_search` | Food-related keywords | Auto-classified |
+| `re_engagement` | Classifier goal = "redirect" | Mapped from classifier |
+| `general` | Moderate/complex messages | "Advance current conversation objective with one concrete next step" |
 
-### `conversation_goal_journal`
-Append-only event stream for snapshots and lifecycle events:
-- `seeded|created|updated|completed|abandoned|promoted|snapshot`
+## Evaluation Flow
 
-## Runtime Integration
+```
+handler.ts → setImmediate → agendaPlanner.evaluate(context)
+                                    │
+                                    ▼
+                        ┌───────────────────────┐
+                        │ withSessionLock()      │  pg_advisory_xact_lock
+                        │ (prevents race         │  per userId:sessionId
+                        │  conditions)           │
+                        └───────────┬───────────┘
+                                    ↓
+                ┌───────────────────────────────────┐
+                │ 1. Abandon stale goals (>72h old) │
+                ├───────────────────────────────────┤
+                │ 2. Onboarding goal management     │
+                │    - Create if missing profile    │
+                │    - Complete if profile done      │
+                ├───────────────────────────────────┤
+                │ 3. Cancellation detection         │
+                │    "cancel", "stop", "not now"    │
+                │    → abandon top goal or all       │
+                ├───────────────────────────────────┤
+                │ 4. Intent-based goal creation     │
+                │    - Price intent → price_watch   │
+                │      + recommendation child       │
+                │    - Booking intent → upsell      │
+                │      + complete price goals        │
+                │    - General (moderate/complex)    │
+                │      → general goal                │
+                ├───────────────────────────────────┤
+                │ 5. Trim excess goals              │
+                │    Keep top 6 by priority          │
+                ├───────────────────────────────────┤
+                │ 6. Journal entry (snapshot)        │
+                └───────────────────────────────────┘
+                     │
+                     ▼
+              AgendaEvalResult {
+                stack: AgendaGoal[]        // Top 3 goals
+                createdGoalIds: number[]
+                completedGoalIds: number[]
+                abandonedGoalIds: number[]
+                actions: string[]          // Debug log
+              }
+```
 
-### Handler (`src/character/handler.ts`)
-1. Step 6 loads `agendaPlanner.getStack(userId, sessionId)` in parallel with memory/graph/preferences.
-2. Step 9 injects stack into `composeSystemPrompt(...)` as `agendaStack`.
-3. After response, Agenda evaluation runs fire-and-forget with Pulse scoring.
+## Priority System
 
-### Personality (`src/personality.ts`)
-- Layer 4 now prefers agenda stack (`formatAgendaForPrompt`).
-- Falls back to legacy single active goal when stack is unavailable.
-- Prompt budget capped to ~150 tokens (`maxChars=600`, top 3 goals).
+- Goals are scored 1-10
+- Pulse state (`PROACTIVE=+2`, `ENGAGED=+1`, `PASSIVE=-1`) boosts/reduces priority
+- Goals are returned sorted by `priority DESC, updated_at DESC`
+- Max 6 active goals per session
+- Stale goals (>72 hours) are auto-abandoned
 
-### Cognitive (`src/cognitive.ts`)
-`updateConversationGoal` now scopes writes to `source='classifier'` only so
-agenda rows are not overwritten by classifier updates.
+## Goal Lifecycle
 
-## Planner API
+```
+created → active → completed
+                 → abandoned (user opts out or stale)
+```
 
-From `src/agenda-planner/index.ts`:
-- `agendaPlanner.getStack(userId, sessionId, limit?)`
-- `agendaPlanner.evaluate(context)`
-- `agendaPlanner.seedOnboarding(userId, sessionId, now?)`
-- `formatAgendaForPrompt(goals, { maxGoals, maxChars })`
+## Upsert Logic
 
-## Risk Controls
-- Additive migration only (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`).
-- Advisory transaction lock per `(user, session)` during evaluate.
-- Source-scoped writes (`agenda_planner` only) to avoid collisions.
-- Capped active goals (`MAX_ACTIVE_GOALS=6`) + stale cleanup.
-- Strict prompt budget for agenda injection.
+Goals are **upserted by type + parentGoalId** — if an active goal of the same type already exists for the session, it's updated rather than duplicated. This prevents goal explosion from repeated messages.
 
+## Journal
+
+Every evaluation creates a `conversation_goal_journal` entry with:
+- Event type: `seeded | created | updated | completed | abandoned | promoted | snapshot`
+- Payload: contextual data about the action
+
+## Caching
+
+- In-memory `Map<string, { expiresAt, goals }>` with 20-second TTL
+- Invalidated on every `evaluate()` call
+
+## Database Tables
+
+| Table | Purpose |
+|-------|---------|
+| `conversation_goals` | Active/completed/abandoned goals with priority, type, next_action |
+| `conversation_goal_journal` | Audit log of all goal lifecycle events |
+
+## Known Issues
+
+1. **Session-scoped only** — goals don't persist across sessions
+2. **No LLM involvement** — all goal detection is regex-based keyword matching
+3. **Goal descriptions are generic** — "Advance current conversation objective" doesn't give Aria specific guidance
+4. **`nextAction` is static text** — not adapted to conversation state
+5. **Goals stack is injected into prompt** but there's no mechanism to ensure Aria actually follows them
