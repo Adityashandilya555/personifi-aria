@@ -168,6 +168,27 @@ function isExplicitPlatformRequest(msg: string): boolean {
   return /\b(swiggy|zomato|blinkit|zepto|instamart)\b/i.test(msg)
 }
 
+/** Words that frequently appear in acknowledgements, not location replies. */
+const LOCATION_STOP_WORDS = new Set([
+  'awesome',
+  'cool',
+  'fine',
+  'good',
+  'great',
+  'hello',
+  'hey',
+  'hi',
+  'nice',
+  'no',
+  'okay',
+  'ok',
+  'sure',
+  'thanks',
+  'thank you',
+  'yes',
+])
+
+/** Extract a likely first-name mention from onboarding replies. */
 function extractNameCandidate(message: string): string | null {
   const namePatterns = [
     /(?:i'?m|my name is|call me)\s+([A-Z][a-z]+)/i,
@@ -180,6 +201,10 @@ function extractNameCandidate(message: string): string | null {
   return null
 }
 
+/**
+ * Extract a likely location from onboarding replies.
+ * Rejects common acknowledgement words to reduce false positives like "Great".
+ */
 function extractLocationCandidate(message: string): string | null {
   const locationPatterns = [
     /(?:i'?m in|based in|from|in|at)\s+([A-Z][a-zA-Z\s,]+)/i,
@@ -187,7 +212,17 @@ function extractLocationCandidate(message: string): string | null {
   ]
   for (const pattern of locationPatterns) {
     const match = message.match(pattern)
-    if (match && match[1]) return match[1].trim()
+    if (!match || !match[1]) continue
+
+    const candidate = match[1]
+      .trim()
+      .replace(/[.!?]+$/, '')
+      .replace(/\s{2,}/g, ' ')
+
+    if (candidate.length < 3) continue
+    if (LOCATION_STOP_WORDS.has(candidate.toLowerCase())) continue
+
+    return candidate
   }
   return null
 }

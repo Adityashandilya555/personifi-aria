@@ -5,12 +5,17 @@
  */
 
 export interface ProactiveSuggestionQuery {
+    /** Search intent sent to `search_places`. */
     query: string
+    /** User area (or Bengaluru fallback) for localized suggestions. */
     location: string
+    /** Whether results should prefer currently open places. */
     openNow: boolean
+    /** Named slot used for prompt hinting and observability. */
     moodTag: string
 }
 
+/** Return "now" in IST so all time buckets stay deterministic and testable. */
 function getIstNow(now: Date = new Date()): Date {
     return new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }))
 }

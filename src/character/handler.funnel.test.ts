@@ -243,4 +243,28 @@ describe('handler proactive funnel interception', () => {
     expect(firstDecision?.toolParams?.location).toBe('Koramangala')
     expect(result.venues?.[0]?.name).toBe('Third Wave Coffee')
   })
+
+  it('does not trigger onboarding proactive search for generic acknowledgement text', async () => {
+    handleFunnelReplyMock.mockResolvedValue({ handled: false })
+    getOrCreateUserMock.mockResolvedValue({
+      userId: 'u1',
+      channel: 'telegram',
+      channelUserId: 'tg1',
+      displayName: 'Adi',
+      homeLocation: undefined,
+      authenticated: false,
+      createdAt: new Date(),
+    })
+    getOrCreateSessionMock.mockResolvedValue({
+      sessionId: 's1',
+      userId: 'u1',
+      messages: [{ role: 'assistant', content: 'Which area are you in?' }],
+      lastActive: new Date(),
+    })
+
+    const result = await handleMessage('telegram', 'tg1', 'Great')
+
+    expect(executeToolPipelineMock).not.toHaveBeenCalled()
+    expect(result.text).toBe('main pipeline reply')
+  })
 })
