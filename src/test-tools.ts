@@ -15,6 +15,8 @@
  * are callable (with mock/empty data where necessary).
  */
 
+import 'dotenv/config'
+
 // ─── Colors ──────────────────────────────────────────────────────────────────
 const GREEN = '\x1b[32m'
 const RED = '\x1b[31m'
@@ -35,6 +37,7 @@ interface ToolTest {
     name: string
     fn: () => Promise<any>
     needsKey?: string // env var name — if missing we expect graceful error
+    isScraper?: boolean // scraper tools need longer timeout (45s vs 15s)
 }
 
 async function runToolTests(): Promise<{ passed: number; failed: number; skipped: number }> {
@@ -135,6 +138,7 @@ async function runToolTests(): Promise<{ passed: number; failed: number; skipped
         },
         {
             name: 'compare_food_prices',
+            isScraper: true,
             fn: async () => {
                 const { compareFoodPrices } = await import('./tools/food-compare.js')
                 return compareFoodPrices({ query: 'biryani', location: 'Koramangala' })
@@ -142,6 +146,7 @@ async function runToolTests(): Promise<{ passed: number; failed: number; skipped
         },
         {
             name: 'compare_grocery_prices',
+            isScraper: true,
             fn: async () => {
                 const { compareGroceryPrices } = await import('./tools/grocery-compare.js')
                 return compareGroceryPrices({ query: 'milk' })
@@ -149,6 +154,7 @@ async function runToolTests(): Promise<{ passed: number; failed: number; skipped
         },
         {
             name: 'search_swiggy_food',
+            isScraper: true,
             fn: async () => {
                 const { searchSwiggyFood } = await import('./tools/swiggy-mcp.js')
                 return searchSwiggyFood({ query: 'pizza' })
@@ -156,6 +162,7 @@ async function runToolTests(): Promise<{ passed: number; failed: number; skipped
         },
         {
             name: 'search_dineout',
+            isScraper: true,
             fn: async () => {
                 const { searchDineout } = await import('./tools/swiggy-mcp.js')
                 return searchDineout({ query: 'rooftop restaurant' })
@@ -163,6 +170,7 @@ async function runToolTests(): Promise<{ passed: number; failed: number; skipped
         },
         {
             name: 'search_zomato',
+            isScraper: true,
             fn: async () => {
                 const { searchZomatoMCP } = await import('./tools/swiggy-mcp.js')
                 return searchZomatoMCP({ query: 'biryani' })
@@ -170,6 +178,7 @@ async function runToolTests(): Promise<{ passed: number; failed: number; skipped
         },
         {
             name: 'search_blinkit',
+            isScraper: true,
             fn: async () => {
                 const { searchBlinkit } = await import('./tools/blinkit-mcp.js')
                 return searchBlinkit({ query: 'bread' })
@@ -177,6 +186,7 @@ async function runToolTests(): Promise<{ passed: number; failed: number; skipped
         },
         {
             name: 'search_zepto',
+            isScraper: true,
             fn: async () => {
                 const { searchZepto } = await import('./tools/zepto-mcp.js')
                 return searchZepto({ query: 'eggs' })
@@ -191,6 +201,7 @@ async function runToolTests(): Promise<{ passed: number; failed: number; skipped
         },
         {
             name: 'compare_prices_proactive',
+            isScraper: true,
             fn: async () => {
                 const { compareProactive } = await import('./tools/proactive-compare.js')
                 return compareProactive({ query: 'biryani' })
@@ -203,11 +214,12 @@ async function runToolTests(): Promise<{ passed: number; failed: number; skipped
     for (const test of tests) {
         const keyMissing = test.needsKey && !process.env[test.needsKey]
         const label = `${BOLD}${test.name}${RESET}`
+        const timeoutMs = test.isScraper ? 45000 : 15000
 
         try {
             const result = await Promise.race([
                 test.fn(),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout (15s)')), 15000)),
+                new Promise((_, reject) => setTimeout(() => reject(new Error(`Timeout (${timeoutMs / 1000}s)`)), timeoutMs)),
             ])
 
             if (result && typeof result === 'object' && 'success' in result) {
@@ -407,6 +419,7 @@ async function runAgentTests(): Promise<{ passed: number; failed: number }> {
         {
             name: 'Callback Handler',
             fn: async () => {
+                if (!process.env.GROQ_API_KEY) throw new Error('GROQ_API_KEY not set — needed for Groq client init')
                 const { handleCallbackAction } = await import('./character/callback-handler.js')
                 if (typeof handleCallbackAction !== 'function') throw new Error('handleCallbackAction missing')
                 return 'handleCallbackAction() exported ✓'
@@ -431,6 +444,7 @@ async function runAgentTests(): Promise<{ passed: number; failed: number }> {
         {
             name: 'Handler Pipeline',
             fn: async () => {
+                if (!process.env.GROQ_API_KEY) throw new Error('GROQ_API_KEY not set — needed for Groq client init')
                 const { handleMessage } = await import('./character/handler.js')
                 if (typeof handleMessage !== 'function') throw new Error('handleMessage missing')
                 return 'handleMessage() exported ✓'
