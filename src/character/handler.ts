@@ -139,6 +139,8 @@ export interface MessageResponse {
   media?: { type: 'photo' | 'video'; url: string; caption?: string }[]
   /** When true, the channel layer should send a location-request keyboard */
   requestLocation?: boolean
+  /** Venue pins to drop as Telegram map markers (places, directions destinations). */
+  venues?: { name: string; address: string; lat: number; lng: number }[]
 }
 
 // ─── Confirmation / Location Gate ────────────────────────────────────────────
@@ -222,6 +224,55 @@ function extractMediaFromToolResult(rawData: unknown): MessageResponse['media'] 
   }
 
   return media.length > 0 ? media : undefined
+}
+
+/**
+ * Extract venue pin data from tool raw results for Telegram sendVenue.
+ * Supports:
+ *   - search_places → raw[].location.latitude/longitude + displayName/formattedAddress
+ *   - get_directions → destination lat/lng from route legs
+ */
+function extractVenuesFromToolResult(
+  toolName: string | null | undefined,
+  rawData: unknown
+): MessageResponse['venues'] | undefined {
+  if (!rawData || typeof rawData !== 'object') return undefined
+
+  const data = rawData as any
+
+  // Places API: raw data has a places[] array (or data.raw has it)
+  if (toolName === 'search_places') {
+    const places = data?.raw ?? data
+    if (!Array.isArray(places)) return undefined
+
+    const venues: { name: string; address: string; lat: number; lng: number }[] = []
+    for (const place of places.slice(0, 3)) {
+      const name = place.displayName?.text || place.name
+      const address = place.formattedAddress || place.address || ''
+      const lat = place.location?.latitude ?? place.location?.lat
+      const lng = place.location?.longitude ?? place.location?.lng
+      if (name && typeof lat === 'number' && typeof lng === 'number') {
+        venues.push({ name, address, lat, lng })
+      }
+    }
+    return venues.length > 0 ? venues : undefined
+  }
+
+  // Directions API: destination from route legs
+  if (toolName === 'get_directions') {
+    const routes = data?.raw?.routes ?? data?.routes
+    if (!Array.isArray(routes) || routes.length === 0) return undefined
+    const leg = routes[0]?.legs?.[routes[0]?.legs?.length - 1]
+    if (!leg?.end_location) return undefined
+    return [{
+      name: leg.end_address?.split(',')[0] || 'Destination',
+      address: leg.end_address || '',
+      lat: leg.end_location.lat,
+      lng: leg.end_location.lng,
+    }]
+  }
+
+  return undefined
 }
 
 /**
@@ -808,6 +859,7 @@ export async function handleMessage(
       media: inlineMediaItem
         ? [inlineMediaItem]
         : extractMediaFromToolResult(toolRawData),
+      venues: extractVenuesFromToolResult(routeDecision.toolName, toolRawData),
     }
 
   } catch (error) {

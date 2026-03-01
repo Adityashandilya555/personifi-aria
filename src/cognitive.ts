@@ -88,6 +88,11 @@ STEP 1 — Call a tool if the user needs real-time data:
 - Grocery prices, quick delivery apps in general → compare_grocery_prices
 - Blinkit specifically → search_blinkit | Zepto specifically → search_zepto
 - Swiggy restaurant search → search_swiggy_food | Dine-out, table booking → search_dineout
+- Step-by-step directions, "how to get from X to Y", navigation → get_directions
+- "Where is X", address to coordinates, pin location → geocode_address
+- Air quality, pollution, AQI, smog → get_air_quality
+- Pollen, allergies, hay fever, outdoor allergy forecast → get_pollen
+- "What time is it in X", timezone, time difference → get_timezone
 
 STEP 2 — If NO tool needed, reply with ONLY this JSON (nothing else):
 {"c":"simple"} — greetings, farewells, yes/no, thanks, one-word replies

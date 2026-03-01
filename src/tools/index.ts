@@ -21,6 +21,11 @@ import { compareProactive, compareProactiveDefinition } from './proactive-compar
 import { searchBlinkit, blinkitDefinition } from './blinkit-mcp.js'
 import { searchZepto, zeptoDefinition } from './zepto-mcp.js'
 import { compareRides, rideCompareDefinition } from './ride-compare.js'
+import { getDirections, directionsToolDefinition } from './directions.js'
+import { geocodeAddress, geocodingToolDefinition } from './geocoding.js'
+import { getAirQuality, airQualityToolDefinition } from './air-quality.js'
+import { getPollen, pollenToolDefinition } from './pollen.js'
+import { getTimezone, timezoneToolDefinition } from './timezone.js'
 
 const bodyHooks: BodyHooks = {
     async executeTool(name: string, params: Record<string, unknown>): Promise<ToolExecutionResult> {
@@ -57,6 +62,16 @@ const bodyHooks: BodyHooks = {
                 return searchZepto(params as any)
             case 'compare_rides':
                 return compareRides(params as any)
+            case 'get_directions':
+                return getDirections(params as any)
+            case 'geocode_address':
+                return geocodeAddress(params as any)
+            case 'get_air_quality':
+                return getAirQuality(params as any)
+            case 'get_pollen':
+                return getPollen(params as any)
+            case 'get_timezone':
+                return getTimezone(params as any)
             default:
                 return { success: false, data: null, error: `Unknown tool: ${name}` }
         }
@@ -79,6 +94,11 @@ const bodyHooks: BodyHooks = {
             blinkitDefinition,
             zeptoDefinition,
             rideCompareDefinition,
+            directionsToolDefinition,
+            geocodingToolDefinition,
+            airQualityToolDefinition,
+            pollenToolDefinition,
+            timezoneToolDefinition,
         ]
     },
 }

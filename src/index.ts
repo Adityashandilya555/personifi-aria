@@ -384,17 +384,10 @@ server.post('/webhook/telegram', async (request, reply) => {
       }
     }
 
-    // Drop a map pin for the top places result
-    const rawData = (response as any)._toolRawData
-    if (rawData?.places?.[0]) {
-      const top = rawData.places[0]
-      if (top.location?.lat && top.location?.lng) {
-        await sendVenue(chatId, {
-          name: top.name,
-          address: top.address,
-          lat: top.location.lat,
-          lng: top.location.lng,
-        })
+    // Drop map venue pins for places / directions results
+    if (response.venues?.length) {
+      for (const venue of response.venues.slice(0, 3)) {
+        await sendVenue(chatId, venue)
       }
     }
 
