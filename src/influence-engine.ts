@@ -28,6 +28,7 @@ export type EngagementState = 'PASSIVE' | 'CURIOUS' | 'ENGAGED' | 'PROACTIVE'
 export type CTAStyle = 'none' | 'soft' | 'direct' | 'urgent'
 
 import type { TopicIntent } from './topic-intent/types.js'
+import { getWeatherState } from './weather/weather-stimulus.js'
 
 export interface InfluenceContext {
     /** What tool ran this turn, if any */
@@ -114,6 +115,7 @@ export function selectStrategy(
 
 function proactiveStrategy(ctx: InfluenceContext): InfluenceStrategy {
     const { toolName, hasToolResult, istHour, isWeekend, userSignal } = ctx
+    const weather = getWeatherState()
 
     // ── Food comparison result ──
     if (hasToolResult && (toolName === 'compare_food_prices' || toolName === 'search_swiggy_food' || toolName === 'search_zomato')) {
@@ -186,6 +188,15 @@ function proactiveStrategy(ctx: InfluenceContext): InfluenceStrategy {
         }
     }
 
+    if (!hasToolResult && (weather?.stimulus === 'RAIN_START' || weather?.stimulus === 'RAIN_HEAVY')) {
+        return {
+            directiveLine: 'It is raining in Bengaluru right now. Lead with empathy about commute pain and suggest one concrete indoor plan (delivery, cozy cafe, or nearby shelter option).',
+            ctaStyle: 'direct',
+            offeredActions: ['Compare Swiggy vs Zomato now', 'Check ride surge before leaving'],
+            mediaHint: true,
+        }
+    }
+
     // ── Default PROACTIVE ──
     return {
         directiveLine: 'User is at peak engagement. Don\'t wait for them to ask the next question — proactively move the conversation forward. Name a specific thing, offer a specific action, invite a yes/no decision.',
@@ -199,14 +210,25 @@ function proactiveStrategy(ctx: InfluenceContext): InfluenceStrategy {
 
 function engagedStrategy(ctx: InfluenceContext): InfluenceStrategy {
     const { toolName, hasToolResult, istHour, isWeekend } = ctx
+    const weather = getWeatherState()
 
     // ── Food tool in flight ──
     if (hasToolResult && (toolName === 'compare_food_prices' || toolName === 'search_swiggy_food' || toolName === 'search_zomato')) {
         return {
-            directiveLine: 'User is engaged with food options. Go one layer deeper than the data — add context (offer expires tonight, this place is usually packed on weekends, etc.). Then offer one natural next step without being pushy.',
+            directiveLine: 'User is engaged with food options. Go one layer deeper than the data, and reference one concrete visual cue (dish vibe, ambience, plating) tied to the recommendation. Then offer one natural next step without being pushy.',
             ctaStyle: 'soft',
             offeredActions: ['Compare grocery delivery instead', 'Find similar restaurants', 'Check current offers'],
-            mediaHint: false,
+            mediaHint: true,
+        }
+    }
+
+    // ── Place search in flight ──
+    if (hasToolResult && toolName === 'search_places') {
+        return {
+            directiveLine: 'User is engaged with nearby places. Pick one recommendation and explain why it matches this moment (timing, crowd, vibe). Ask one action-oriented follow-up.',
+            ctaStyle: 'soft',
+            offeredActions: ['Check delivery vs dine-in', 'Get directions now'],
+            mediaHint: true,
         }
     }
 
@@ -237,6 +259,15 @@ function engagedStrategy(ctx: InfluenceContext): InfluenceStrategy {
             ctaStyle: 'soft',
             offeredActions: ['Find lunch deals near you', 'Compare delivery vs going out'],
             mediaHint: false,
+        }
+    }
+
+    if (!hasToolResult && weather?.stimulus === 'HEAT_WAVE') {
+        return {
+            directiveLine: 'It is unusually hot in Bengaluru. Nudge toward cool, low-friction options (delivery, cold drinks, indoor spots) without sounding alarmist.',
+            ctaStyle: 'soft',
+            offeredActions: ['Find cold dessert spots nearby', 'Compare quick-delivery options'],
+            mediaHint: true,
         }
     }
 

@@ -21,6 +21,7 @@ import { runSocialOutbound } from './social/index.js'
 import { processMemoryWriteQueue } from './archivist/memory-queue.js'
 import { checkAndSummarizeSessions } from './archivist/session-summaries.js'
 import { sweepStaleTopics } from './topic-intent/sweep.js'
+import { refreshWeatherState } from './weather/weather-stimulus.js'
 
 // ─── Core scheduler ────────────────────────────────────────────────────────
 
@@ -98,6 +99,15 @@ export function initScheduler(_databaseUrl: string) {
     }
   })
 
+  // ── 6b. Weather stimulus refresh — every 30 minutes ───────────────────
+  cron.schedule('*/30 * * * *', async () => {
+    try {
+      await refreshWeatherState()
+    } catch (err) {
+      console.error('[SCHEDULER] Weather stimulus refresh error:', err)
+    }
+  })
+
   // ── 7. Archivist: memory write queue — every 30 seconds (#61) ────────
   cron.schedule('*/30 * * * * *', async () => {
     try {
@@ -126,5 +136,5 @@ export function initScheduler(_databaseUrl: string) {
     }
   }, 8000) // after DB pool is ready
 
-  console.log('[SCHEDULER] Initialized — heartbeat (30s) + topic-followups (*/30m) + content-blast (*/2h) + media (*/6h) + price alerts (*/30) + memory queue (*/30s) + session summaries (*/5m)')
+  console.log('[SCHEDULER] Initialized — heartbeat (30s) + topic-followups (*/30m) + content-blast (*/2h) + media (*/6h) + price alerts (*/30) + weather (*/30) + memory queue (*/30s) + session summaries (*/5m)')
 }

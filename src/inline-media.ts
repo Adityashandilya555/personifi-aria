@@ -17,6 +17,7 @@
 
 import type { MediaItem } from './channels.js'
 import type { EngagementState } from './influence-engine.js'
+import type { ToolMediaDirective } from './hooks.js'
 import { fetchReels, pickBestReel } from './media/reelPipeline.js'
 import {
     scoreUserInterests,
@@ -25,6 +26,21 @@ import {
     recordContentSent,
     CATEGORY_HASHTAGS,
 } from './media/contentIntelligence.js'
+import type { ToolMediaContext } from './media/tool-media-context.js'
+
+export type WeatherStimulusKind =
+    | 'RAIN_START'
+    | 'RAIN_HEAVY'
+    | 'PERFECT_OUT'
+    | 'HEAT_WAVE'
+    | 'EVENING_COOL'
+    | 'COLD_SNAP'
+
+export interface InlineMediaContext {
+    mediaDirective?: ToolMediaDirective | null
+    toolContext?: ToolMediaContext | null
+    weatherStimulus?: WeatherStimulusKind | null
+}
 
 // ─── Context → Hashtag Mapping ───────────────────────────────────────────────
 
@@ -81,10 +97,30 @@ const CONTEXT_RULES: Array<{ pattern: RegExp; hashtags: string[] }> = [
 export async function deriveHashtagFromContext(
     message: string,
     userId: string,
+    context?: InlineMediaContext,
 ): Promise<string> {
+    // 0. Weather override for strongly contextual moments.
+    if (context?.weatherStimulus === 'RAIN_START' || context?.weatherStimulus === 'RAIN_HEAVY') {
+        return 'bangalorebiryani'
+    }
+    if (context?.weatherStimulus === 'HEAT_WAVE') {
+        return 'bangaloredesserts'
+    }
+    if (context?.weatherStimulus === 'PERFECT_OUT' || context?.weatherStimulus === 'EVENING_COOL') {
+        return 'bangalorebrew'
+    }
+
+    const directiveQuery = context?.mediaDirective?.searchQuery ?? ''
+    const toolText = [
+        context?.toolContext?.entityName ?? '',
+        ...(context?.toolContext?.placeNames ?? []).slice(0, 3),
+        ...(context?.toolContext?.itemNames ?? []).slice(0, 3),
+    ].join(' ')
+    const lookupText = `${message} ${directiveQuery} ${toolText}`.trim()
+
     // 1. Keyword-based match (fast path, no DB)
     for (const rule of CONTEXT_RULES) {
-        if (rule.pattern.test(message)) {
+        if (rule.pattern.test(lookupText)) {
             const idx = Math.floor(Math.random() * rule.hashtags.length)
             return rule.hashtags[idx]
         }
@@ -124,13 +160,31 @@ export async function selectInlineMedia(
     message: string,
     mediaHint: boolean,
     _pulseState?: EngagementState,
+    context?: InlineMediaContext,
 ): Promise<MediaItem | null> {
-    // Fast path — influence engine didn't request media this turn
-    if (!mediaHint) return null
+    const directiveWantsMedia = context?.mediaDirective?.shouldAttach === true
+
+    // Fast path — neither influence strategy nor tool reflection requested media.
+    if (!mediaHint && !directiveWantsMedia) return null
 
     try {
+        const preferType = context?.mediaDirective?.preferType ?? 'any'
+        const toolPhotos = context?.toolContext?.photoUrls ?? []
+
+        // 1) Highest precision: use direct tool photos (specific place/menu) when available.
+        if (toolPhotos.length > 0 && preferType !== 'video') {
+            const idx = Math.floor(Math.random() * toolPhotos.length)
+            const caption = context?.mediaDirective?.caption
+                ?? (context?.toolContext?.entityName ? `${context.toolContext.entityName} — this is the vibe 👀` : undefined)
+            return {
+                type: 'photo',
+                url: toolPhotos[idx],
+                caption,
+            }
+        }
+
         // 1. Derive a content-appropriate hashtag from conversation context
-        const hashtag = await deriveHashtagFromContext(message, userId)
+        const hashtag = await deriveHashtagFromContext(message, userId, context)
 
         // 2. Fetch candidates from DB-first pipeline (cached 30min, free)
         const results = await fetchReels(hashtag, userId, 3)
@@ -163,7 +217,8 @@ export async function selectInlineMedia(
         const mediaType: 'video' | 'photo' = reel.videoUrl ? 'video' : 'photo'
 
         const captionParts: string[] = []
-        if (reel.caption) captionParts.push(reel.caption.slice(0, 200))
+        if (context?.mediaDirective?.caption) captionParts.push(context.mediaDirective.caption.slice(0, 120))
+        if (reel.caption) captionParts.push(reel.caption.slice(0, 160))
         if (reel.author && reel.author !== 'unknown') captionParts.push(`📸 @${reel.author}`)
 
         const mediaItem: MediaItem = {

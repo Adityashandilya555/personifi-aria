@@ -1,6 +1,7 @@
 
 import type { BrainHooks, RouteContext, RouteDecision, ToolResult } from '../hooks.js'
 import { getBodyHooks } from '../hook-registry.js'
+import { reflectToolResult, buildSummaryForPrompt, buildFallbackMediaDirective } from './tool-reflection.js'
 
 export const brainHooks: BrainHooks = {
     async routeMessage(context: RouteContext): Promise<RouteDecision> {
@@ -41,8 +42,26 @@ export const brainHooks: BrainHooks = {
 
             // Format result for Layer 8 injection
             let formattedData = ''
+            let reflection: ToolResult['reflection'] | undefined
+            let mediaDirective: ToolResult['mediaDirective'] | undefined
             if (result.success) {
                 formattedData = JSON.stringify(result.data, null, 2)
+                const reflected = await reflectToolResult(
+                    decision.toolName,
+                    context.userMessage,
+                    result.data,
+                ).catch(() => null)
+
+                if (reflected) {
+                    reflection = reflected.reflection
+                    mediaDirective = reflected.mediaDirective
+                    const summarized = buildSummaryForPrompt(reflection)
+                    if (summarized) {
+                        formattedData = summarized
+                    }
+                } else {
+                    mediaDirective = buildFallbackMediaDirective(decision.toolName, result.data)
+                }
             } else {
                 formattedData = `Tool execution failed: ${result.error || 'Unknown error'}`
             }
@@ -50,7 +69,9 @@ export const brainHooks: BrainHooks = {
             return {
                 success: result.success,
                 data: formattedData,
-                raw: result.data
+                raw: result.data,
+                reflection,
+                mediaDirective,
             }
         } catch (error) {
             console.error('[brain] Tool pipeline execution failed:', error)
