@@ -55,8 +55,10 @@ import { generateLinkCode, redeemLinkCode, getLinkedUserIds } from '../identity.
 
 // Hook system
 import { getBrainHooks } from '../hook-registry.js'
-import type { RouteContext, RouteDecision } from '../hooks.js'
+import type { RouteContext, RouteDecision, ToolMediaDirective } from '../hooks.js'
 import { getProactiveSuggestionQuery } from '../utils/bangalore-context.js'
+import { extractToolMediaContext, type ToolMediaContext } from '../media/tool-media-context.js'
+import { getWeatherState } from '../weather/weather-stimulus.js'
 
 // Location utilities
 import { shouldRequestLocation } from '../location.js'
@@ -152,6 +154,15 @@ export interface MessageResponse {
  */
 const pendingToolStore = new Map<string, { toolName: string; toolParams: Record<string, unknown> }>()
 
+interface RecentToolContextRecord {
+  context: ToolMediaContext
+  mediaDirective: ToolMediaDirective | null
+  storedAt: number
+}
+
+const TOOL_CONTEXT_TTL_MS = 45 * 60 * 1000
+const recentToolContextStore = new Map<string, RecentToolContextRecord>()
+
 /** Tools expensive enough that we ask for confirmation before scraping. */
 const TOOLS_REQUIRING_CONFIRM = new Set([
   'compare_food_prices',
@@ -166,6 +177,45 @@ function isConfirmatoryMessage(msg: string): boolean {
 /** Does the message explicitly name a delivery platform? */
 function isExplicitPlatformRequest(msg: string): boolean {
   return /\b(swiggy|zomato|blinkit|zepto|instamart)\b/i.test(msg)
+}
+
+function rememberToolContext(
+  userId: string,
+  context: ToolMediaContext | null,
+  mediaDirective: ToolMediaDirective | null,
+): void {
+  if (!context) return
+  recentToolContextStore.set(userId, {
+    context,
+    mediaDirective,
+    storedAt: Date.now(),
+  })
+}
+
+/**
+ * Reuse recent tool context only for natural follow-up turns ("yeah", "show more", etc.)
+ * so stale visuals never leak into unrelated new topics.
+ */
+function getRecentToolContext(userId: string, message: string): RecentToolContextRecord | null {
+  const stored = recentToolContextStore.get(userId)
+  if (!stored) return null
+  if (Date.now() - stored.storedAt > TOOL_CONTEXT_TTL_MS) {
+    recentToolContextStore.delete(userId)
+    return null
+  }
+
+  const normalized = message.trim().toLowerCase()
+  const isShortFollowUp = normalized.split(/\s+/).length <= 6
+  const asksForVisual = /\b(show|pic|photo|image|reel|video|that one|looks|vibe)\b/i.test(normalized)
+  const confirmatory = isConfirmatoryMessage(normalized)
+  const mentionsEntity = !!stored.context.entityName
+    && normalized.includes(stored.context.entityName.toLowerCase().split(/\s+/)[0])
+
+  if (!isShortFollowUp && !asksForVisual && !confirmatory && !mentionsEntity) {
+    return null
+  }
+
+  return stored
 }
 
 /** Words that frequently appear in acknowledgements, not location replies. */
@@ -608,11 +658,20 @@ export async function handleMessage(
     // ─── Step 8: Execute tool pipeline if needed (Dev 1) ──────────
     let toolResultStr: string | undefined
     let toolRawData: unknown = null
+    let toolMediaDirective: ToolMediaDirective | null = null
     if (routeDecision.useTool) {
       const toolResult = await brainHooks.executeToolPipeline(routeDecision, routeContext)
       if (toolResult?.success && toolResult.data) {
         toolResultStr = toolResult.data
         toolRawData = toolResult.raw
+        toolMediaDirective = toolResult.mediaDirective ?? null
+        if (routeDecision.toolName) {
+          rememberToolContext(
+            user.userId,
+            extractToolMediaContext(routeDecision.toolName, toolResult.raw),
+            toolMediaDirective,
+          )
+        }
       }
       // Register active flow so follow-up replies ("15th", "2 adults") get context
       if (routeDecision.toolName) {
@@ -682,6 +741,12 @@ export async function handleMessage(
       if (proactiveResult?.success && proactiveResult.data) {
         routeDecision = proactiveDecision
         toolRawData = proactiveResult.raw
+        toolMediaDirective = proactiveResult.mediaDirective ?? null
+        rememberToolContext(
+          user.userId,
+          extractToolMediaContext(proactiveDecision.toolName!, proactiveResult.raw),
+          toolMediaDirective,
+        )
         toolResultStr = toolResultStr
           ? `${toolResultStr}\n\n${proactiveResult.data}${proactiveHint}`
           : `${proactiveResult.data}${proactiveHint}`
@@ -810,6 +875,15 @@ export async function handleMessage(
       activeTopics,
     })
     const mediaHint = influenceStrategy?.mediaHint ?? false
+    const activeToolContext = routeDecision.toolName && toolRawData
+      ? extractToolMediaContext(routeDecision.toolName, toolRawData)
+      : null
+    const recentToolContext = !activeToolContext
+      ? getRecentToolContext(user.userId, userMessage)
+      : null
+    const effectiveToolContext = activeToolContext ?? recentToolContext?.context ?? null
+    const effectiveMediaDirective = toolMediaDirective ?? recentToolContext?.mediaDirective ?? null
+    const weatherStimulus = getWeatherState()?.stimulus ?? null
 
     const tier2Messages: ChatMessage[] = messages.map(m => ({
       role: m.role as 'system' | 'user' | 'assistant',
@@ -822,7 +896,17 @@ export async function handleMessage(
     const [{ text: tier2Response, provider: tier2Provider }, inlineMediaItem] = await Promise.all([
       generateResponse(tier2Messages, { maxTokens: MAX_TOKENS, temperature: TEMPERATURE }),
       Promise.race([
-        selectInlineMedia(user.userId, userMessage, mediaHint, pulseEngagementState).catch(() => null),
+        selectInlineMedia(
+          user.userId,
+          userMessage,
+          mediaHint,
+          pulseEngagementState,
+          {
+            mediaDirective: effectiveMediaDirective,
+            toolContext: effectiveToolContext,
+            weatherStimulus,
+          },
+        ).catch(() => null),
         new Promise<null>(resolve => setTimeout(() => resolve(null), MEDIA_TIMEOUT_MS)),
       ]),
     ])
@@ -957,13 +1041,21 @@ export async function handleMessage(
       })
     }
 
+    const fallbackMediaFromContext = (!inlineMediaItem && !toolRawData && effectiveToolContext?.photoUrls?.length)
+      ? [{
+        type: 'photo' as const,
+        url: effectiveToolContext.photoUrls[0],
+        caption: effectiveMediaDirective?.caption ?? undefined,
+      }]
+      : undefined
+
     return {
       text: assistantResponse,
       // Inline media (reel/image from influence strategy) takes precedence over
       // tool-extracted product photos. Falls back gracefully when neither is available.
       media: inlineMediaItem
         ? [inlineMediaItem]
-        : extractMediaFromToolResult(toolRawData),
+        : (extractMediaFromToolResult(toolRawData) ?? fallbackMediaFromContext),
       venues: extractVenuesFromToolResult(routeDecision.toolName, toolRawData),
     }
 

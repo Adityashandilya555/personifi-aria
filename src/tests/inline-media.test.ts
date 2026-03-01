@@ -115,6 +115,13 @@ describe('deriveHashtagFromContext', () => {
         const hashtag = await deriveHashtagFromContext('something random', 'u1')
         expect(hashtag).toBe('bangalorefood')
     })
+
+    it('applies weather override for rain stimulus', async () => {
+        const hashtag = await deriveHashtagFromContext('anything', 'u1', {
+            weatherStimulus: 'RAIN_START',
+        })
+        expect(hashtag).toBe('bangalorebiryani')
+    })
 })
 
 // ─── selectInlineMedia ────────────────────────────────────────────────────────
@@ -131,6 +138,33 @@ describe('selectInlineMedia', () => {
     it('returns null immediately when mediaHint is false', async () => {
         const result = await selectInlineMedia('u1', 'where to eat?', false)
         expect(result).toBeNull()
+        expect(fetchReelsMock).not.toHaveBeenCalled()
+    })
+
+    it('uses direct tool photo context when available (no reel fetch)', async () => {
+        const result = await selectInlineMedia('u1', 'yes', false, 'ENGAGED', {
+            mediaDirective: {
+                shouldAttach: true,
+                searchQuery: 'Theobroma Koramangala Bengaluru',
+                caption: 'This is the exact place.',
+                preferType: 'photo',
+                entityName: 'Theobroma',
+            },
+            toolContext: {
+                toolName: 'search_swiggy_food',
+                generatedAt: Date.now(),
+                searchQuery: 'Theobroma Koramangala Bengaluru',
+                entityName: 'Theobroma',
+                placeNames: ['Theobroma'],
+                itemNames: ['Red Velvet Cake'],
+                photoUrls: ['https://cdn.example.com/theobroma.jpg'],
+            },
+        })
+
+        expect(result).not.toBeNull()
+        expect(result!.type).toBe('photo')
+        expect(result!.url).toBe('https://cdn.example.com/theobroma.jpg')
+        expect(result!.caption).toContain('exact place')
         expect(fetchReelsMock).not.toHaveBeenCalled()
     })
 

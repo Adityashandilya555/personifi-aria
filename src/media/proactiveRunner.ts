@@ -19,7 +19,7 @@ import { PROACTIVE_AGENT_PROMPT } from '../llm/prompts/proactiveAgent.js'
 import { CAPTION_PROMPT } from '../llm/prompts/captionPrompt.js'
 import { sendEngagementHook, hookTypeForCategory } from '../character/engagement-hooks.js'
 import {
-    type ContentCategory,
+    ContentCategory,
     selectContentForUser,
     recordContentSent,
     getCurrentTimeIST,
@@ -33,6 +33,7 @@ import { sendMediaViaPipeline } from './mediaDownloader.js'
 import { sendProactiveContent } from '../channels.js'
 import { sleep } from '../tools/scrapers/retry.js'
 import { expireStaleIntentFunnels, tryStartIntentDrivenFunnel } from '../proactive-intent/index.js'
+import { getWeatherState, type WeatherStimulusKind } from '../weather/weather-stimulus.js'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -90,6 +91,8 @@ function pickContentType(): ContentPickType {
 // ─── State: in-memory cache backed by proactive_user_state DB table ─────────
 
 const userStates = new Map<string, UserProactiveState>()
+const weatherStimulusSentAt = new Map<string, { stimulus: WeatherStimulusKind; ts: number }>()
+const WEATHER_STIMULUS_COOLDOWN_MS = 90 * 60 * 1000
 
 /**
  * Load proactive state for a user from DB.
@@ -268,6 +271,98 @@ function computeSmartGate(state: UserProactiveState): { ok: boolean; reason: str
     return { ok: true, reason: `Smart gate passed (inactivity: ${Math.floor(inactivityMins)}m)` }
 }
 
+function weatherHashtagForStimulus(stimulus: WeatherStimulusKind): string {
+    switch (stimulus) {
+        case 'RAIN_START':
+        case 'RAIN_HEAVY':
+            return 'bangalorebiryani'
+        case 'HEAT_WAVE':
+            return 'bangaloredesserts'
+        case 'PERFECT_OUT':
+            return 'bangalorebrew'
+        case 'EVENING_COOL':
+            return 'bangaloreweekend'
+        case 'COLD_SNAP':
+            return 'filterkaapi'
+        default:
+            return 'bangalorefood'
+    }
+}
+
+function weatherMessage(stimulus: WeatherStimulusKind, temp: number, condition: string): string {
+    switch (stimulus) {
+        case 'RAIN_START':
+        case 'RAIN_HEAVY':
+            return `Rain just kicked in (${temp}°C, ${condition}) 🌧️ Bengaluru traffic will be painful. Want me to check quick delivery options now?`
+        case 'HEAT_WAVE':
+            return `${temp}°C in Bengaluru right now 🥵 This is a stay-cool day. Want cold dessert or drink options near you?`
+        case 'PERFECT_OUT':
+            return `${temp}°C and clear outside ✨ Peak Bengaluru weather. Want a rooftop/cafe suggestion for this evening?`
+        case 'EVENING_COOL':
+            return `Evening cooled down nicely (${temp}°C) 🌆 Good time for a walk + chai plan. Want a quick nearby suggestion?`
+        case 'COLD_SNAP':
+            return `${temp}°C in Bengaluru is rare da ❄️ Proper filter-coffee weather. Want cozy breakfast picks?`
+        default:
+            return `Weather update: ${temp}°C, ${condition}. Want suggestions tuned for this weather?`
+    }
+}
+
+async function trySendWeatherStimulus(
+    userId: string,
+    chatId: string,
+    state: UserProactiveState,
+): Promise<boolean> {
+    const weather = getWeatherState()
+    if (!weather?.stimulus) return false
+
+    const lastActivity = userLastActivity.get(userId) ?? 0
+    const inactivityMins = lastActivity > 0 ? (Date.now() - lastActivity) / 60_000 : Infinity
+    if (lastActivity > 0 && inactivityMins < 60) return false
+
+    const prev = weatherStimulusSentAt.get(userId)
+    if (
+        prev
+        && prev.stimulus === weather.stimulus
+        && Date.now() - prev.ts < WEATHER_STIMULUS_COOLDOWN_MS
+    ) {
+        return false
+    }
+
+    const hashtag = weatherHashtagForStimulus(weather.stimulus)
+    const caption = weatherMessage(weather.stimulus, weather.temperatureC, weather.condition)
+
+    const reels = await fetchReels(hashtag, userId, 4).catch(() => [])
+    const candidate = reels.length > 0 ? await pickBestReel(reels, userId) : null
+
+    let sent = false
+    if (candidate) {
+        sent = await sendMediaViaPipeline(
+            chatId,
+            {
+                id: candidate.id,
+                source: candidate.source,
+                videoUrl: candidate.videoUrl,
+                thumbnailUrl: candidate.thumbnailUrl,
+                type: candidate.type,
+            },
+            caption,
+        )
+        if (sent) {
+            markMediaSent(candidate.id).catch(() => { })
+        }
+    }
+
+    if (!sent) {
+        sent = await sendProactiveContent(chatId, caption)
+    }
+
+    if (!sent) return false
+
+    weatherStimulusSentAt.set(userId, { stimulus: weather.stimulus, ts: Date.now() })
+    await updateStateAfterSend(state, userId, ContentCategory.FOOD_DISCOVERY, hashtag)
+    return true
+}
+
 // ─── Main: Run Proactive for One User ───────────────────────────────────────
 
 async function runProactiveForUser(userId: string, chatId: string): Promise<void> {
@@ -277,6 +372,16 @@ async function runProactiveForUser(userId: string, chatId: string): Promise<void
     const gate = computeSmartGate(state)
     if (!gate.ok) {
         console.log(`[Proactive] Skip ${userId}: ${gate.reason}`)
+        return
+    }
+
+    // Weather stimulus has priority over generic content blast.
+    const weatherSent = await trySendWeatherStimulus(userId, chatId, state).catch(err => {
+        console.warn(`[Proactive] Weather stimulus failed for ${userId}:`, (err as Error)?.message)
+        return false
+    })
+    if (weatherSent) {
+        console.log(`[Proactive] Weather-triggered send for ${userId}`)
         return
     }
 

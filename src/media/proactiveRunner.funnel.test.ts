@@ -5,12 +5,22 @@ const {
   expireStaleIntentFunnelsMock,
   selectContentForUserMock,
   getPoolQueryMock,
+  fetchReelsMock,
+  pickBestReelMock,
+  sendMediaViaPipelineMock,
+  sendProactiveContentMock,
+  getWeatherStateMock,
   contentCategory,
 } = vi.hoisted(() => ({
   tryStartIntentDrivenFunnelMock: vi.fn(),
   expireStaleIntentFunnelsMock: vi.fn(),
   selectContentForUserMock: vi.fn(),
   getPoolQueryMock: vi.fn(),
+  fetchReelsMock: vi.fn(),
+  pickBestReelMock: vi.fn(),
+  sendMediaViaPipelineMock: vi.fn(),
+  sendProactiveContentMock: vi.fn(),
+  getWeatherStateMock: vi.fn(),
   contentCategory: {
     FOOD_DISCOVERY: 'FOOD_DISCOVERY',
     FOOD_PRICE_DEALS: 'FOOD_PRICE_DEALS',
@@ -51,22 +61,26 @@ vi.mock('../character/engagement-hooks.js', () => ({
 }))
 
 vi.mock('./reelPipeline.js', () => ({
-  fetchReels: vi.fn(async () => []),
-  pickBestReel: vi.fn(async () => null),
+  fetchReels: fetchReelsMock,
+  pickBestReel: pickBestReelMock,
   markMediaSent: vi.fn(async () => undefined),
   markReelSent: vi.fn(),
 }))
 
 vi.mock('./mediaDownloader.js', () => ({
-  sendMediaViaPipeline: vi.fn(async () => true),
+  sendMediaViaPipeline: sendMediaViaPipelineMock,
 }))
 
 vi.mock('../channels.js', () => ({
-  sendProactiveContent: vi.fn(async () => true),
+  sendProactiveContent: sendProactiveContentMock,
 }))
 
 vi.mock('../tools/scrapers/retry.js', () => ({
   sleep: vi.fn(async () => undefined),
+}))
+
+vi.mock('../weather/weather-stimulus.js', () => ({
+  getWeatherState: getWeatherStateMock,
 }))
 
 import { registerProactiveUser, runProactiveForAllUsers } from './proactiveRunner.js'
@@ -80,6 +94,11 @@ describe('proactive runner funnel integration', () => {
   it('uses funnel path first and skips legacy selection when funnel starts', async () => {
     getPoolQueryMock.mockResolvedValue({ rows: [] })
     expireStaleIntentFunnelsMock.mockResolvedValue(0)
+    fetchReelsMock.mockResolvedValue([])
+    pickBestReelMock.mockResolvedValue(null)
+    sendMediaViaPipelineMock.mockResolvedValue(true)
+    sendProactiveContentMock.mockResolvedValue(true)
+    getWeatherStateMock.mockReturnValue(null)
     tryStartIntentDrivenFunnelMock.mockResolvedValue({
       started: true,
       reason: 'eligible',
@@ -94,6 +113,51 @@ describe('proactive runner funnel integration', () => {
     await runProactiveForAllUsers()
 
     expect(tryStartIntentDrivenFunnelMock).toHaveBeenCalledTimes(1)
+    expect(selectContentForUserMock).not.toHaveBeenCalled()
+  })
+
+  it('prioritizes weather stimulus path before funnel/content selection', async () => {
+    getPoolQueryMock.mockResolvedValue({ rows: [] })
+    expireStaleIntentFunnelsMock.mockResolvedValue(0)
+    getWeatherStateMock.mockReturnValue({
+      city: 'Bengaluru',
+      temperatureC: 24,
+      condition: 'moderate rain',
+      isRaining: true,
+      isWeekend: false,
+      istHour: 19,
+      stimulus: 'RAIN_START',
+      updatedAt: Date.now(),
+    })
+    fetchReelsMock.mockResolvedValue([
+      {
+        id: 'r1',
+        source: 'instagram',
+        videoUrl: 'https://cdn.example.com/r1.mp4',
+        thumbnailUrl: 'https://cdn.example.com/r1.jpg',
+        type: 'video',
+      },
+    ])
+    pickBestReelMock.mockResolvedValue({
+      id: 'r1',
+      source: 'instagram',
+      videoUrl: 'https://cdn.example.com/r1.mp4',
+      thumbnailUrl: 'https://cdn.example.com/r1.jpg',
+      type: 'video',
+    })
+    sendMediaViaPipelineMock.mockResolvedValue(true)
+    sendProactiveContentMock.mockResolvedValue(true)
+    tryStartIntentDrivenFunnelMock.mockResolvedValue({
+      started: false,
+      reason: 'weather handled first',
+    })
+
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    registerProactiveUser('user-2', 'chat-2')
+    await runProactiveForAllUsers()
+
+    expect(fetchReelsMock).toHaveBeenCalledWith('bangalorebiryani', 'user-2', 4)
+    expect(tryStartIntentDrivenFunnelMock).not.toHaveBeenCalled()
     expect(selectContentForUserMock).not.toHaveBeenCalled()
   })
 })

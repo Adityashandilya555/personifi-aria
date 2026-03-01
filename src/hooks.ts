@@ -55,6 +55,23 @@ export interface ToolResult {
     data: string
     /** Raw tool output (for logging/debugging) */
     raw?: unknown
+    /** Compact reflection used for prompt grounding (if available) */
+    reflection?: ToolReflectionSummary
+    /** Media grounding directive derived from tool output/reflection */
+    mediaDirective?: ToolMediaDirective
+}
+
+export interface ToolReflectionSummary {
+    summary: string
+    keyFacts: string[]
+}
+
+export interface ToolMediaDirective {
+    shouldAttach: boolean
+    searchQuery: string | null
+    caption: string | null
+    preferType: 'photo' | 'video' | 'any'
+    entityName: string | null
 }
 
 /** Result from bodyHooks.executeTool() */
