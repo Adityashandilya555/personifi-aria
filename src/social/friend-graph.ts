@@ -230,6 +230,43 @@ export async function areFriends(userId: string, friendId: string): Promise<bool
 }
 
 /**
+ * Get accepted friends who have high affinity for a given food/place category.
+ * Used by the social bridge engine to suggest "ask your friend" prompts.
+ *
+ * Issue #88 — Opinion Gathering scenario
+ */
+export async function getActiveFriendsWithAffinity(
+    userId: string,
+    category: string,
+    minAffinity = 0.65,
+): Promise<Array<{ friendId: string; displayName: string | null; channelUserId: string; affinityScore: number }>> {
+    const pool = getPool()
+    const { rows } = await pool.query<{
+        friend_id: string
+        display_name: string | null
+        channel_user_id: string
+        affinity_score: number
+    }>(
+        `SELECT r.friend_id, u.display_name, u.channel_user_id, COALESCE(up.affinity_score, 0.5) AS affinity_score
+         FROM user_relationships r
+         JOIN users u ON u.user_id = r.friend_id
+         LEFT JOIN user_preferences up ON up.user_id = r.friend_id AND up.category = $3
+         WHERE r.user_id = $1
+           AND r.status = 'accepted'
+           AND COALESCE(up.affinity_score, 0.5) >= $2
+         ORDER BY affinity_score DESC
+         LIMIT 5`,
+        [userId, minAffinity, category]
+    )
+    return rows.map(row => ({
+        friendId: row.friend_id,
+        displayName: row.display_name,
+        channelUserId: row.channel_user_id,
+        affinityScore: row.affinity_score,
+    }))
+}
+
+/**
  * Resolve a platform user ID (e.g., Telegram username) to an internal user_id.
  * Used when adding friends by their Telegram handle.
  */

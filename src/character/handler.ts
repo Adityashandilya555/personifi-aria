@@ -78,6 +78,8 @@ import { createSquad, inviteToSquad, acceptSquadInvite, leaveSquad, getSquadsFor
 import { detectIntentCategory, recordIntentForUserSquads } from '../social/squad-intent.js'
 import { topicIntentService } from '../topic-intent/index.js'
 import type { TopicIntent } from '../topic-intent/types.js'
+import { handleOnboarding, needsOnboarding } from '../onboarding/onboarding-flow.js'
+import { extractRejectionSignals, persistRejectionSignals, entityTypeToCategory } from '../intelligence/rejection-memory.js'
 import { resolveToolFromTopic } from '../topic-intent/tool-map.js'
 import { logExecutionBridge, logTopicCompleted } from '../topic-intent/logger.js'
 
@@ -140,6 +142,9 @@ export interface MessageResponse {
   text: string
   /** Inline media items (photo or video) to deliver alongside the text response. */
   media?: { type: 'photo' | 'video'; url: string; caption?: string }[]
+  /** Telegram inline keyboard buttons (e.g. onboarding prefs, social bridge). */
+  _buttons?: Array<Array<{ text: string; callback_data: string }>>
+
   /** When true, the channel layer should send a location-request keyboard */
   requestLocation?: boolean
   /** Venue pins to drop as Telegram map markers (places, directions destinations). */
@@ -443,6 +448,21 @@ export async function handleMessage(
     // Register + update activity clock (resets inactivity timer for smart gate)
     if (channel === 'telegram') {
       updateUserActivity(channelUserId, channelUserId)
+    }
+
+    // ─── Step 2.5: Onboarding intercept (Issue #92) ──────────────
+    // New users must complete onboarding before entering the normal pipeline.
+    if (!user.authenticated) {
+      const onboardingResult = await handleOnboarding(user.userId, userMessage).catch(err => {
+        console.warn('[handler] Onboarding handling failed:', safeError(err))
+        return { handled: false as const }
+      })
+      if (onboardingResult.handled) {
+        return {
+          text: onboardingResult.reply ?? "Hey! Let me set you up — what's your name?",
+          ...(onboardingResult.buttons ? { _buttons: onboardingResult.buttons } : {}),
+        } as MessageResponse
+      }
     }
 
     // ─── Step 3: Check rate limit ─────────────────────────────────
@@ -1060,6 +1080,21 @@ export async function handleMessage(
           newGoal: goalDescription,
           context: { destination: user.homeLocation, mood: cognitiveState.emotionalState },
         },
+      })
+
+      // Step 22: Real-time rejection signal extraction (Issue #89)
+      // Extract explicit rejections/preferences from this turn, fire-and-forget
+      setImmediate(async () => {
+        try {
+          const assistantReply = assistantResponse ?? ''
+          const { rejections, preferences } = await extractRejectionSignals(userMessage, assistantReply)
+          if (rejections.length > 0 || preferences.length > 0) {
+            const category = entityTypeToCategory(rejections[0]?.type ?? preferences[0]?.type ?? 'other')
+            await persistRejectionSignals(user.userId, category, rejections, preferences)
+          }
+        } catch {
+          // Never block on rejection memory writes
+        }
       })
     }
 

@@ -345,8 +345,8 @@ server.post('/webhook/telegram', async (request, reply) => {
 
     // Replace placeholder in-place, or delete it when we need a fresh send
     if (placeholderMsgId) {
-      if (response.requestLocation || response.media?.length) {
-        // requestLocation needs a ReplyKeyboard; media can't replace a text message —
+      if (response.requestLocation || response.media?.length || response._buttons?.length) {
+        // requestLocation needs a ReplyKeyboard; media/buttons can't replace a text message —
         // delete the placeholder so the proper message goes out fresh below
         await tgFetch('deleteMessage', { chat_id: chatId, message_id: placeholderMsgId })
         placeholderMsgId = null
@@ -378,6 +378,11 @@ server.post('/webhook/telegram', async (request, reply) => {
           toolHint: 'food_grocery',
           chatId,
           originalMessage: msgText,
+        })
+      } else if (response._buttons?.length) {
+        // Onboarding / social bridge inline keyboard buttons
+        await sendTelegramWithKeyboard(chatId, response.text, {
+          inline_keyboard: response._buttons,
         })
       } else {
         await adapter.sendMessage(chatId, response.text)

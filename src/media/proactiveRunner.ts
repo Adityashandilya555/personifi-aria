@@ -34,6 +34,9 @@ import { sendProactiveContent } from '../channels.js'
 import { sleep } from '../tools/scrapers/retry.js'
 import { expireStaleIntentFunnels, tryStartIntentDrivenFunnel } from '../proactive-intent/index.js'
 import { getWeatherState, type WeatherStimulusKind } from '../weather/weather-stimulus.js'
+import { getTrafficState, trafficMessage, trafficHashtag } from '../stimulus/traffic-stimulus.js'
+import { getFestivalState, festivalMessage, festivalHashtag } from '../stimulus/festival-stimulus.js'
+import { getActiveRejections } from '../intelligence/rejection-memory.js'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -45,6 +48,10 @@ interface UserProactiveState {
     lastResetDate: string // YYYY-MM-DD IST
     lastCategory: string | null
     lastHashtags: string[]
+    // Retention phase tracking (Issue #93)
+    retentionPhaseStart: number   // timestamp when user went inactive (0 = not started)
+    retentionReelsSent: number    // 0, 1 (T+3h), 2 (T+6h) — then exhausted
+    retentionExhausted: boolean
 }
 
 type ContentPickType = 'reel' | 'image_text' | 'text_only'
@@ -70,11 +77,19 @@ const userLastActivity = new Map<string, number>()
 
 /**
  * Call this every time a user sends a message.
- * Updates the inactivity clock so smart gate works correctly.
+ * Updates the inactivity clock and resets retention phase counters.
  */
 export function updateUserActivity(userId: string, chatId: string): void {
     userLastActivity.set(userId, Date.now())
     registerProactiveUser(userId, chatId)
+
+    // Reset retention phase when user comes back
+    const state = userStates.get(userId)
+    if (state) {
+        state.retentionPhaseStart = 0
+        state.retentionReelsSent = 0
+        state.retentionExhausted = false
+    }
 }
 
 /**
@@ -121,6 +136,7 @@ async function loadStateFromDB(userId: string, chatId: string): Promise<UserProa
                 userId, chatId,
                 lastSentAt: 0, sendCountToday: 0,
                 lastResetDate: today, lastCategory: null, lastHashtags: [],
+                retentionPhaseStart: 0, retentionReelsSent: 0, retentionExhausted: false,
             }
         }
         const row = rows[0]
@@ -134,12 +150,14 @@ async function loadStateFromDB(userId: string, chatId: string): Promise<UserProa
             lastResetDate: isNewDay ? today : dbDate,
             lastCategory: row.last_category,
             lastHashtags: row.recent_hashtags ?? [],
+            retentionPhaseStart: 0, retentionReelsSent: 0, retentionExhausted: false,
         }
     } catch {
         return {
             userId, chatId,
             lastSentAt: 0, sendCountToday: 0,
             lastResetDate: today, lastCategory: null, lastHashtags: [],
+            retentionPhaseStart: 0, retentionReelsSent: 0, retentionExhausted: false,
         }
     }
 }
@@ -204,6 +222,10 @@ function getTodayIST(): string {
 
 // ─── Smart Adaptive Gate ────────────────────────────────────────────────────
 
+const RETENTION_3H_MS  = 3 * 60 * 60_000
+const RETENTION_6H_MS  = 6 * 60 * 60_000
+const DAILY_SEND_LIMIT = 2  // max proactive messages per user per day (CLAUDE.md rule)
+
 /**
  * Adaptive gate that decides whether to attempt a send.
  *
@@ -211,7 +233,7 @@ function getTodayIST(): string {
  *  < 30 min  → user is actively chatting, skip completely
  *  30–60 min → 15-min minimum gap, 45% fire probability (post-session follow-up)
  *  1–3 h     → 30-min minimum gap, 55% fire probability (re-engagement)
- *  3h+       → 60-min minimum gap, 65% fire probability (hourly poke)
+ *  3h+       → Retention phase: max 1 reel at T+3h, 1 final at T+6h, then stop (Issue #93)
  *
  * ±5 min jitter is added to all gaps to avoid robot-precision timing.
  */
@@ -222,48 +244,73 @@ function computeSmartGate(state: UserProactiveState): { ok: boolean; reason: str
         return { ok: false, reason: `Outside active hours (${time.formatted})` }
     }
 
-    // Max 5 proactive sends per day
-    if (state.sendCountToday >= 5) {
-        return { ok: false, reason: `Daily limit reached (${state.sendCountToday}/5)` }
+    // Opt-out check happens upstream; if we reach here, user hasn't opted out
+    // Daily cap enforced per CLAUDE.md (max 2 proactive sends per day)
+    if (state.sendCountToday >= DAILY_SEND_LIMIT) {
+        return { ok: false, reason: `Daily limit reached (${state.sendCountToday}/${DAILY_SEND_LIMIT})` }
     }
 
     const now = Date.now()
     const lastActivity = userLastActivity.get(state.userId) ?? 0
-    const inactivityMins = lastActivity > 0 ? (now - lastActivity) / 60_000 : Infinity
+    const inactivityMs = lastActivity > 0 ? now - lastActivity : Infinity
+    const inactivityMins = inactivityMs / 60_000
 
     // User is in an active conversation — don't interrupt
     if (lastActivity > 0 && inactivityMins < 30) {
         return { ok: false, reason: `User active ${Math.floor(inactivityMins)}m ago` }
     }
 
-    // Pick gap and fire probability based on inactivity
+    // ── Retention phase: 3h+ inactive (Issue #93) ───────────────────────────
+    if (inactivityMs >= RETENTION_3H_MS || inactivityMs === Infinity) {
+        // Mark retention phase start if not already set
+        if (state.retentionPhaseStart === 0 && lastActivity > 0) {
+            state.retentionPhaseStart = lastActivity
+        }
+
+        // If retention exhausted (2 reels sent with no response), stop all media
+        if (state.retentionExhausted) {
+            return { ok: false, reason: 'Retention exhausted — awaiting user response' }
+        }
+
+        const phaseElapsedMs = state.retentionPhaseStart > 0
+            ? now - state.retentionPhaseStart
+            : inactivityMs
+
+        // T+3h: first reel allowed
+        if (state.retentionReelsSent === 0 && phaseElapsedMs >= RETENTION_3H_MS) {
+            return { ok: true, reason: `Retention T+3h reel (inactive ${Math.floor(inactivityMins)}m)` }
+        }
+
+        // T+6h: second and final reel
+        if (state.retentionReelsSent === 1 && phaseElapsedMs >= RETENTION_6H_MS) {
+            return { ok: true, reason: `Retention T+6h final reel (inactive ${Math.floor(inactivityMins)}m)` }
+        }
+
+        // Either already sent or not at the right interval yet
+        return { ok: false, reason: `Retention gate: reels_sent=${state.retentionReelsSent}, phase_elapsed=${Math.floor(phaseElapsedMs / 60_000)}m` }
+    }
+
+    // ── Normal inactivity buckets (30m – 3h) ────────────────────────────────
     let minGapMs: number
     let fireProbability: number
 
     if (inactivityMins < 60) {
-        // 30–60 min inactive: post-chat follow-up window
         minGapMs = 15 * 60_000
         fireProbability = 0.45
-    } else if (inactivityMins < 180) {
-        // 1–3h inactive: gentle re-engagement
+    } else {
         minGapMs = 30 * 60_000
         fireProbability = 0.55
-    } else {
-        // 3h+ inactive: hourly poke
-        minGapMs = 60 * 60_000
-        fireProbability = 0.65
     }
 
     // Add ±5 min jitter so sends never feel robotic
     const jitter = (Math.random() - 0.5) * 10 * 60_000
-    const effectiveGap = Math.max(minGapMs + jitter, 10 * 60_000) // floor at 10 min always
+    const effectiveGap = Math.max(minGapMs + jitter, 10 * 60_000)
 
     if (now - state.lastSentAt < effectiveGap) {
         const minsAgo = Math.floor((now - state.lastSentAt) / 60_000)
         return { ok: false, reason: `Too soon (last sent ${minsAgo}m ago, gap ${Math.floor(effectiveGap / 60_000)}m)` }
     }
 
-    // Probability gate — don't send on every qualifying check
     if (Math.random() > fireProbability) {
         return { ok: false, reason: `Skipping this slot (${Math.floor(fireProbability * 100)}% probability)` }
     }
@@ -363,6 +410,93 @@ async function trySendWeatherStimulus(
     return true
 }
 
+// ─── Traffic Stimulus ────────────────────────────────────────────────────────
+
+const trafficStimulusSentAt = new Map<string, number>()
+const TRAFFIC_STIMULUS_COOLDOWN_MS = 2 * 60 * 60 * 1000 // 2h cooldown
+
+async function trySendTrafficStimulus(
+    userId: string,
+    chatId: string,
+    state: UserProactiveState,
+): Promise<boolean> {
+    const traffic = getTrafficState()
+    if (!traffic?.stimulus || traffic.stimulus === 'CLEAR_TRAFFIC') return false
+
+    const lastActivity = userLastActivity.get(userId) ?? 0
+    const inactivityMins = lastActivity > 0 ? (Date.now() - lastActivity) / 60_000 : Infinity
+    if (lastActivity > 0 && inactivityMins < 60) return false
+
+    const last = trafficStimulusSentAt.get(userId) ?? 0
+    if (Date.now() - last < TRAFFIC_STIMULUS_COOLDOWN_MS) return false
+
+    const caption = trafficMessage(traffic)
+    const hashtag = trafficHashtag(traffic)
+
+    const reels = await fetchReels(hashtag, userId, 4).catch(() => [])
+    const candidate = reels.length > 0 ? await pickBestReel(reels, userId) : null
+
+    let sent = false
+    if (candidate) {
+        sent = await sendMediaViaPipeline(chatId, {
+            id: candidate.id, source: candidate.source,
+            videoUrl: candidate.videoUrl, thumbnailUrl: candidate.thumbnailUrl,
+            type: candidate.type,
+        }, caption)
+        if (sent) markMediaSent(candidate.id).catch(() => { })
+    }
+    if (!sent) sent = await sendProactiveContent(chatId, caption)
+    if (!sent) return false
+
+    trafficStimulusSentAt.set(userId, Date.now())
+    await updateStateAfterSend(state, userId, ContentCategory.FOOD_DISCOVERY, hashtag)
+    return true
+}
+
+// ─── Festival Stimulus ───────────────────────────────────────────────────────
+
+const festivalStimulusSentAt = new Map<string, { festival: string; ts: number }>()
+const FESTIVAL_STIMULUS_COOLDOWN_MS = 12 * 60 * 60 * 1000 // 12h — festivals span days
+
+async function trySendFestivalStimulus(
+    userId: string,
+    chatId: string,
+    state: UserProactiveState,
+): Promise<boolean> {
+    const festival = getFestivalState()
+    if (!festival?.active || !festival.festival) return false
+
+    const lastActivity = userLastActivity.get(userId) ?? 0
+    const inactivityMins = lastActivity > 0 ? (Date.now() - lastActivity) / 60_000 : Infinity
+    if (lastActivity > 0 && inactivityMins < 60) return false
+
+    const prev = festivalStimulusSentAt.get(userId)
+    if (prev && prev.festival === festival.festival.name && Date.now() - prev.ts < FESTIVAL_STIMULUS_COOLDOWN_MS) return false
+
+    const caption = festivalMessage(festival)
+    if (!caption) return false
+    const hashtag = festivalHashtag(festival)
+
+    const reels = await fetchReels(hashtag, userId, 4).catch(() => [])
+    const candidate = reels.length > 0 ? await pickBestReel(reels, userId) : null
+
+    let sent = false
+    if (candidate) {
+        sent = await sendMediaViaPipeline(chatId, {
+            id: candidate.id, source: candidate.source,
+            videoUrl: candidate.videoUrl, thumbnailUrl: candidate.thumbnailUrl,
+            type: candidate.type,
+        }, caption)
+        if (sent) markMediaSent(candidate.id).catch(() => { })
+    }
+    if (!sent) sent = await sendProactiveContent(chatId, caption)
+    if (!sent) return false
+
+    festivalStimulusSentAt.set(userId, { festival: festival.festival.name, ts: Date.now() })
+    await updateStateAfterSend(state, userId, ContentCategory.FOOD_DISCOVERY, hashtag)
+    return true
+}
+
 // ─── Main: Run Proactive for One User ───────────────────────────────────────
 
 async function runProactiveForUser(userId: string, chatId: string): Promise<void> {
@@ -375,13 +509,31 @@ async function runProactiveForUser(userId: string, chatId: string): Promise<void
         return
     }
 
-    // Weather stimulus has priority over generic content blast.
+    // Stimulus priority: Weather > Traffic > Festival (per CLAUDE.md)
     const weatherSent = await trySendWeatherStimulus(userId, chatId, state).catch(err => {
         console.warn(`[Proactive] Weather stimulus failed for ${userId}:`, (err as Error)?.message)
         return false
     })
     if (weatherSent) {
         console.log(`[Proactive] Weather-triggered send for ${userId}`)
+        return
+    }
+
+    const trafficSent = await trySendTrafficStimulus(userId, chatId, state).catch(err => {
+        console.warn(`[Proactive] Traffic stimulus failed for ${userId}:`, (err as Error)?.message)
+        return false
+    })
+    if (trafficSent) {
+        console.log(`[Proactive] Traffic-triggered send for ${userId}`)
+        return
+    }
+
+    const festivalSent = await trySendFestivalStimulus(userId, chatId, state).catch(err => {
+        console.warn(`[Proactive] Festival stimulus failed for ${userId}:`, (err as Error)?.message)
+        return false
+    })
+    if (festivalSent) {
+        console.log(`[Proactive] Festival-triggered send for ${userId}`)
         return
     }
 
@@ -596,6 +748,17 @@ async function updateStateAfterSend(
     state.lastCategory = category
     state.lastHashtags = [hashtag, ...state.lastHashtags].slice(0, 10)
     recordContentSent(userId, category, hashtag)
+
+    // Track retention phase sends (Issue #93)
+    const lastActivity = userLastActivity.get(userId) ?? 0
+    const inactivityMs = lastActivity > 0 ? Date.now() - lastActivity : Infinity
+    if (inactivityMs >= RETENTION_3H_MS || inactivityMs === Infinity) {
+        state.retentionReelsSent++
+        if (state.retentionReelsSent >= 2) {
+            state.retentionExhausted = true
+            console.log(`[Proactive] Retention exhausted for ${userId} after 2 reels`)
+        }
+    }
 
     saveStateToDB(state)
 

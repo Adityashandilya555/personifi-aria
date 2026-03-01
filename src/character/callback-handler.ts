@@ -11,6 +11,9 @@ import { handleFunnelCallback } from '../proactive-intent/index.js'
 import { handleTaskCallback } from '../task-orchestrator/index.js'
 import { acceptFriend } from '../social/friend-graph.js'
 import { acceptSquadInvite } from '../social/squad.js'
+import { handleOnboarding } from '../onboarding/onboarding-flow.js'
+import { handleBridgePingCallback, suggestFriendOpinion } from '../social/outbound-worker.js'
+import { getOrCreateUser } from './session-store.js'
 
 // What each button tap means as a message Aria receives
 const CALLBACK_INTENTS: Record<string, string> = {
@@ -55,6 +58,65 @@ export async function handleCallbackAction(
     const squadId = callbackData.replace('squad:accept:', '')
     const result = await acceptSquadInvite(squadId, userId)
     return { text: result.message }
+  }
+
+  // ── Onboarding callbacks (Issue #92) ───────────────────────────────────────
+  // Preference buttons (pref_food_*, pref_budget_*, pref_travel_*),
+  // friend selection (add_friend_*), and skip (onboarding_skip_friends)
+  if (
+    callbackData.startsWith('pref_') ||
+    callbackData.startsWith('add_friend_') ||
+    callbackData === 'onboarding_skip_friends'
+  ) {
+    try {
+      const user = await getOrCreateUser(channel, userId)
+      const result = await handleOnboarding(user.userId, '', callbackData)
+      if (result.handled) {
+        return {
+          text: result.reply ?? '',
+          choices: result.buttons?.flat().map(b => ({ label: b.text, action: b.callback_data })),
+        }
+      }
+    } catch (err) {
+      console.warn('[CallbackHandler] Onboarding callback failed:', (err as Error).message)
+    }
+    return null
+  }
+
+  // ── Social bridge callbacks (Issue #88) ──────────────────────────────────
+  // bridge_ping_{friendId}_{senderUserId} — active user wants to ping passive friend
+  if (callbackData.startsWith('bridge_ping_')) {
+    // Format: bridge_ping_{friendUUID}_{senderUUID} — UUIDs are 36 chars each
+    const payload = callbackData.slice('bridge_ping_'.length)
+    const friendId = payload.slice(0, 36)
+    const senderUserId = payload.slice(37) // skip the underscore separator
+    if (friendId.length === 36 && senderUserId.length >= 36) {
+      const sent = await handleBridgePingCallback(friendId, senderUserId, userId).catch(() => false)
+      return { text: sent ? "Done! I've pinged them — let's see if they're up for it." : "Hmm, couldn't reach them right now. I'll try again later." }
+    }
+    return null
+  }
+
+  if (callbackData === 'bridge_skip' || callbackData === 'bridge_decline') {
+    return { text: 'No worries, noted!' }
+  }
+
+  if (callbackData.startsWith('bridge_join_')) {
+    const senderUserId = callbackData.replace('bridge_join_', '')
+    return { text: "Awesome, you're in! I'll let them know you're interested." }
+  }
+
+  // ── Opinion gathering callbacks (Issue #88) ──────────────────────────────
+  if (callbackData.startsWith('opinion_ask_')) {
+    // Format: opinion_ask_{friendUUID}_{category}
+    const payload = callbackData.slice('opinion_ask_'.length)
+    const friendId = payload.slice(0, 36)
+    const category = payload.slice(37) // after underscore
+    return { text: `Asking your friend about ${category.replace(/_/g, ' ')} — I'll loop back when they respond!` }
+  }
+
+  if (callbackData === 'opinion_skip') {
+    return { text: 'Got it, going solo on this one!' }
   }
 
   if (callbackData.startsWith('topic:execute')) {

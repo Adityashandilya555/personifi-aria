@@ -18,6 +18,10 @@ import { registerMediaCron } from './cron/media-cron.js'
 import { runMigrations, cleanupExpiredRateLimits } from './character/session-store.js'
 import { checkPriceAlerts } from './alerts/price-alerts.js'
 import { runSocialOutbound } from './social/index.js'
+import { runFriendBridgeOutbound } from './social/outbound-worker.js'
+import { runIntelligenceCron } from './intelligence/intelligence-cron.js'
+import { refreshTrafficState } from './stimulus/traffic-stimulus.js'
+import { refreshFestivalState } from './stimulus/festival-stimulus.js'
 import { processMemoryWriteQueue } from './archivist/memory-queue.js'
 import { checkAndSummarizeSessions } from './archivist/session-summaries.js'
 import { sweepStaleTopics } from './topic-intent/sweep.js'
@@ -108,6 +112,42 @@ export function initScheduler(_databaseUrl: string) {
     }
   })
 
+  // ── 6c. Traffic stimulus refresh — every 30 minutes (Issue #91) ──────
+  cron.schedule('*/30 * * * *', async () => {
+    try {
+      await refreshTrafficState()
+    } catch (err) {
+      console.error('[SCHEDULER] Traffic stimulus refresh error:', err)
+    }
+  })
+
+  // ── 6d. Festival stimulus refresh — every 6 hours (Issue #90) ────────
+  cron.schedule('0 */6 * * *', async () => {
+    try {
+      await refreshFestivalState()
+    } catch (err) {
+      console.error('[SCHEDULER] Festival stimulus refresh error:', err)
+    }
+  })
+
+  // ── 6e. Intelligence cron — every 2 hours (Issue #87) ─────────────────
+  cron.schedule('0 */2 * * *', async () => {
+    try {
+      await runIntelligenceCron(3)
+    } catch (err) {
+      console.error('[SCHEDULER] Intelligence cron error:', err)
+    }
+  })
+
+  // ── 6f. Social friend bridge — every 30 minutes (Issue #88) ──────────
+  cron.schedule('*/30 * * * *', async () => {
+    try {
+      await runFriendBridgeOutbound()
+    } catch (err) {
+      console.error('[SCHEDULER] Friend bridge outbound error:', err)
+    }
+  })
+
   // ── 7. Archivist: memory write queue — every 30 seconds (#61) ────────
   cron.schedule('*/30 * * * * *', async () => {
     try {
@@ -136,5 +176,5 @@ export function initScheduler(_databaseUrl: string) {
     }
   }, 8000) // after DB pool is ready
 
-  console.log('[SCHEDULER] Initialized — heartbeat (30s) + topic-followups (*/30m) + content-blast (*/2h) + media (*/6h) + price alerts (*/30) + weather (*/30) + memory queue (*/30s) + session summaries (*/5m)')
+  console.log('[SCHEDULER] Initialized — heartbeat (30s) + topic-followups (*/30m) + content-blast (*/2h) + media (*/6h) + price alerts (*/30) + weather (*/30) + traffic (*/30) + festival (*/6h) + intelligence (*/2h) + friend-bridge (*/30m) + memory queue (*/30s) + session summaries (*/5m)')
 }
