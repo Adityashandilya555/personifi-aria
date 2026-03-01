@@ -167,6 +167,7 @@ const recentToolContextStore = new Map<string, RecentToolContextRecord>()
 const TOOLS_REQUIRING_CONFIRM = new Set([
   'compare_food_prices',
   'compare_grocery_prices',
+  'compare_prices_proactive',
 ])
 
 /** Is this a short affirmative reply? */
@@ -495,6 +496,20 @@ export async function handleMessage(
       skipCognitive: classification.skip_cognitive,
     })
 
+    // ─── Rejection guard: clear parked tool + media context when user rejects ─
+    // Catches cancellation phrases AND negative interest signals from the classifier.
+    // Also catches plain "no" / "skip" when there is a pending confirmation tool.
+    const isRejection =
+      isCancellationMessage(userMessage) ||
+      (classification.interest_signal === 'negative') ||
+      (pendingToolStore.has(user.userId) &&
+        /^(no|skip)$/i.test(userMessage.trim().toLowerCase()))
+
+    if (isRejection) {
+      pendingToolStore.delete(user.userId)
+      recentToolContextStore.delete(user.userId)
+    }
+
     // ─── Step 6: Conditional pipeline based on classification ─────
     // Resolve linked user IDs for cross-channel search
     const searchUserIds = user.personId
@@ -629,6 +644,13 @@ export async function handleMessage(
       }
     }
 
+    // ─── Step 7.55: Pulse gate — compare_prices_proactive only runs when ENGAGED+ ─
+    // Prevents the bot from pushing food comparisons at new/passive users.
+    if (routeDecision.useTool && routeDecision.toolName === 'compare_prices_proactive' &&
+      (pulseEngagementState === 'PASSIVE' || pulseEngagementState === 'CURIOUS')) {
+      routeDecision = { useTool: false }
+    }
+
     // ─── Step 7.6: Confirmation gate for expensive scraping tools ─────────────
     if (routeDecision.useTool && routeDecision.toolName &&
       TOOLS_REQUIRING_CONFIRM.has(routeDecision.toolName) &&
@@ -641,9 +663,9 @@ export async function handleMessage(
           toolName: routeDecision.toolName,
           toolParams: routeDecision.toolParams,
         })
-        const toolLabel = routeDecision.toolName === 'compare_food_prices'
-          ? 'food prices on Swiggy & Zomato'
-          : 'grocery prices on Blinkit, Instamart & Zepto'
+        const toolLabel = routeDecision.toolName === 'compare_grocery_prices'
+          ? 'grocery prices on Blinkit, Instamart & Zepto'
+          : 'food prices on Swiggy & Zomato'
         return {
           text: `Want me to check ${toolLabel}? It takes a few seconds — shall I go ahead?`,
         }
@@ -701,7 +723,7 @@ export async function handleMessage(
     const isEarlyConversation = session.messages.length <= 6
 
     // ─── Step 8c: Proactive offer hint after places search ─────────
-    if (routeDecision.toolName === 'search_places' && toolResultStr && !onboardingJustCompleted) {
+    if (!isRejection && routeDecision.toolName === 'search_places' && toolResultStr && !onboardingJustCompleted) {
       toolResultStr += '\n\n[ARIA HINT: The user found places nearby. Naturally offer to check delivery prices on Swiggy or Zomato if they seem interested in food, or compare grocery apps if it is a grocery query. Keep it conversational — do not make it sound like an ad.]'
     }
 
