@@ -121,6 +121,7 @@ vi.mock('../agenda-planner/index.js', () => ({
     getStack: agendaGetStackMock,
     evaluate: agendaEvaluateMock,
   },
+  isCancellationMessage: () => false,
 }))
 
 import { handleMessage } from './handler.js'

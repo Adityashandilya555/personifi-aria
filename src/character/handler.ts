@@ -45,7 +45,7 @@ import { classifyMessage, getActiveGoal } from '../cognitive.js'
 import { composeSystemPrompt, getRawSoulPrompt } from '../personality.js'
 import { loadPreferences } from '../memory.js'
 import { pulseService } from '../pulse/index.js'
-import { agendaPlanner } from '../agenda-planner/index.js'
+import { agendaPlanner, isCancellationMessage } from '../agenda-planner/index.js'
 import { getPool } from './session-store.js'
 import { selectInlineMedia } from '../inline-media.js'
 import { selectStrategy } from '../influence-engine.js'
@@ -648,7 +648,7 @@ export async function handleMessage(
     // Prevents the bot from pushing food comparisons at new/passive users.
     if (routeDecision.useTool && routeDecision.toolName === 'compare_prices_proactive' &&
       (pulseEngagementState === 'PASSIVE' || pulseEngagementState === 'CURIOUS')) {
-      routeDecision = { useTool: false }
+      routeDecision = { useTool: false, toolName: null, toolParams: {} }
     }
 
     // ─── Step 7.6: Confirmation gate for expensive scraping tools ─────────────

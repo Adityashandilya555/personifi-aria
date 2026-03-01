@@ -154,7 +154,7 @@ function topicFromMessage(message: string): string | null {
   return null
 }
 
-function isCancellationMessage(message: string): boolean {
+export function isCancellationMessage(message: string): boolean {
   const normalized = message.trim().toLowerCase()
   // Short messages that are clearly opt-outs (≤ 5 words)
   const wordCount = normalized.split(/\s+/).length
