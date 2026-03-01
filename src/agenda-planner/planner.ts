@@ -600,6 +600,14 @@ export class AgendaPlannerService {
           (user_id, session_id, goal, status, context, goal_type, priority, next_action, deadline, parent_goal_id, source)
        VALUES
           ($1, $2, $3, 'active', $4::jsonb, $5, $6, $7, $8, $9, 'agenda_planner')
+       ON CONFLICT ON CONSTRAINT conversation_goals_user_session_unique
+       DO UPDATE SET
+          goal = EXCLUDED.goal,
+          context = COALESCE(conversation_goals.context, '{}'::jsonb) || EXCLUDED.context,
+          priority = EXCLUDED.priority,
+          next_action = EXCLUDED.next_action,
+          source = EXCLUDED.source,
+          updated_at = NOW()
        RETURNING id, user_id, session_id, goal, status, context, goal_type, priority,
                  next_action, deadline, parent_goal_id, source, created_at, updated_at`,
       [
