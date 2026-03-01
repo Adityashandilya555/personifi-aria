@@ -10,6 +10,8 @@ const {
   appendMessagesMock,
   agendaGetStackMock,
   agendaEvaluateMock,
+  routeMessageMock,
+  executeToolPipelineMock,
 } = vi.hoisted(() => ({
   getOrCreateUserMock: vi.fn(),
   getOrCreateSessionMock: vi.fn(),
@@ -20,6 +22,8 @@ const {
   appendMessagesMock: vi.fn(),
   agendaGetStackMock: vi.fn(),
   agendaEvaluateMock: vi.fn(),
+  routeMessageMock: vi.fn(),
+  executeToolPipelineMock: vi.fn(),
 }))
 
 vi.mock('groq-sdk', () => ({
@@ -84,8 +88,8 @@ vi.mock('../identity.js', () => ({
 
 vi.mock('../hook-registry.js', () => ({
   getBrainHooks: vi.fn(() => ({
-    routeMessage: vi.fn(async () => ({ useTool: false, toolName: null, toolParams: {} })),
-    executeToolPipeline: vi.fn(async () => null),
+    routeMessage: routeMessageMock,
+    executeToolPipeline: executeToolPipelineMock,
     formatResponse: vi.fn((raw: string) => raw),
   })),
 }))
@@ -161,6 +165,8 @@ describe('handler proactive funnel interception', () => {
       provider: 'mock',
     })
     appendMessagesMock.mockResolvedValue(undefined)
+    routeMessageMock.mockResolvedValue({ useTool: false, toolName: null, toolParams: {} })
+    executeToolPipelineMock.mockResolvedValue(null)
     agendaGetStackMock.mockResolvedValue([])
     agendaEvaluateMock.mockResolvedValue({
       stack: [],
@@ -196,5 +202,69 @@ describe('handler proactive funnel interception', () => {
     expect(result.text).toBe('main pipeline reply')
     expect(classifyMessageMock).toHaveBeenCalledTimes(1)
     expect(generateResponseMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('triggers proactive search_places after onboarding location capture', async () => {
+    handleFunnelReplyMock.mockResolvedValue({ handled: false })
+    getOrCreateUserMock.mockResolvedValue({
+      userId: 'u1',
+      channel: 'telegram',
+      channelUserId: 'tg1',
+      displayName: 'Adi',
+      homeLocation: undefined,
+      authenticated: false,
+      createdAt: new Date(),
+    })
+    getOrCreateSessionMock.mockResolvedValue({
+      sessionId: 's1',
+      userId: 'u1',
+      messages: [{ role: 'assistant', content: 'Which area are you in?' }],
+      lastActive: new Date(),
+    })
+    executeToolPipelineMock.mockResolvedValue({
+      success: true,
+      data: '{"formatted":"Top places found"}',
+      raw: {
+        raw: [
+          {
+            displayName: { text: 'Third Wave Coffee' },
+            formattedAddress: 'Koramangala, Bengaluru',
+            location: { latitude: 12.935, longitude: 77.614 },
+          },
+        ],
+      },
+    })
+
+    const result = await handleMessage('telegram', 'tg1', "I'm in Koramangala")
+
+    expect(executeToolPipelineMock).toHaveBeenCalled()
+    const firstDecision = executeToolPipelineMock.mock.calls[0]?.[0]
+    expect(firstDecision?.toolName).toBe('search_places')
+    expect(firstDecision?.toolParams?.location).toBe('Koramangala')
+    expect(result.venues?.[0]?.name).toBe('Third Wave Coffee')
+  })
+
+  it('does not trigger onboarding proactive search for generic acknowledgement text', async () => {
+    handleFunnelReplyMock.mockResolvedValue({ handled: false })
+    getOrCreateUserMock.mockResolvedValue({
+      userId: 'u1',
+      channel: 'telegram',
+      channelUserId: 'tg1',
+      displayName: 'Adi',
+      homeLocation: undefined,
+      authenticated: false,
+      createdAt: new Date(),
+    })
+    getOrCreateSessionMock.mockResolvedValue({
+      sessionId: 's1',
+      userId: 'u1',
+      messages: [{ role: 'assistant', content: 'Which area are you in?' }],
+      lastActive: new Date(),
+    })
+
+    const result = await handleMessage('telegram', 'tg1', 'Great')
+
+    expect(executeToolPipelineMock).not.toHaveBeenCalled()
+    expect(result.text).toBe('main pipeline reply')
   })
 })
