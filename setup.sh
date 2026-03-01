@@ -867,6 +867,14 @@ test_everything() {
     npx tsx src/test-tools.ts all
 }
 
+db_audit() {
+    echo ""
+    echo -e "  ${BOLD}🗄️  Database Schema Audit${RESET}"
+    echo -e "  ${DIM}Inspecting tables, columns, row counts, indexes, and foreign keys...${RESET}"
+    echo ""
+    npx tsx src/db-audit.ts
+}
+
 # ─── Main Menu ────────────────────────────────────────────────────────────────
 
 main_menu() {
@@ -891,9 +899,11 @@ main_menu() {
         echo -e "    ${CYAN}12${RESET}) 🐳 Start Docker containers"
         echo -e "    ${CYAN}13${RESET}) 🐳 Stop Docker containers"
         echo -e "    ${CYAN}14${RESET}) 🐳 Docker container status"
+        echo -e "  ${DIM}── Database ──${RESET}"
+        echo -e "    ${CYAN}15${RESET}) 🗄️  Database schema audit (inspect tables + data)"
         echo -e "    ${CYAN}0${RESET})  Exit"
         echo ""
-        read -p "  Choose [0-14]: " choice
+        read -p "  Choose [0-15]: " choice
 
         case $choice in
             1) show_dashboard ;;
@@ -910,6 +920,7 @@ main_menu() {
             12) docker_start ;;
             13) docker_stop ;;
             14) docker_status ;;
+            15) db_audit ;;
             0)
                 echo ""
                 echo -e "  ${BOLD}🌍 Happy travels with Aria!${RESET}"
