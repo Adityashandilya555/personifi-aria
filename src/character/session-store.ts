@@ -280,6 +280,59 @@ export async function runMigrations(): Promise<void> {
     )
   `)
 
+  // ── topic_intents — per-topic conversational confidence ramp ─────────────
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS topic_intents (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID NOT NULL REFERENCES users(user_id),
+      session_id UUID REFERENCES sessions(session_id),
+      topic TEXT NOT NULL,
+      category TEXT,
+      confidence INTEGER DEFAULT 0 CHECK (confidence BETWEEN 0 AND 100),
+      phase TEXT DEFAULT 'noticed' CHECK (phase IN ('noticed', 'probing', 'shifting', 'executing', 'completed', 'abandoned')),
+      signals JSONB DEFAULT '[]',
+      strategy TEXT,
+      last_signal_at TIMESTAMPTZ DEFAULT NOW(),
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `)
+  await p.query(`CREATE INDEX IF NOT EXISTS idx_topic_intents_user ON topic_intents(user_id, phase)`)
+  await p.query(`CREATE INDEX IF NOT EXISTS idx_topic_intents_active ON topic_intents(user_id) WHERE phase NOT IN ('completed', 'abandoned')`)
+  await p.query(`CREATE INDEX IF NOT EXISTS idx_topic_intents_warm ON topic_intents(user_id, last_signal_at) WHERE phase NOT IN ('completed', 'abandoned')`)
+
+  // ── proactive_user_state — persistent proactive scheduling state ──────────
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS proactive_user_state (
+      user_id            UUID    PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+      chat_id            TEXT    NOT NULL,
+      last_sent_at       TIMESTAMPTZ,
+      last_reset_date    DATE,
+      send_count_today   INTEGER NOT NULL DEFAULT 0,
+      last_category      TEXT,
+      recent_hashtags    TEXT[]  NOT NULL DEFAULT '{}',
+      cooling_categories JSONB   NOT NULL DEFAULT '{}',
+      updated_at         TIMESTAMPTZ DEFAULT NOW()
+    )
+  `)
+  await p.query(`CREATE INDEX IF NOT EXISTS idx_proactive_user_state_updated ON proactive_user_state(updated_at)`)
+  // Trigger to auto-update updated_at (safe — IF NOT EXISTS via DO block)
+  await p.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger WHERE tgname = 'update_proactive_user_state_updated_at'
+      ) THEN
+        EXECUTE $trig$
+          CREATE TRIGGER update_proactive_user_state_updated_at
+            BEFORE UPDATE ON proactive_user_state
+            FOR EACH ROW
+            EXECUTE FUNCTION update_updated_at_column()
+        $trig$;
+      END IF;
+    END $$
+  `)
+
   console.log('[DB] Migrations complete')
 }
 
