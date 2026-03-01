@@ -841,6 +841,32 @@ docker_status() {
     echo ""
 }
 
+# ─── Tool & Agent Test Runner ──────────────────────────────────────────────────
+
+test_all_tools() {
+    echo ""
+    echo -e "  ${BOLD}🔧 Testing All Tools${RESET}"
+    echo -e "  ${DIM}Smoke-testing all 20 registered tools with live API calls...${RESET}"
+    echo ""
+    npx tsx src/test-tools.ts tools
+}
+
+test_all_agents() {
+    echo ""
+    echo -e "  ${BOLD}🤖 Testing All Subagents${RESET}"
+    echo -e "  ${DIM}Verifying all subagent modules load and core functions are callable...${RESET}"
+    echo ""
+    npx tsx src/test-tools.ts agents
+}
+
+test_everything() {
+    echo ""
+    echo -e "  ${BOLD}🧪 Full System Test (Tools + Subagents)${RESET}"
+    echo -e "  ${DIM}Running comprehensive checks across all tools and agent modules...${RESET}"
+    echo ""
+    npx tsx src/test-tools.ts all
+}
+
 # ─── Main Menu ────────────────────────────────────────────────────────────────
 
 main_menu() {
@@ -857,13 +883,17 @@ main_menu() {
         echo -e "    ${CYAN}6${RESET})  🗄️  Run database migrations"
         echo -e "    ${CYAN}7${RESET})  🚀 Start dev server (tsx watch)"
         echo -e "    ${CYAN}8${RESET})  🧪 Smoke test pipeline (reels + download + LLM)"
+        echo -e "  ${DIM}── Test Suite ──${RESET}"
+        echo -e "    ${CYAN}9${RESET})  🔧 Test all tools (20 tools, live API calls)"
+        echo -e "    ${CYAN}10${RESET}) 🤖 Test all subagents (module health check)"
+        echo -e "    ${CYAN}11${RESET}) 🧪 Full system test (tools + subagents)"
         echo -e "  ${DIM}── Docker ──${RESET}"
-        echo -e "    ${CYAN}9${RESET})  🐳 Start Docker containers"
-        echo -e "    ${CYAN}10${RESET}) 🐳 Stop Docker containers"
-        echo -e "    ${CYAN}11${RESET}) 🐳 Docker container status"
+        echo -e "    ${CYAN}12${RESET}) 🐳 Start Docker containers"
+        echo -e "    ${CYAN}13${RESET}) 🐳 Stop Docker containers"
+        echo -e "    ${CYAN}14${RESET}) 🐳 Docker container status"
         echo -e "    ${CYAN}0${RESET})  Exit"
         echo ""
-        read -p "  Choose [0-11]: " choice
+        read -p "  Choose [0-14]: " choice
 
         case $choice in
             1) show_dashboard ;;
@@ -874,9 +904,12 @@ main_menu() {
             6) run_migrations ;;
             7) start_dev ;;
             8) smoke_test_pipeline ;;
-            9) docker_start ;;
-            10) docker_stop ;;
-            11) docker_status ;;
+            9) test_all_tools ;;
+            10) test_all_agents ;;
+            11) test_everything ;;
+            12) docker_start ;;
+            13) docker_stop ;;
+            14) docker_status ;;
             0)
                 echo ""
                 echo -e "  ${BOLD}🌍 Happy travels with Aria!${RESET}"
