@@ -27,14 +27,9 @@ import {
     CATEGORY_HASHTAGS,
 } from './media/contentIntelligence.js'
 import type { ToolMediaContext } from './media/tool-media-context.js'
+import type { WeatherStimulusKind } from './weather/weather-stimulus.js'
 
-export type WeatherStimulusKind =
-    | 'RAIN_START'
-    | 'RAIN_HEAVY'
-    | 'PERFECT_OUT'
-    | 'HEAT_WAVE'
-    | 'EVENING_COOL'
-    | 'COLD_SNAP'
+export type { WeatherStimulusKind }
 
 export interface InlineMediaContext {
     mediaDirective?: ToolMediaDirective | null
@@ -108,6 +103,9 @@ export async function deriveHashtagFromContext(
     }
     if (context?.weatherStimulus === 'PERFECT_OUT' || context?.weatherStimulus === 'EVENING_COOL') {
         return 'bangalorebrew'
+    }
+    if (context?.weatherStimulus === 'COLD_SNAP') {
+        return 'filterkaapi'
     }
 
     const directiveQuery = context?.mediaDirective?.searchQuery ?? ''
