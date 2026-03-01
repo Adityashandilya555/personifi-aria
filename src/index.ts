@@ -3,6 +3,7 @@
  * Multi-channel support with proactive scheduler and browser automation
  */
 
+import 'dotenv/config'
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import { handleMessage, initDatabase, registerBrainHooks, saveUserLocation } from './character/index.js'
@@ -11,6 +12,7 @@ import { brainHooks } from './brain/index.js'
 import { initScheduler } from './scheduler.js'
 import { initMCPTokenStore } from './tools/mcp-client.js'
 import { initArchivist } from './archivist/index.js'
+import { registerDashboardRoutes } from './dashboard/api.js'
 import { initBrowser, closeBrowser } from './browser.js'
 import './tools/index.js'  // Register body hooks (DEV 2 tools)
 import { verifySlackSignature } from './slack-verify.js'
@@ -507,6 +509,7 @@ const start = async () => {
     }
 
     initScheduler(dbUrl)
+    await registerDashboardRoutes(server)
 
     const port = parseInt(process.env.PORT || '3000')
     await server.listen({ port, host: '0.0.0.0' })
