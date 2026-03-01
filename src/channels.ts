@@ -81,8 +81,17 @@ export const telegramAdapter: ChannelAdapter = {
     const token = process.env.TELEGRAM_BOT_TOKEN
     if (!token || media.length === 0) return
 
+    const { downloadMedia, uploadVideoToTelegram, uploadPhotoToTelegram } = await import('./media/mediaDownloader.js')
+
     if (media.length === 1 && media[0].type === 'video') {
-      // Single video — use sendVideo
+      // Single video — download first (CDN URLs expire!), then multipart upload
+      const downloaded = await downloadMedia(media[0].url, 'instagram').catch(() => null)
+      if (downloaded) {
+        const result = await uploadVideoToTelegram(chatId, downloaded, media[0].caption || '', { supportsStreaming: true })
+        if (result.success) return
+        console.warn('[Telegram] sendMedia: multipart video upload failed, trying URL-based fallback')
+      }
+      // Fallback: URL-based send (may fail for expired CDN URLs)
       const resp = await fetch(`https://api.telegram.org/bot${token}/sendVideo`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -97,7 +106,7 @@ export const telegramAdapter: ChannelAdapter = {
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}))
         console.error('[Telegram] sendVideo failed:', (err as any)?.description, 'url:', media[0].url)
-        // Fallback: send as URL in text message
+        // Final fallback: send as URL in text message
         if (media[0].caption) {
           await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
             method: 'POST',
@@ -110,7 +119,14 @@ export const telegramAdapter: ChannelAdapter = {
         }
       }
     } else if (media.length === 1) {
-      // Single photo — use sendPhoto for cleaner UX
+      // Single photo — download first, then multipart upload
+      const downloaded = await downloadMedia(media[0].url, 'instagram').catch(() => null)
+      if (downloaded) {
+        const result = await uploadPhotoToTelegram(chatId, downloaded, media[0].caption || '')
+        if (result.success) return
+        console.warn('[Telegram] sendMedia: multipart photo upload failed, trying URL-based fallback')
+      }
+      // Fallback: URL-based send
       const resp = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -126,32 +142,44 @@ export const telegramAdapter: ChannelAdapter = {
         console.error('[Telegram] sendPhoto failed:', (err as any)?.description, 'url:', media[0].url)
       }
     } else {
-      // Multiple photos — sendMediaGroup (album). Only first item gets caption (Telegram limit).
-      const mediaGroup = media.slice(0, 10).map((item, i) => ({
-        type: 'photo' as const,
-        media: item.url,
-        ...(i === 0 && item.caption ? { caption: item.caption, parse_mode: 'HTML' as const } : {}),
-      }))
-
-      const resp = await fetch(`https://api.telegram.org/bot${token}/sendMediaGroup`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, media: mediaGroup }),
-      })
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({}))
-        console.error('[Telegram] sendMediaGroup failed:', (err as any)?.description)
-        // Fallback: send only the first photo individually
-        await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
+      // Multiple photos — try downloading each and uploading individually; fall back to URL-based sendMediaGroup
+      let sentCount = 0
+      for (const item of media.slice(0, 10)) {
+        const downloaded = await downloadMedia(item.url, 'instagram').catch(() => null)
+        if (downloaded) {
+          const result = await uploadPhotoToTelegram(chatId, downloaded, item.caption || '')
+          if (result.success) { sentCount++; continue }
+        }
+        // Per-item fallback: URL-based photo send (check response to track success)
+        const resp = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             chat_id: chatId,
-            photo: media[0].url,
-            caption: media[0].caption || '',
+            photo: item.url,
+            caption: item.caption || '',
             parse_mode: 'HTML',
           }),
-        }).catch(() => { })
+        }).catch(() => null)
+        if (resp?.ok) sentCount++
+      }
+
+      if (sentCount === 0) {
+        // All individual attempts failed — try sendMediaGroup URL-based as last resort
+        const mediaGroup = media.slice(0, 10).map((item, i) => ({
+          type: 'photo' as const,
+          media: item.url,
+          ...(i === 0 && item.caption ? { caption: item.caption, parse_mode: 'HTML' as const } : {}),
+        }))
+        const resp = await fetch(`https://api.telegram.org/bot${token}/sendMediaGroup`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chatId, media: mediaGroup }),
+        })
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}))
+          console.error('[Telegram] sendMediaGroup failed:', (err as any)?.description)
+        }
       }
     }
   },

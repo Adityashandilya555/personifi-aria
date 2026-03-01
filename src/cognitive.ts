@@ -79,6 +79,7 @@ function buildClassifierPrompt(): string {
 
     return `You are a travel and food chatbot message router for Aria, an AI travel companion.
 Today is ${today} (${dayName}). Always convert relative dates ("next Friday", "tomorrow", "in 3 days") to YYYY-MM-DD format when calling tools.
+Call only ONE tool per message.
 
 STEP 1 — Call a tool if the user needs real-time data:
 - Flights, hotels, weather, places, currency, transport → those tools
@@ -264,10 +265,11 @@ export async function classifyMessage(
         return getDefaultClassification()
     } catch (error: any) {
         // ── Path C: Groq 400 — Llama sometimes emits <function=name>{args} instead of proper tool_calls ──
-        // Parse the failed_generation to recover the tool call rather than losing it entirely.
+        // Parse the failed_generation to recover the FIRST tool call rather than losing it entirely.
+        // The generation may contain multiple tool calls separated by whitespace; we only use the first.
         const failedGen = error?.error?.error?.failed_generation as string | undefined
         if (failedGen && typeof failedGen === 'string') {
-            const match = failedGen.match(/^<function=(\w+)>\s*(\{.*\})\s*$/s)
+            const match = failedGen.match(/<function=(\w+)>\s*(\{[^<]*\})/s)
             if (match) {
                 const toolName = match[1]
                 let toolArgs: Record<string, unknown> = {}
