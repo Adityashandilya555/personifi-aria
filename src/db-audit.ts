@@ -12,20 +12,35 @@ const BOLD = '\x1b[1m', DIM = '\x1b[2m', RESET = '\x1b[0m'
 
 const CHECK = `${GREEN}✅${RESET}`, CROSS = `${RED}❌${RESET}`, WARN = `${YELLOW}⚠️${RESET}`
 
-// Expected tables from session-store.ts runMigrations() + database/*.sql + schema.sql
+// Expected tables — derived from database/*.sql + session-store.ts runMigrations()
 const EXPECTED_TABLES = [
+    // schema.sql — core tables
     'users', 'sessions', 'user_preferences', 'usage_stats', 'rate_limits',
+    // session-store.ts runMigrations()
     'scraped_media', 'pulse_engagement_scores',
     'proactive_funnels', 'proactive_funnel_events',
     'conversation_goals', 'conversation_goal_journal',
     'memory_write_queue', 'session_summaries', 'mcp_tokens',
-    // from database/*.sql
-    'persons', 'person_links',           // identity.sql
-    'graph_memories',                     // memory.sql
-    'memory_blocks', 'memory_block_links', // memory-blocks.sql
-    'topic_intents',                      // topic-intents.sql
-    'social_profiles', 'social_interactions', 'cluster_memberships', // social.sql
-    'task_workflows', 'task_workflow_steps', // task-orchestrator.sql
+    // identity.sql
+    'persons', 'link_codes',
+    // memory.sql
+    'memories', 'entity_relations',
+    // memory-blocks.sql
+    'memory_blocks', 'memory_block_history', 'memory_history',
+    // vector.sql
+    'embedding_queue',
+    // topic-intents.sql
+    'topic_intents',
+    // social.sql
+    'squads', 'squad_members', 'squad_intents', 'user_relationships',
+    // task-orchestrator.sql
+    'task_workflows', 'task_workflow_events',
+    // proactive.sql
+    'proactive_messages', 'proactive_user_state',
+    // conversation-agenda.sql
+    'price_alerts', 'trip_plans',
+    // archivist.sql
+    'tool_log',
 ]
 
 async function main() {
