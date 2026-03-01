@@ -61,6 +61,14 @@ export function getProactiveSuggestionQuery(
             moodTag: 'late_night',
         }
     }
+    if (!isWeekend && h === 6) {
+        return {
+            query: 'early morning filter coffee and darshini breakfast spots',
+            location,
+            openNow: true,
+            moodTag: 'early_morning',
+        }
+    }
     if (isWeekend && h >= 10 && h <= 14) {
         return {
             query: 'popular brunch cafes',

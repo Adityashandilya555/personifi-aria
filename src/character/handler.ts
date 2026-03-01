@@ -598,8 +598,16 @@ export async function handleMessage(
       toolResultStr = formatProactiveForPrompt(toolRawData)
     }
 
+    // This turn-level signal is computed before Step 17 persists profile updates.
+    // At this point user.homeLocation is intentionally still stale from DB.
+    const locationCandidate = user.displayName && !user.homeLocation
+      ? extractLocationCandidate(userMessage)
+      : null
+    const onboardingJustCompleted = !!user.displayName && !user.homeLocation && !!locationCandidate
+    const isEarlyConversation = session.messages.length <= 6
+
     // ─── Step 8c: Proactive offer hint after places search ─────────
-    if (routeDecision.toolName === 'search_places' && toolResultStr) {
+    if (routeDecision.toolName === 'search_places' && toolResultStr && !onboardingJustCompleted) {
       toolResultStr += '\n\n[ARIA HINT: The user found places nearby. Naturally offer to check delivery prices on Swiggy or Zomato if they seem interested in food, or compare grocery apps if it is a grocery query. Keep it conversational — do not make it sound like an ad.]'
     }
 
@@ -614,12 +622,6 @@ export async function handleMessage(
     // ─── Step 8e: Onboarding completion → proactive city suggestion ───────────
     // If user just provided their location (name already known), run a lightweight
     // places query and force a specific opener instead of generic "what's on your mind?".
-    const locationCandidate = user.displayName && !user.homeLocation
-      ? extractLocationCandidate(userMessage)
-      : null
-    const onboardingJustCompleted = !!user.displayName && !user.homeLocation && !!locationCandidate
-    const isEarlyConversation = session.messages.length <= 6
-
     if (onboardingJustCompleted && isEarlyConversation && !routeDecision.useTool) {
       const proactive = getProactiveSuggestionQuery(locationCandidate)
       const proactiveDecision: RouteDecision = {

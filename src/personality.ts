@@ -298,7 +298,7 @@ export function composeSystemPrompt(opts: ComposeOptions): string {
     }
 
     const shouldInjectProactiveGreetingDirective =
-        !!opts.isAuthenticated &&
+        (!!opts.isAuthenticated || !!opts.displayName) &&
         !opts.isFirstMessage &&
         !!opts.toolResults &&
         (opts.activeToolName === 'search_places' || opts.activeToolName === 'compare_prices_proactive')

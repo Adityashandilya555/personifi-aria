@@ -19,6 +19,14 @@ describe('getProactiveSuggestionQuery', () => {
     expect(result.query.toLowerCase()).toContain('dinner')
   })
 
+  it('uses early-morning query for weekday 6am IST', () => {
+    const now = new Date('2026-03-02T00:30:00Z') // Monday 06:00 IST
+    const result = getProactiveSuggestionQuery('Jayanagar', now)
+    expect(result.location).toBe('Jayanagar')
+    expect(result.moodTag).toBe('early_morning')
+    expect(result.query.toLowerCase()).toContain('filter coffee')
+  })
+
   it('falls back to Bengaluru when location is missing', () => {
     const now = new Date('2026-03-03T08:00:00Z') // Tuesday 13:30 IST
     const result = getProactiveSuggestionQuery(undefined, now)
@@ -26,4 +34,3 @@ describe('getProactiveSuggestionQuery', () => {
     expect(result.openNow).toBe(true)
   })
 })
-
