@@ -74,7 +74,7 @@ TRAVEL_KEYS=(
     "SERPAPI_KEY|SerpAPI (Google fallback)|optional"
     "RAPIDAPI_KEY|RapidAPI (Hotels/Reels/Scrapers)|required"
     "OPENWEATHERMAP_API_KEY|OpenWeatherMap API|optional"
-    "TRAFFIC_API_KEY|Google Distance Matrix traffic probe (stimulus)|optional"
+    # Traffic stimulus uses GOOGLE_MAPS_API_KEY — enable Routes API or Distance Matrix API in GCP
     "FESTIVAL_API_KEY|Calendarific API (festival stimulus enrichment)|optional"
     "DEFAULT_LAT|Default latitude for AQI/pollen/timezone tools|optional"
     "DEFAULT_LNG|Default longitude for AQI/pollen/timezone tools|optional"
@@ -498,26 +498,36 @@ validate_keys() {
         skip_count=$((skip_count + 1))
     fi
 
-    # --- Traffic stimulus API (Distance Matrix) ---
-    local traffic_key
-    traffic_key=$(get_env_value "TRAFFIC_API_KEY")
-    if ! is_key_set "$traffic_key"; then
-        traffic_key="$gmaps_key"
-    fi
-    if is_key_set "$traffic_key"; then
-        echo -ne "  ${BULLET} Traffic API (Distance Matrix) ... "
-        local traffic_resp
-        traffic_resp=$(curl -s -o /dev/null -w "%{http_code}" \
-            "https://maps.googleapis.com/maps/api/distancematrix/json?origins=Bengaluru&destinations=Bengaluru&departure_time=now&traffic_model=best_guess&key=${traffic_key}" 2>/dev/null)
-        if [ "$traffic_resp" = "200" ]; then
-            echo -e "${CHECK} Working (HTTP ${traffic_resp})"
+    # --- Traffic stimulus (Routes API preferred, Distance Matrix fallback) ---
+    # Uses GOOGLE_MAPS_API_KEY — no separate TRAFFIC_API_KEY needed
+    if is_key_set "$gmaps_key"; then
+        echo -ne "  ${BULLET} Traffic stimulus (Routes API) ... "
+        local routes_resp
+        routes_resp=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST "https://routes.googleapis.com/directions/v2:computeRoutes" \
+            -H "Content-Type: application/json" \
+            -H "X-Goog-Api-Key: ${gmaps_key}" \
+            -H "X-Goog-FieldMask: routes.duration" \
+            -d '{"origin":{"location":{"latLng":{"latitude":12.9352,"longitude":77.6245}}},"destination":{"location":{"latLng":{"latitude":12.9698,"longitude":77.7500}}},"travelMode":"DRIVE","routingPreference":"TRAFFIC_AWARE"}' 2>/dev/null)
+        if [ "$routes_resp" = "200" ]; then
+            echo -e "${CHECK} Working (HTTP ${routes_resp})"
             pass_count=$((pass_count + 1))
         else
-            echo -e "${CROSS} Failed (HTTP ${traffic_resp})"
-            fail_count=$((fail_count + 1))
+            echo -ne " Routes API unavailable, trying Distance Matrix ... "
+            local dm_resp
+            dm_resp=$(curl -s -o /dev/null -w "%{http_code}" \
+                "https://maps.googleapis.com/maps/api/distancematrix/json?origins=Bengaluru&destinations=Bengaluru&departure_time=now&traffic_model=best_guess&key=${gmaps_key}" 2>/dev/null)
+            if [ "$dm_resp" = "200" ]; then
+                echo -e "${CHECK} Distance Matrix fallback working (HTTP ${dm_resp})"
+                pass_count=$((pass_count + 1))
+            else
+                echo -e "${CROSS} Both APIs failed (Routes: ${routes_resp}, DM: ${dm_resp})"
+                echo -e "    ${GRAY}Enable 'Routes API' or 'Distance Matrix API' in Google Cloud Console${RESET}"
+                fail_count=$((fail_count + 1))
+            fi
         fi
     else
-        echo -e "  ${GRAY}⬚  Traffic API — not configured, skipped${RESET}"
+        echo -e "  ${GRAY}⬚  Traffic stimulus — GOOGLE_MAPS_API_KEY not set, skipped${RESET}"
         skip_count=$((skip_count + 1))
     fi
 
@@ -672,7 +682,7 @@ tool_coverage_audit() {
     maps=$(get_env_value "GOOGLE_MAPS_API_KEY")
     weather=$(get_env_value "OPENWEATHERMAP_API_KEY")
     rapid=$(get_env_value "RAPIDAPI_KEY")
-    traffic=$(get_env_value "TRAFFIC_API_KEY")
+    # Traffic stimulus uses GOOGLE_MAPS_API_KEY (maps variable above)
     festival=$(get_env_value "FESTIVAL_API_KEY")
 
     if is_key_set "$places" || is_key_set "$maps"; then
@@ -693,10 +703,10 @@ tool_coverage_audit() {
         echo -e "  ${CROSS} Reels/hotels/scrapers: RAPIDAPI_KEY missing"
     fi
 
-    if is_key_set "$traffic" || is_key_set "$maps"; then
-        echo -e "  ${CHECK} Traffic stimulus: live API path available"
+    if is_key_set "$maps"; then
+        echo -e "  ${CHECK} Traffic stimulus: GOOGLE_MAPS_API_KEY set (Routes API preferred, Distance Matrix fallback)"
     else
-        echo -e "  ${WARN} Traffic stimulus: TRAFFIC_API_KEY/GOOGLE_MAPS_API_KEY missing (heuristic fallback only)"
+        echo -e "  ${WARN} Traffic stimulus: GOOGLE_MAPS_API_KEY missing (heuristic fallback only)"
     fi
 
     if is_key_set "$festival"; then
