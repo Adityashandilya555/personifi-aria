@@ -32,7 +32,7 @@ interface ReflectionJSON {
 
 const REFLECTION_MODEL = 'llama-3.1-8b-instant'
 const MAX_RAW_CHARS = 3500
-const REFLECTION_TIMEOUT_MS = 3500
+const REFLECTION_TIMEOUT_MS = 6000
 
 let groq: Groq | null = null
 
@@ -158,7 +158,10 @@ Rules:
         return reflected
     } catch (err) {
         console.warn(`[brain/reflection] ${toolName}: reflection failed, using fallback directive`, (err as Error).message)
-        return null
+        return {
+            reflection: { summary: '', keyFacts: [] },
+            mediaDirective: fallbackDirective,
+        }
     }
 }
 

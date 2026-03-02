@@ -1098,7 +1098,7 @@ export async function handleMessage(
       })
     }
 
-    const fallbackMediaFromContext = (!inlineMediaItem && !toolRawData && effectiveToolContext?.photoUrls?.length)
+    const fallbackMediaFromContext = (!inlineMediaItem && effectiveToolContext?.photoUrls?.length)
       ? [{
         type: 'photo' as const,
         url: effectiveToolContext.photoUrls[0],
