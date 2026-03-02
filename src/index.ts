@@ -132,12 +132,21 @@ function placeholderFor(text: string): string {
 async function tgFetch(method: string, body: object): Promise<any> {
   const token = TOKEN()
   if (!token) return null
-  const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  return res.json()
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data?.ok === false) {
+      server.log.warn({ method, description: data?.description || res.statusText }, 'Telegram API call failed')
+    }
+    return data
+  } catch (err) {
+    server.log.warn({ err, method }, 'Telegram API transport error')
+    return null
+  }
 }
 
 /**
