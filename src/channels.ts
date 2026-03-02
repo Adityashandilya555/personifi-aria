@@ -55,6 +55,11 @@ export const telegramAdapter: ChannelAdapter = {
 
   sendMessage: async (chatId: string, text: string) => {
     const token = process.env.TELEGRAM_BOT_TOKEN
+    if (!token) {
+      console.error('[Telegram] sendMessage failed: missing bot token')
+      return
+    }
+
     const resp = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -64,16 +69,24 @@ export const telegramAdapter: ChannelAdapter = {
         parse_mode: 'HTML',
       }),
     })
-    if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}))
+    if (!resp.ok || body?.ok === false) {
       // HTML parse error (e.g. unclosed tag from LLM output) — retry as plain text
-      const err = await resp.json().catch(() => ({}))
-      if ((err as any)?.description?.includes('parse')) {
-        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      const description = String((body as any)?.description || '')
+      if (/parse/i.test(description)) {
+        const retryResp = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ chat_id: chatId, text }),
         })
+        const retryBody = await retryResp.json().catch(() => ({}))
+        if (!retryResp.ok || retryBody?.ok === false) {
+          console.error('[Telegram] sendMessage retry failed:', (retryBody as any)?.description || retryResp.statusText)
+        }
+        return
       }
+
+      console.error('[Telegram] sendMessage failed:', description || resp.statusText)
     }
   },
 

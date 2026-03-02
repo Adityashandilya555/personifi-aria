@@ -723,14 +723,16 @@ async function runProactiveForUser(userId: string, chatId: string): Promise<void
             const companionCaption = companionCaptions[Math.floor(Math.random() * companionCaptions.length)]
 
             console.log(`[Proactive] Sending companion image to ${userId} (${companion.source})`)
-            await sendMediaViaPipeline(chatId, {
+            const companionSent = await sendMediaViaPipeline(chatId, {
                 id: companion.id,
                 source: companion.source,
                 videoUrl: companion.videoUrl,
                 thumbnailUrl: companion.thumbnailUrl,
                 type: companion.type,
             }, companionCaption)
-            markMediaSent(companion.id).catch(() => { })
+            if (companionSent) {
+                markMediaSent(companion.id).catch(() => { })
+            }
             await sleep(1500) // brief pause between companion and main reel
         }
     }
@@ -755,7 +757,11 @@ async function runProactiveForUser(userId: string, chatId: string): Promise<void
         sendEngagementHook(chatId, hookTypeForCategory(category)).catch(() => { })
     } else {
         console.warn(`[Proactive] Media pipeline failed, sending caption as text`)
-        await sendProactiveContent(chatId, caption)
+        const fallbackSent = await sendProactiveContent(chatId, caption)
+        if (!fallbackSent) {
+            console.warn(`[Proactive] Fallback text send failed for ${userId}`)
+            return
+        }
     }
 
     await updateStateAfterSend(state, userId, category, hashtag)
@@ -800,6 +806,7 @@ async function updateStateAfterSend(
 
 /** List of known users to send proactive content to */
 const activeUsers: Array<{ userId: string; chatId: string }> = []
+let proactiveBatchCursor = 0
 
 /**
  * Register a user for proactive content.
@@ -808,6 +815,7 @@ const activeUsers: Array<{ userId: string; chatId: string }> = []
 export function registerProactiveUser(userId: string, chatId: string): void {
     if (!activeUsers.find(u => u.userId === userId)) {
         activeUsers.push({ userId, chatId })
+        if (proactiveBatchCursor >= activeUsers.length) proactiveBatchCursor = 0
         console.log(`[Proactive] Registered user ${userId} (chat: ${chatId})`)
     }
 }
@@ -989,7 +997,7 @@ export async function runTopicFollowUpsForAllUsers(): Promise<void> {
 
         // Check user's daily send count via state
         const state = await getOrCreateState(row.channel_user_id, row.chat_id)
-        if (state.sendCountToday >= 5) {
+        if (state.sendCountToday >= DAILY_SEND_LIMIT) {
             console.log(`[Proactive/TopicFollowUp] Daily limit reached for ${row.channel_user_id}`)
             seenUsers.add(row.channel_user_id)
             continue
@@ -1073,8 +1081,13 @@ export async function runProactiveForAllUsers(): Promise<void> {
     const time = getCurrentTimeIST()
     console.log(`[Proactive] Starting run at ${time.formatted} for ${activeUsers.length} users`)
 
-    // Max 5 users per slot to be respectful of API limits
-    const batch = activeUsers.slice(0, 5)
+    // Max 5 users per slot to be respectful of API limits, with rotation for fairness.
+    const batchSize = Math.min(5, activeUsers.length)
+    const batch: Array<{ userId: string; chatId: string }> = []
+    for (let i = 0; i < batchSize; i++) {
+        batch.push(activeUsers[(proactiveBatchCursor + i) % activeUsers.length])
+    }
+    proactiveBatchCursor = (proactiveBatchCursor + batchSize) % activeUsers.length
 
     for (const { userId, chatId } of batch) {
         try {

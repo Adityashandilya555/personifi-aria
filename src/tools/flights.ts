@@ -1,6 +1,7 @@
 import Amadeus from 'amadeus'
 import type { ToolExecutionResult } from '../hooks.js'
 import { cacheGet, cacheKey, cacheSet } from './scrapers/cache.js'
+import { safeError } from '../utils/safe-log.js'
 
 // Lazy-initialize Amadeus client to avoid eager auth with missing keys
 let amadeus: InstanceType<typeof Amadeus> | null = null
@@ -26,29 +27,39 @@ interface FlightSearchParams {
 
 const FLIGHTS_CACHE_TTL = 10 * 60 * 1000 // 10 minutes
 
-/**
- * Ensure departureDate is YYYY-MM-DD. If the 8B model sent a relative
- * date string ("next Friday") that slipped through, default to tomorrow.
- */
-function resolveDate(dateStr: string): string {
-    if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-        // Already YYYY-MM-DD — but ensure it's not in the past
-        const d = new Date(dateStr + 'T00:00:00')
-        const today = new Date()
-        today.setHours(0, 0, 0, 0)
-        if (d >= today) return dateStr
-        // Date is in the past — push to next year same date as a reasonable guess
-        d.setFullYear(d.getFullYear() + 1)
-        const resolved = d.toISOString().split('T')[0]
-        console.log(`[Flight Tool] Date ${dateStr} is in the past, using ${resolved}`)
-        return resolved
+function isValidIataCode(value: unknown): value is string {
+    return typeof value === 'string' && /^[A-Za-z]{3}$/.test(value.trim())
+}
+
+function normalizeFutureDate(value: unknown): { ok: true; value: string } | { ok: false; error: string } {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value.trim())) {
+        return { ok: false, error: 'Invalid departureDate. Use YYYY-MM-DD format.' }
     }
-    // Not a valid date format — default to tomorrow
-    const tomorrow = new Date()
-    tomorrow.setDate(tomorrow.getDate() + 1)
-    const fallback = tomorrow.toISOString().split('T')[0]
-    console.log(`[Flight Tool] Could not parse date "${dateStr}", defaulting to ${fallback}`)
-    return fallback
+
+    const normalized = value.trim()
+    const date = new Date(`${normalized}T00:00:00Z`)
+    if (Number.isNaN(date.getTime())) {
+        return { ok: false, error: 'Invalid departureDate value.' }
+    }
+
+    const today = new Date()
+    today.setUTCHours(0, 0, 0, 0)
+    if (date < today) {
+        return { ok: false, error: 'departureDate cannot be in the past.' }
+    }
+
+    return { ok: true, value: normalized }
+}
+
+function normalizeOptionalDate(value: unknown, label: string): { ok: true; value?: string } | { ok: false; error: string } {
+    if (value == null || value === '') return { ok: true, value: undefined }
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value.trim())) {
+        return { ok: false, error: `Invalid ${label}. Use YYYY-MM-DD format.` }
+    }
+    const normalized = value.trim()
+    const date = new Date(`${normalized}T00:00:00Z`)
+    if (Number.isNaN(date.getTime())) return { ok: false, error: `Invalid ${label} value.` }
+    return { ok: true, value: normalized }
 }
 
 /**
@@ -56,10 +67,31 @@ function resolveDate(dateStr: string): string {
  */
 export async function searchFlights(params: FlightSearchParams): Promise<ToolExecutionResult> {
     const { origin, destination, departureDate: rawDate, returnDate, adults = 1, currency = 'USD' } = params
+    if (!isValidIataCode(origin) || !isValidIataCode(destination)) {
+        return {
+            success: false,
+            data: null,
+            error: 'Invalid IATA code. origin and destination must be 3-letter airport codes.',
+        }
+    }
+
+    const departure = normalizeFutureDate(rawDate)
+    if (!departure.ok) {
+        return { success: false, data: null, error: departure.error }
+    }
+    const returning = normalizeOptionalDate(returnDate, 'returnDate')
+    if (!returning.ok) {
+        return { success: false, data: null, error: returning.error }
+    }
+
+    if (returning.value && returning.value < departure.value) {
+        return { success: false, data: null, error: 'returnDate cannot be earlier than departureDate.' }
+    }
+
     const originCode = origin.trim().toUpperCase()
     const destinationCode = destination.trim().toUpperCase()
-    const departureDate = resolveDate(rawDate)
-    const normalizedReturnDate = returnDate?.trim() || undefined
+    const departureDate = departure.value
+    const normalizedReturnDate = returning.value
     const normalizedAdults = Number.isFinite(adults) && adults > 0 ? adults : 1
     const normalizedCurrency = currency.trim().toUpperCase()
     const key = cacheKey('search_flights', {
@@ -170,7 +202,7 @@ export async function searchFlights(params: FlightSearchParams): Promise<ToolExe
         return result
 
     } catch (error: any) {
-        console.error('[Flight Tool] Amadeus error:', error.response?.result?.errors || error)
+        console.error('[Flight Tool] Amadeus error:', safeError(error.response?.result?.errors || error))
 
         // Fallback to SerpAPI on error
         if (process.env.SERPAPI_KEY) {
@@ -225,8 +257,12 @@ export async function searchFlightsFallback(params: FlightSearchParams): Promise
         const response = await fetch(`https://serpapi.com/search?${queryParams.toString()}`)
         const data = await response.json()
 
-        if (data.error) {
-            throw new Error(data.error)
+        if (!response.ok || data?.error) {
+            return {
+                success: false,
+                data: null,
+                error: `Google Flights fallback failed: ${data?.error || response.statusText}`,
+            }
         }
 
         const bestFlights = data.best_flights
@@ -244,7 +280,7 @@ export async function searchFlightsFallback(params: FlightSearchParams): Promise
         return formatSerpApiFlights(bestFlights.slice(0, 5), origin, destination)
 
     } catch (error: any) {
-        console.error('[Flight Tool] SerpAPI error:', error)
+        console.error('[Flight Tool] SerpAPI error:', safeError(error))
         return {
             success: false,
             data: null,

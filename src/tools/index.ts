@@ -26,54 +26,60 @@ import { geocodeAddress, geocodingToolDefinition } from './geocoding.js'
 import { getAirQuality, airQualityToolDefinition } from './air-quality.js'
 import { getPollen, pollenToolDefinition } from './pollen.js'
 import { getTimezone, timezoneToolDefinition } from './timezone.js'
+import { safeError } from '../utils/safe-log.js'
 
 const bodyHooks: BodyHooks = {
     async executeTool(name: string, params: Record<string, unknown>): Promise<ToolExecutionResult> {
-        switch (name) {
-            case 'search_flights':
-                return searchFlights(params as any)
-            case 'search_hotels':
-                return searchHotels(params as any)
-            case 'get_weather':
-                return getWeather(params as any)
-            case 'search_places':
-                return searchPlaces(params as any)
-            case 'convert_currency':
-                return convertCurrency(params as any)
-            case 'get_transport_estimate':
-                return getTransportEstimate(params as any)
-            case 'compare_food_prices':
-                return compareFoodPrices(params as any)
-            case 'compare_grocery_prices':
-                return compareGroceryPrices(params as any)
-            case 'search_swiggy_food':
-                return searchSwiggyFood(params as any)
-            case 'search_instamart':
-                return searchInstamartMCP(params as any)
-            case 'search_dineout':
-                return searchDineout(params as any)
-            case 'search_zomato':
-                return searchZomatoMCP(params as any)
-            case 'compare_prices_proactive':
-                return compareProactive(params as any)
-            case 'search_blinkit':
-                return searchBlinkit(params as any)
-            case 'search_zepto':
-                return searchZepto(params as any)
-            case 'compare_rides':
-                return compareRides(params as any)
-            case 'get_directions':
-                return getDirections(params as any)
-            case 'geocode_address':
-                return geocodeAddress(params as any)
-            case 'get_air_quality':
-                return getAirQuality(params as any)
-            case 'get_pollen':
-                return getPollen(params as any)
-            case 'get_timezone':
-                return getTimezone(params as any)
-            default:
-                return { success: false, data: null, error: `Unknown tool: ${name}` }
+        try {
+            switch (name) {
+                case 'search_flights':
+                    return await searchFlights(params as any)
+                case 'search_hotels':
+                    return await searchHotels(params as any)
+                case 'get_weather':
+                    return await getWeather(params as any)
+                case 'search_places':
+                    return await searchPlaces(params as any)
+                case 'convert_currency':
+                    return await convertCurrency(params as any)
+                case 'get_transport_estimate':
+                    return await getTransportEstimate(params as any)
+                case 'compare_food_prices':
+                    return await compareFoodPrices(params as any)
+                case 'compare_grocery_prices':
+                    return await compareGroceryPrices(params as any)
+                case 'search_swiggy_food':
+                    return await searchSwiggyFood(params as any)
+                case 'search_instamart':
+                    return await searchInstamartMCP(params as any)
+                case 'search_dineout':
+                    return await searchDineout(params as any)
+                case 'search_zomato':
+                    return await searchZomatoMCP(params as any)
+                case 'compare_prices_proactive':
+                    return await compareProactive(params as any)
+                case 'search_blinkit':
+                    return await searchBlinkit(params as any)
+                case 'search_zepto':
+                    return await searchZepto(params as any)
+                case 'compare_rides':
+                    return await compareRides(params as any)
+                case 'get_directions':
+                    return await getDirections(params as any)
+                case 'geocode_address':
+                    return await geocodeAddress(params as any)
+                case 'get_air_quality':
+                    return await getAirQuality(params as any)
+                case 'get_pollen':
+                    return await getPollen(params as any)
+                case 'get_timezone':
+                    return await getTimezone(params as any)
+                default:
+                    return { success: false, data: null, error: `Unknown tool: ${name}` }
+            }
+        } catch (error) {
+            console.error(`[Tools] ${name} execution failed:`, safeError(error))
+            return { success: false, data: null, error: `Tool execution failed: ${name}` }
         }
     },
 

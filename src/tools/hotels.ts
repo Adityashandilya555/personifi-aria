@@ -1,5 +1,6 @@
 import type { ToolExecutionResult } from '../hooks.js'
 import { rapidGet } from './rapidapi-client.js'
+import { safeError } from '../utils/safe-log.js'
 
 interface HotelSearchParams {
     location: string
@@ -10,6 +11,16 @@ interface HotelSearchParams {
     currency?: string
 }
 
+function normalizeDate(value: unknown, label: string): { ok: true; value: string } | { ok: false; error: string } {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value.trim())) {
+        return { ok: false, error: `Missing or invalid ${label}. Use YYYY-MM-DD format.` }
+    }
+    const normalized = value.trim()
+    const parsed = new Date(`${normalized}T00:00:00Z`)
+    if (Number.isNaN(parsed.getTime())) return { ok: false, error: `Invalid ${label} value.` }
+    return { ok: true, value: normalized }
+}
+
 /**
  * Search for hotels using Booking.com via RapidAPI
  * Two-step process:
@@ -18,6 +29,18 @@ interface HotelSearchParams {
  */
 export async function searchHotels(params: HotelSearchParams): Promise<ToolExecutionResult> {
     const { location, checkInDate, checkOutDate, adults = 1, rooms = 1, currency = 'USD' } = params
+
+    const checkIn = normalizeDate(checkInDate, 'checkInDate')
+    if (!checkIn.ok) return { success: false, data: null, error: checkIn.error }
+    const checkOut = normalizeDate(checkOutDate, 'checkOutDate')
+    if (!checkOut.ok) return { success: false, data: null, error: checkOut.error }
+    if (checkOut.value <= checkIn.value) {
+        return {
+            success: false,
+            data: null,
+            error: 'checkOutDate must be later than checkInDate.',
+        }
+    }
 
     if (!process.env.RAPIDAPI_KEY) {
         return {
@@ -48,7 +71,7 @@ export async function searchHotels(params: HotelSearchParams): Promise<ToolExecu
 
         // Step 2: Search Hotels
         const searchData = await rapidGet('booking', '/v1/hotels/search', {
-            checkout_date: checkOutDate,
+            checkout_date: checkOut.value,
             units: 'metric',
             dest_id: destId,
             dest_type: destType,
@@ -56,7 +79,7 @@ export async function searchHotels(params: HotelSearchParams): Promise<ToolExecu
             adults_number: adults.toString(),
             order_by: 'popularity',
             room_number: rooms.toString(),
-            checkin_date: checkInDate,
+            checkin_date: checkIn.value,
             currency,
         }, { label: 'hotel-search' })
 
@@ -82,11 +105,11 @@ export async function searchHotels(params: HotelSearchParams): Promise<ToolExecu
 
         return {
             success: true,
-            data: { formatted: `Hotels in ${location} (${checkInDate} to ${checkOutDate}):\n\n${hotels}`, raw: searchData.result.slice(0, 5) },
+            data: { formatted: `Hotels in ${location} (${checkIn.value} to ${checkOut.value}):\n\n${hotels}`, raw: searchData.result.slice(0, 5) },
         }
 
     } catch (error: any) {
-        console.error('[Hotel Tool] Error:', error)
+        console.error('[Hotel Tool] Error:', safeError(error))
         return {
             success: false,
             data: null,

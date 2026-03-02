@@ -44,26 +44,50 @@ function formatStepText(base: string, choices?: FunnelChoice[]): string {
 
 async function sendTelegramText(chatId: string, text: string, choices?: FunnelChoice[]): Promise<boolean> {
   const token = process.env.TELEGRAM_BOT_TOKEN
-  if (!token) return false
+  if (!token) {
+    console.warn('[IntentFunnel] Telegram send skipped: missing bot token')
+    return false
+  }
 
   const replyMarkup = choices && choices.length > 0
     ? { inline_keyboard: choices.map(choice => [{ text: choice.label, callback_data: choice.action }]) }
     : undefined
 
+  const payload = {
+    chat_id: chatId,
+    text,
+    parse_mode: 'HTML',
+    ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+  }
+
   const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text,
-      parse_mode: 'HTML',
-      ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
-    }),
+    body: JSON.stringify(payload),
   })
-
-  if (!response.ok) return false
   const body = await response.json().catch(() => ({}))
-  return body?.ok === true
+  if (response.ok && body?.ok === true) return true
+
+  // Fallback on HTML parse errors caused by model output formatting
+  const description = String((body as any)?.description || '')
+  if (/parse/i.test(description)) {
+    const fallbackResp = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+      }),
+    })
+    const fallbackBody = await fallbackResp.json().catch(() => ({}))
+    if (fallbackResp.ok && fallbackBody?.ok === true) return true
+    console.warn('[IntentFunnel] Telegram fallback send failed:', (fallbackBody as any)?.description || fallbackResp.statusText)
+    return false
+  }
+
+  console.warn('[IntentFunnel] Telegram send failed:', description || response.statusText)
+  return false
 }
 
 function toFunnelInstance(row: FunnelRow): FunnelInstance {
