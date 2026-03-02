@@ -34,7 +34,7 @@ import { formatMemoriesForPrompt } from './memory-store.js'
 import { formatGraphForPrompt } from './graph-memory.js'
 import { selectResponseTone } from './cognitive.js'
 import { computeMoodWeights, getMoodInstruction } from './character/mood-engine.js'
-import { getBangaloreContext } from './utils/bangalore-context.js'
+import { getCityContext } from './utils/bangalore-context.js'
 import { selectStrategy, formatStrategyForPrompt } from './influence-engine.js'
 import { formatAgendaForPrompt } from './agenda-planner/formatter.js'
 
@@ -292,9 +292,9 @@ export function composeSystemPrompt(opts: ComposeOptions): string {
     }
 
     // ─── Layer 7c: Bangalore time/traffic context ─────────────────
-    const bangaloreCtx = getBangaloreContext()
-    if (bangaloreCtx) {
-        sections.push(`## City Context\n${bangaloreCtx}`)
+    const cityCtx = getCityContext(opts.homeLocation)
+    if (cityCtx) {
+        sections.push(`## City Context\n${cityCtx}`)
     }
 
     const shouldInjectProactiveGreetingDirective =

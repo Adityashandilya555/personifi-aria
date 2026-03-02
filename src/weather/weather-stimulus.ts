@@ -1,7 +1,7 @@
 /**
  * Weather Stimulus Engine
  *
- * Polls OpenWeatherMap periodically and exposes a lightweight weather state
+ * Polls OpenWeatherMap and exposes a lightweight weather state per location
  * for proactive messaging + in-conversation strategy shaping.
  */
 
@@ -26,8 +26,15 @@ export interface WeatherStimulusState {
     updatedAt: number
 }
 
-let currentState: WeatherStimulusState | null = null
-let wasRaining = false
+const DEFAULT_LOCATION = 'Bengaluru'
+const stateByLocation = new Map<string, WeatherStimulusState>()
+const wasRainingByLocation = new Map<string, boolean>()
+
+function normLocation(location?: string): string {
+    const safe = typeof location === 'string' ? location : DEFAULT_LOCATION
+    const v = safe.trim()
+    return v.length > 0 ? v : DEFAULT_LOCATION
+}
 
 function getIST(date: Date): Date {
     return new Date(date.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }))
@@ -38,6 +45,7 @@ function detectStimulus(
     condition: string,
     isRaining: boolean,
     istHour: number,
+    wasRaining: boolean,
 ): WeatherStimulusKind | null {
     if (isRaining && !wasRaining) return 'RAIN_START'
     if (isRaining) return 'RAIN_HEAVY'
@@ -49,28 +57,29 @@ function detectStimulus(
     return null
 }
 
-/**
- * Refresh in-memory weather context (non-fatal on failure).
- */
-export async function refreshWeatherState(now: Date = new Date()): Promise<WeatherStimulusState | null> {
-    const result = await getWeather({ location: 'Bengaluru' }).catch(() => null)
+export async function refreshWeatherState(locationOrNow: string | Date = DEFAULT_LOCATION, now: Date = new Date()): Promise<WeatherStimulusState | null> {
+    const location = locationOrNow instanceof Date ? DEFAULT_LOCATION : locationOrNow
+    const effectiveNow = locationOrNow instanceof Date ? locationOrNow : now
+    const key = normLocation(location)
+    const result = await getWeather({ location: key }).catch(() => null)
     if (!result?.success || !result.data || typeof result.data !== 'object') {
-        return currentState
+        return stateByLocation.get(key) ?? null
     }
 
     const raw = (result.data as { raw?: any }).raw
-    if (!raw || typeof raw !== 'object') return currentState
+    if (!raw || typeof raw !== 'object') return stateByLocation.get(key) ?? null
 
     const temp = Math.round(Number(raw.main?.temp ?? 0))
     const condition = String(raw.weather?.[0]?.description ?? '').trim()
-    const city = String(raw.name ?? 'Bengaluru')
+    const city = String(raw.name ?? key)
     const isRaining = /rain|drizzle|thunder|shower/i.test(condition)
-    const istNow = getIST(now)
+    const istNow = getIST(effectiveNow)
     const istHour = istNow.getHours()
     const isWeekend = [0, 6].includes(istNow.getDay())
-    const stimulus = detectStimulus(temp, condition, isRaining, istHour)
+    const wasRaining = wasRainingByLocation.get(key) ?? false
+    const stimulus = detectStimulus(temp, condition, isRaining, istHour, wasRaining)
 
-    currentState = {
+    const state: WeatherStimulusState = {
         city,
         temperatureC: temp,
         condition,
@@ -80,12 +89,12 @@ export async function refreshWeatherState(now: Date = new Date()): Promise<Weath
         stimulus,
         updatedAt: Date.now(),
     }
-    wasRaining = isRaining
+    stateByLocation.set(key, state)
+    wasRainingByLocation.set(key, isRaining)
 
-    return currentState
+    return state
 }
 
-export function getWeatherState(): WeatherStimulusState | null {
-    return currentState
+export function getWeatherState(location = DEFAULT_LOCATION): WeatherStimulusState | null {
+    return stateByLocation.get(normLocation(location)) ?? null
 }
-

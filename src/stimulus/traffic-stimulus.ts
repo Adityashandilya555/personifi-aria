@@ -1,44 +1,37 @@
 /**
- * Traffic Stimulus Engine — Issue #91
+ * Traffic Stimulus Engine
  *
- * Checks traffic conditions for Bengaluru and exposes a stimulus state
- * for proactive messaging. When traffic is bad, Aria suggests staying
- * in, ordering delivery, or visiting nearby spots.
- *
- * Primary: Google Maps Distance Matrix API (if TRAFFIC_API_KEY is set)
- * Fallback: Heuristic based on time-of-day and Bengaluru traffic patterns
- *            from src/utils/bangalore-context.ts
+ * Location-aware traffic stimulus with:
+ *  - API path (Google Distance Matrix) for requested city
+ *  - Heuristic fallback based on local time windows
  */
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
 export type TrafficStimulusKind =
-    | 'HEAVY_TRAFFIC'      // Peak-hour gridlock — suggest delivery/local
-    | 'MODERATE_TRAFFIC'   // Slower than usual — light suggestion
-    | 'CLEAR_TRAFFIC'      // Good conditions — go out suggestion
+    | 'HEAVY_TRAFFIC'
+    | 'MODERATE_TRAFFIC'
+    | 'CLEAR_TRAFFIC'
 
 export interface TrafficStimulusState {
+    location: string
     severity: 'heavy' | 'moderate' | 'clear'
-    durationMinutes: number      // estimated delay vs normal
-    affectedCorridors: string[]  // e.g. ['ORR', 'Silk Board', 'Hebbal flyover']
+    durationMinutes: number
+    affectedCorridors: string[]
     stimulus: TrafficStimulusKind | null
     source: 'api' | 'heuristic'
     updatedAt: number
 }
 
-// ─── In-memory state ──────────────────────────────────────────────────────────
+const DEFAULT_LOCATION = 'Bengaluru'
+const stateByLocation = new Map<string, TrafficStimulusState>()
 
-let currentState: TrafficStimulusState | null = null
-
-export function getTrafficState(): TrafficStimulusState | null {
-    return currentState
+function normLocation(location?: string): string {
+    const v = (location ?? DEFAULT_LOCATION).trim()
+    return v.length > 0 ? v : DEFAULT_LOCATION
 }
 
-// ─── Bengaluru peak-traffic heuristic ────────────────────────────────────────
-
-// Known peak corridors in Bengaluru
-const PEAK_CORRIDORS = ['ORR', 'Silk Board junction', 'KR Puram', 'Hebbal flyover', 'Electronic City flyover']
-const MODERATE_CORRIDORS = ['MG Road', 'Marathahalli', 'Whitefield', 'Jayanagar 4th Block']
+function isBengaluru(location: string): boolean {
+    return /bengaluru|bangalore|blr/i.test(location)
+}
 
 function getIST(): Date {
     const now = new Date()
@@ -46,24 +39,35 @@ function getIST(): Date {
     return new Date(istMs)
 }
 
-function heuristicTrafficState(): TrafficStimulusState {
+function heuristicTrafficState(location: string): TrafficStimulusState {
     const ist = getIST()
     const hour = ist.getHours()
     const isWeekend = [0, 6].includes(ist.getDay())
 
+    const cityCorridors = isBengaluru(location)
+        ? {
+            peak: ['ORR', 'Silk Board', 'KR Puram', 'Hebbal'],
+            moderate: ['MG Road', 'Marathahalli', 'Whitefield'],
+        }
+        : {
+            peak: ['major arterial roads', 'city center corridors'],
+            moderate: ['commercial zones', 'inner ring roads'],
+        }
+
     if (isWeekend) {
-        // Weekends: lighter traffic except late nights near MG Road / Koramangala
         if (hour >= 20 && hour <= 23) {
             return {
+                location,
                 severity: 'moderate',
                 durationMinutes: 15,
-                affectedCorridors: ['MG Road', 'Koramangala 80 feet road'],
+                affectedCorridors: cityCorridors.moderate,
                 stimulus: 'MODERATE_TRAFFIC',
                 source: 'heuristic',
                 updatedAt: Date.now(),
             }
         }
         return {
+            location,
             severity: 'clear',
             durationMinutes: 0,
             affectedCorridors: [],
@@ -73,15 +77,15 @@ function heuristicTrafficState(): TrafficStimulusState {
         }
     }
 
-    // Weekday peak: 7:30–10am, 5:30–9pm
     const morningPeak = hour >= 7 && hour < 10
     const eveningPeak = hour >= 17 && hour < 21
 
     if (morningPeak || eveningPeak) {
         return {
+            location,
             severity: 'heavy',
-            durationMinutes: morningPeak ? 40 : 50,
-            affectedCorridors: PEAK_CORRIDORS,
+            durationMinutes: morningPeak ? 35 : 45,
+            affectedCorridors: cityCorridors.peak,
             stimulus: 'HEAVY_TRAFFIC',
             source: 'heuristic',
             updatedAt: Date.now(),
@@ -90,9 +94,10 @@ function heuristicTrafficState(): TrafficStimulusState {
 
     if ((hour >= 10 && hour < 12) || (hour >= 21 && hour < 23)) {
         return {
+            location,
             severity: 'moderate',
-            durationMinutes: 20,
-            affectedCorridors: MODERATE_CORRIDORS,
+            durationMinutes: 18,
+            affectedCorridors: cityCorridors.moderate,
             stimulus: 'MODERATE_TRAFFIC',
             source: 'heuristic',
             updatedAt: Date.now(),
@@ -100,6 +105,7 @@ function heuristicTrafficState(): TrafficStimulusState {
     }
 
     return {
+        location,
         severity: 'clear',
         durationMinutes: 0,
         affectedCorridors: [],
@@ -109,26 +115,15 @@ function heuristicTrafficState(): TrafficStimulusState {
     }
 }
 
-// ─── Google Maps Traffic API ──────────────────────────────────────────────────
-
-const DEFAULT_LAT = process.env.DEFAULT_LAT ?? '12.9716'
-const DEFAULT_LNG = process.env.DEFAULT_LNG ?? '77.5946'
-
-// Key test routes across Bengaluru to measure traffic conditions
-const TEST_ROUTES = [
-    { origin: '12.9279,77.6271', destination: '12.9698,77.7499', label: 'Koramangala→Whitefield' },
-    { origin: '12.9716,77.5946', destination: '12.8399,77.6770', label: 'Center→Electronic City' },
-]
-
-async function fetchGoogleTrafficCondition(): Promise<TrafficStimulusState | null> {
+async function fetchGoogleTrafficCondition(location: string): Promise<TrafficStimulusState | null> {
     const apiKey = process.env.TRAFFIC_API_KEY ?? process.env.GOOGLE_MAPS_API_KEY
     if (!apiKey) return null
 
     try {
-        const route = TEST_ROUTES[0]
         const url = new URL('https://maps.googleapis.com/maps/api/distancematrix/json')
-        url.searchParams.set('origins', route.origin)
-        url.searchParams.set('destinations', route.destination)
+        // Same-city route probe gives a lightweight congestion signal
+        url.searchParams.set('origins', location)
+        url.searchParams.set('destinations', location)
         url.searchParams.set('departure_time', 'now')
         url.searchParams.set('traffic_model', 'best_guess')
         url.searchParams.set('key', apiKey)
@@ -140,29 +135,22 @@ async function fetchGoogleTrafficCondition(): Promise<TrafficStimulusState | nul
         const element = data?.rows?.[0]?.elements?.[0]
         if (!element || element.status !== 'OK') return null
 
-        const normalDuration = element.duration?.value ?? 0      // seconds
+        const normalDuration = element.duration?.value ?? 0
         const inTrafficDuration = element.duration_in_traffic?.value ?? normalDuration
-        const delaySeconds = inTrafficDuration - normalDuration
-        const delayMinutes = Math.round(delaySeconds / 60)
+        const delayMinutes = Math.round((inTrafficDuration - normalDuration) / 60)
 
-        let severity: 'heavy' | 'moderate' | 'clear'
-        let stimulus: TrafficStimulusKind
-
-        if (delayMinutes >= 20) {
-            severity = 'heavy'
-            stimulus = 'HEAVY_TRAFFIC'
-        } else if (delayMinutes >= 8) {
-            severity = 'moderate'
-            stimulus = 'MODERATE_TRAFFIC'
-        } else {
-            severity = 'clear'
-            stimulus = 'CLEAR_TRAFFIC'
-        }
+        let severity: 'heavy' | 'moderate' | 'clear' = 'clear'
+        let stimulus: TrafficStimulusKind = 'CLEAR_TRAFFIC'
+        if (delayMinutes >= 20) { severity = 'heavy'; stimulus = 'HEAVY_TRAFFIC' }
+        else if (delayMinutes >= 8) { severity = 'moderate'; stimulus = 'MODERATE_TRAFFIC' }
 
         return {
+            location,
             severity,
-            durationMinutes: delayMinutes,
-            affectedCorridors: severity === 'heavy' ? PEAK_CORRIDORS : MODERATE_CORRIDORS,
+            durationMinutes: Math.max(0, delayMinutes),
+            affectedCorridors: isBengaluru(location)
+                ? (severity === 'heavy' ? ['ORR', 'Silk Board'] : ['MG Road', 'Whitefield'])
+                : ['city center'],
             stimulus,
             source: 'api',
             updatedAt: Date.now(),
@@ -172,44 +160,37 @@ async function fetchGoogleTrafficCondition(): Promise<TrafficStimulusState | nul
     }
 }
 
-// ─── Refresh ──────────────────────────────────────────────────────────────────
-
-/**
- * Refresh traffic state. Called by scheduler every 30 minutes.
- * Falls back to heuristic if Google API unavailable.
- */
-export async function refreshTrafficState(): Promise<TrafficStimulusState> {
-    const apiState = await fetchGoogleTrafficCondition().catch(() => null)
-    currentState = apiState ?? heuristicTrafficState()
-    console.log(
-        `[TrafficStimulus] severity=${currentState.severity} ` +
-        `delay=${currentState.durationMinutes}m source=${currentState.source}`
-    )
-    return currentState
+export async function refreshTrafficState(location = DEFAULT_LOCATION): Promise<TrafficStimulusState> {
+    const key = normLocation(location)
+    const apiState = await fetchGoogleTrafficCondition(key).catch(() => null)
+    const state = apiState ?? heuristicTrafficState(key)
+    stateByLocation.set(key, state)
+    return state
 }
 
-// ─── Proactive message helpers ────────────────────────────────────────────────
+export function getTrafficState(location = DEFAULT_LOCATION): TrafficStimulusState | null {
+    return stateByLocation.get(normLocation(location)) ?? null
+}
 
 export function trafficMessage(state: TrafficStimulusState): string {
     const corridors = state.affectedCorridors.slice(0, 2).join(' + ')
-
     switch (state.stimulus) {
         case 'HEAVY_TRAFFIC':
-            return `Traffic is rough right now — ${corridors} is crawling (${state.durationMinutes}min delay). Best to stay in or order delivery. Want options near you?`
+            return `Traffic is rough in ${state.location} — ${corridors || 'major roads'} are slow (${state.durationMinutes}min delay). Better to stay local or order in.`
         case 'MODERATE_TRAFFIC':
-            return `Traffic's a bit slow around ${corridors}. If you're heading out, maybe give it 30 minutes. Want a nearby spot instead?`
+            return `Traffic is a bit slow in ${state.location} (${corridors || 'key corridors'}). If heading out, waiting ~30 mins might help.`
         case 'CLEAR_TRAFFIC':
-            return `Roads are clear right now — good time to head out! Want a spot suggestion?`
+            return `Roads look clear in ${state.location} right now — good window to head out.`
         default:
-            return `Traffic update: roads are ${state.severity} right now. Plan accordingly?`
+            return `Traffic update for ${state.location}: ${state.severity}.`
     }
 }
 
 export function trafficHashtag(state: TrafficStimulusState): string {
     switch (state.stimulus) {
-        case 'HEAVY_TRAFFIC': return 'bangaloredelivery'
-        case 'MODERATE_TRAFFIC': return 'bangalorecafe'
-        case 'CLEAR_TRAFFIC': return 'bangaloreweekend'
-        default: return 'bangalorefood'
+        case 'HEAVY_TRAFFIC': return 'deliverydeals'
+        case 'MODERATE_TRAFFIC': return 'localcafe'
+        case 'CLEAR_TRAFFIC': return 'cityhangouts'
+        default: return 'foodandplans'
     }
 }

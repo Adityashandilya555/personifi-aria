@@ -33,10 +33,11 @@ import { sendMediaViaPipeline } from './mediaDownloader.js'
 import { sendProactiveContent } from '../channels.js'
 import { sleep } from '../tools/scrapers/retry.js'
 import { expireStaleIntentFunnels, tryStartIntentDrivenFunnel } from '../proactive-intent/index.js'
-import { getWeatherState, type WeatherStimulusKind } from '../weather/weather-stimulus.js'
-import { getTrafficState, trafficMessage, trafficHashtag } from '../stimulus/traffic-stimulus.js'
-import { getFestivalState, festivalMessage, festivalHashtag } from '../stimulus/festival-stimulus.js'
+import { getWeatherState, refreshWeatherState, type WeatherStimulusKind } from '../weather/weather-stimulus.js'
+import { getTrafficState, refreshTrafficState, trafficMessage, trafficHashtag } from '../stimulus/traffic-stimulus.js'
+import { getFestivalState, refreshFestivalState, festivalMessage, festivalHashtag } from '../stimulus/festival-stimulus.js'
 import { getActiveRejections } from '../intelligence/rejection-memory.js'
+import { getLiveUserLocation } from '../location-presence.js'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -358,13 +359,15 @@ async function trySendWeatherStimulus(
     userId: string,
     chatId: string,
     state: UserProactiveState,
+    location: string,
 ): Promise<boolean> {
-    const weather = getWeatherState()
+    await refreshWeatherState(location).catch(() => null)
+    const weather = getWeatherState(location)
     if (!weather?.stimulus) return false
 
     const lastActivity = userLastActivity.get(userId) ?? 0
     const inactivityMins = lastActivity > 0 ? (Date.now() - lastActivity) / 60_000 : Infinity
-    if (lastActivity > 0 && inactivityMins < 60) return false
+    if (lastActivity > 0 && inactivityMins < 15) return false
 
     const prev = weatherStimulusSentAt.get(userId)
     if (
@@ -419,13 +422,15 @@ async function trySendTrafficStimulus(
     userId: string,
     chatId: string,
     state: UserProactiveState,
+    location: string,
 ): Promise<boolean> {
-    const traffic = getTrafficState()
+    await refreshTrafficState(location).catch(() => null)
+    const traffic = getTrafficState(location)
     if (!traffic?.stimulus || traffic.stimulus === 'CLEAR_TRAFFIC') return false
 
     const lastActivity = userLastActivity.get(userId) ?? 0
     const inactivityMins = lastActivity > 0 ? (Date.now() - lastActivity) / 60_000 : Infinity
-    if (lastActivity > 0 && inactivityMins < 60) return false
+    if (lastActivity > 0 && inactivityMins < 15) return false
 
     const last = trafficStimulusSentAt.get(userId) ?? 0
     if (Date.now() - last < TRAFFIC_STIMULUS_COOLDOWN_MS) return false
@@ -462,13 +467,15 @@ async function trySendFestivalStimulus(
     userId: string,
     chatId: string,
     state: UserProactiveState,
+    location: string,
 ): Promise<boolean> {
-    const festival = getFestivalState()
+    await refreshFestivalState(location).catch(() => null)
+    const festival = getFestivalState(location)
     if (!festival?.active || !festival.festival) return false
 
     const lastActivity = userLastActivity.get(userId) ?? 0
     const inactivityMins = lastActivity > 0 ? (Date.now() - lastActivity) / 60_000 : Infinity
-    if (lastActivity > 0 && inactivityMins < 60) return false
+    if (lastActivity > 0 && inactivityMins < 15) return false
 
     const prev = festivalStimulusSentAt.get(userId)
     if (prev && prev.festival === festival.festival.name && Date.now() - prev.ts < FESTIVAL_STIMULUS_COOLDOWN_MS) return false
@@ -499,8 +506,26 @@ async function trySendFestivalStimulus(
 
 // ─── Main: Run Proactive for One User ───────────────────────────────────────
 
+async function resolveUserHomeLocation(channelUserId: string): Promise<string> {
+    const live = getLiveUserLocation(channelUserId)
+    if (live?.address) {
+        return live.address
+    }
+
+    try {
+        const { rows } = await getPool().query<{ home_location: string | null }>(
+            `SELECT home_location FROM users WHERE channel = 'telegram' AND channel_user_id = $1 LIMIT 1`,
+            [channelUserId],
+        )
+        return (rows[0]?.home_location ?? '').trim() || 'Bengaluru'
+    } catch {
+        return 'Bengaluru'
+    }
+}
+
 async function runProactiveForUser(userId: string, chatId: string): Promise<void> {
     const state = await getOrCreateState(userId, chatId)
+    const homeLocation = await resolveUserHomeLocation(userId)
 
     // Smart adaptive gate check
     const gate = computeSmartGate(state)
@@ -510,7 +535,7 @@ async function runProactiveForUser(userId: string, chatId: string): Promise<void
     }
 
     // Stimulus priority: Weather > Traffic > Festival (per CLAUDE.md)
-    const weatherSent = await trySendWeatherStimulus(userId, chatId, state).catch(err => {
+    const weatherSent = await trySendWeatherStimulus(userId, chatId, state, homeLocation).catch(err => {
         console.warn(`[Proactive] Weather stimulus failed for ${userId}:`, (err as Error)?.message)
         return false
     })
@@ -519,7 +544,7 @@ async function runProactiveForUser(userId: string, chatId: string): Promise<void
         return
     }
 
-    const trafficSent = await trySendTrafficStimulus(userId, chatId, state).catch(err => {
+    const trafficSent = await trySendTrafficStimulus(userId, chatId, state, homeLocation).catch(err => {
         console.warn(`[Proactive] Traffic stimulus failed for ${userId}:`, (err as Error)?.message)
         return false
     })
@@ -528,7 +553,7 @@ async function runProactiveForUser(userId: string, chatId: string): Promise<void
         return
     }
 
-    const festivalSent = await trySendFestivalStimulus(userId, chatId, state).catch(err => {
+    const festivalSent = await trySendFestivalStimulus(userId, chatId, state, homeLocation).catch(err => {
         console.warn(`[Proactive] Festival stimulus failed for ${userId}:`, (err as Error)?.message)
         return false
     })
