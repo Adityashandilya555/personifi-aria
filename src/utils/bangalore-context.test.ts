@@ -30,7 +30,7 @@ describe('getProactiveSuggestionQuery', () => {
   it('falls back to Bengaluru when location is missing', () => {
     const now = new Date('2026-03-03T08:00:00Z') // Tuesday 13:30 IST
     const result = getProactiveSuggestionQuery(undefined, now)
-    expect(result.location).toBe('Bengaluru')
+    expect(result.location).toBe('your area')
     expect(result.openNow).toBe(true)
   })
 })

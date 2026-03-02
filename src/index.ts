@@ -22,6 +22,7 @@ import {
   type ChannelMessage
 } from './channels.js'
 import { pendingLocationStore, reverseGeocode } from './location.js'
+import { setLiveUserLocation } from './location-presence.js'
 
 // Type augmentation for raw body on Slack requests
 declare module 'fastify' {
@@ -283,6 +284,7 @@ server.post('/webhook/telegram', async (request, reply) => {
       const address = await reverseGeocode(latitude, longitude)
       const user = await getOrCreateUser('telegram', userId)
       await saveUserLocation(user.userId, address)
+      setLiveUserLocation(userId, { address, lat: latitude, lng: longitude, source: 'gps' })
 
       const pending = pendingLocationStore.get(userId)
       pendingLocationStore.delete(userId)

@@ -30,6 +30,7 @@ export interface FestivalEvent {
 }
 
 export interface FestivalStimulusState {
+    location: string
     active: boolean
     festival: FestivalEvent | null
     stimulus: FestivalStimulusKind | null
@@ -158,7 +159,16 @@ function festivalCalendar(): FestivalEvent[] {
 
 // ─── In-memory state ──────────────────────────────────────────────────────────
 
+const DEFAULT_LOCATION = 'your city'
+const stateByLocation = new Map<string, FestivalStimulusState>()
+
+function normLocation(location?: string): string {
+    const v = (location ?? DEFAULT_LOCATION).trim()
+    return v.length > 0 ? v : DEFAULT_LOCATION
+}
+
 let currentState: FestivalStimulusState = {
+    location: DEFAULT_LOCATION,
     active: false,
     festival: null,
     stimulus: null,
@@ -166,8 +176,8 @@ let currentState: FestivalStimulusState = {
     updatedAt: 0,
 }
 
-export function getFestivalState(): FestivalStimulusState {
-    return currentState
+export function getFestivalState(location = DEFAULT_LOCATION): FestivalStimulusState {
+    return stateByLocation.get(normLocation(location)) ?? currentState
 }
 
 // ─── Date helpers ─────────────────────────────────────────────────────────────
@@ -220,7 +230,8 @@ async function fetchCalendarificEvents(): Promise<FestivalEvent[]> {
  * Refresh festival stimulus state.
  * Called by scheduler every 6 hours (low frequency — festivals don't change intraday).
  */
-export async function refreshFestivalState(): Promise<FestivalStimulusState> {
+export async function refreshFestivalState(location = DEFAULT_LOCATION): Promise<FestivalStimulusState> {
+    const loc = normLocation(location)
     const today = todayIST()
 
     // Merge hardcoded + API events
@@ -241,12 +252,14 @@ export async function refreshFestivalState(): Promise<FestivalStimulusState> {
 
     if (!nearestFestival || nearestDays > 5) {
         currentState = {
+            location: loc,
             active: false,
             festival: nearestFestival,
             stimulus: null,
             daysUntil: nearestDays,
             updatedAt: Date.now(),
         }
+        stateByLocation.set(loc, currentState)
         return currentState
     }
 
@@ -256,6 +269,7 @@ export async function refreshFestivalState(): Promise<FestivalStimulusState> {
     else stimulus = 'FESTIVAL_LEADUP'
 
     currentState = {
+        location: loc,
         active: true,
         festival: nearestFestival,
         stimulus,
@@ -263,8 +277,10 @@ export async function refreshFestivalState(): Promise<FestivalStimulusState> {
         updatedAt: Date.now(),
     }
 
+    stateByLocation.set(loc, currentState)
+
     console.log(
-        `[FestivalStimulus] ${nearestFestival.name} in ${nearestDays} day(s) → ${stimulus}`
+        `[FestivalStimulus] ${loc}: ${nearestFestival.name} in ${nearestDays} day(s) → ${stimulus}`
     )
 
     return currentState
@@ -277,19 +293,20 @@ export function festivalMessage(state: FestivalStimulusState): string | null {
 
     const { name, suggestions } = state.festival ?? { name: '', suggestions: [] }
     const suggestion = suggestions[Math.floor(Math.random() * suggestions.length)]
+    const localSuggestion = String(suggestion).replace(/Bengaluru/gi, state.location).replace(/Bangalore/gi, state.location)
 
     switch (state.stimulus) {
         case 'FESTIVAL_DAY':
-            return `Happy ${name}! 🎉 Perfect day for — ${suggestion}. Want me to find something near you?`
+            return `Happy ${name}! 🎉 Perfect day for — ${localSuggestion}. Want me to find something near you?`
         case 'FESTIVAL_EVE':
-            return `${name} is tomorrow! 🎊 Time to plan — ${suggestion}. Want suggestions?`
+            return `${name} is tomorrow! 🎊 Time to plan — ${localSuggestion}. Want suggestions?`
         case 'FESTIVAL_LEADUP':
-            return `${name} is in ${state.daysUntil} days 🗓️ Good time to plan — ${suggestion}. Shall I look up options?`
+            return `${name} is in ${state.daysUntil} days 🗓️ Good time to plan — ${localSuggestion}. Shall I look up options?`
         default:
             return null
     }
 }
 
 export function festivalHashtag(state: FestivalStimulusState): string {
-    return state.festival?.hashtag ?? 'bangalorefestival'
+    return state.festival?.hashtag ?? 'festivalplans'
 }
