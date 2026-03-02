@@ -109,6 +109,17 @@ describe('deriveHashtagFromContext', () => {
         expect(selectContentForUserMock).toHaveBeenCalledTimes(1)
     })
 
+
+    it('does not block Bengaluru localities in explicit location phrases', async () => {
+        const hashtag = await deriveHashtagFromContext('best cafes in Indiranagar', 'u1')
+        expect(hashtag).not.toBeNull()
+    })
+
+    it('returns null for out-of-scope city/state contexts', async () => {
+        const hashtag = await deriveHashtagFromContext('show me food reels from Goa', 'u1')
+        expect(hashtag).toBeNull()
+    })
+
     it('falls back to bangalorefood when content intelligence also fails', async () => {
         enrichScoresFromPreferencesMock.mockRejectedValue(new Error('DB down'))
 
@@ -133,6 +144,12 @@ describe('selectInlineMedia', () => {
         enrichScoresFromPreferencesMock.mockResolvedValue({})
         selectContentForUserMock.mockReturnValue(null)
         recordContentSentMock.mockImplementation(() => undefined)
+    })
+
+    it('returns null and skips reel fetch for out-of-scope location prompts', async () => {
+        const result = await selectInlineMedia('u1', 'Any suggestions in Mysore?', true)
+        expect(result).toBeNull()
+        expect(fetchReelsMock).not.toHaveBeenCalled()
     })
 
     it('returns null immediately when mediaHint is false', async () => {

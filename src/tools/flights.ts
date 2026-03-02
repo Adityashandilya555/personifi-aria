@@ -278,7 +278,7 @@ function formatSerpApiFlights(flights: any[], origin: string, destination: strin
 
 export const flightToolDefinition = {
     name: 'search_flights',
-    description: 'Search for flights between two airports. Use IATA codes (e.g., JFK, LHR, TYO).',
+    description: 'Search for flights between two airports. CRITICAL: You MUST convert city names to their 3-letter IATA airport codes (e.g., Bengaluru -> BLR). Do not pass full city names. If the user has not provided a departure date, ask them before calling this tool.',
     parameters: {
         type: 'object',
         properties: {

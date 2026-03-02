@@ -8,8 +8,7 @@ import type Groq from 'groq-sdk'
 import { registerBodyHooks } from '../hook-registry.js'
 import type { BodyHooks, ToolExecutionResult, ToolDefinition } from '../hooks.js'
 
-import { searchFlights, flightToolDefinition } from './flights.js'
-import { searchHotels, hotelToolDefinition } from './hotels.js'
+import { searchFlightsMCP, searchHotelsMCP, flightToolDefinition, hotelToolDefinition } from './travel-mcp.js'
 import { getWeather, weatherToolDefinition } from './weather.js'
 import { searchPlaces, placeToolDefinition } from './places.js'
 import { convertCurrency, currencyToolDefinition } from './currency.js'
@@ -31,9 +30,9 @@ const bodyHooks: BodyHooks = {
     async executeTool(name: string, params: Record<string, unknown>): Promise<ToolExecutionResult> {
         switch (name) {
             case 'search_flights':
-                return searchFlights(params as any)
+                return searchFlightsMCP(params as any)
             case 'search_hotels':
-                return searchHotels(params as any)
+                return searchHotelsMCP(params as any)
             case 'get_weather':
                 return getWeather(params as any)
             case 'search_places':

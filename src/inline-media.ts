@@ -82,6 +82,31 @@ const CONTEXT_RULES: Array<{ pattern: RegExp; hashtags: string[] }> = [
     },
 ]
 
+const BENGALURU_CONTEXT_TOKENS = [
+    'bengaluru', 'bangalore', 'blr', 'koramangala', 'indiranagar', 'jayanagar',
+    'whitefield', 'hsr', 'electronic city', 'mg road', 'jp nagar', 'marathahalli',
+    'malleshwaram', 'hebbal', 'rajajinagar', 'btm', 'kormangala', 'vvpuram',
+]
+
+const LOCATION_PREPOSITION_RE = /\b(?:in|at|from|near)\s+([a-z][a-z\s]{2,40})/gi
+
+function hasExplicitOutOfBengaluruLocation(text: string): boolean {
+    const normalized = text.toLowerCase()
+    const matches = normalized.matchAll(LOCATION_PREPOSITION_RE)
+
+    for (const match of matches) {
+        const candidate = (match[1] ?? '').trim().replace(/\s+/g, ' ')
+        if (!candidate) continue
+
+        const isBengaluruContext = BENGALURU_CONTEXT_TOKENS.some(token => candidate.includes(token))
+        if (!isBengaluruContext) {
+            return true
+        }
+    }
+
+    return false
+}
+
 /**
  * Derive the most context-appropriate hashtag from the user's message.
  * Falls back to content intelligence scoring when no keyword matches.
@@ -93,7 +118,7 @@ export async function deriveHashtagFromContext(
     message: string,
     userId: string,
     context?: InlineMediaContext,
-): Promise<string> {
+): Promise<string | null> {
     // 0. Weather override for strongly contextual moments.
     if (context?.weatherStimulus === 'RAIN_START' || context?.weatherStimulus === 'RAIN_HEAVY') {
         return 'bangalorebiryani'
@@ -115,6 +140,11 @@ export async function deriveHashtagFromContext(
         ...(context?.toolContext?.itemNames ?? []).slice(0, 3),
     ].join(' ')
     const lookupText = `${message} ${directiveQuery} ${toolText}`.trim()
+
+    // Guardrail: when user explicitly asks for a non-Bengaluru location, avoid unrelated Bengaluru reels.
+    if (hasExplicitOutOfBengaluruLocation(lookupText)) {
+        return null
+    }
 
     // 1. Keyword-based match (fast path, no DB)
     for (const rule of CONTEXT_RULES) {
@@ -183,6 +213,10 @@ export async function selectInlineMedia(
 
         // 1. Derive a content-appropriate hashtag from conversation context
         const hashtag = await deriveHashtagFromContext(message, userId, context)
+        if (!hashtag) {
+            console.log('[InlineMedia] Context outside Bengaluru scope — falling back to text')
+            return null
+        }
 
         // 2. Fetch candidates from DB-first pipeline (cached 30min, free)
         const results = await fetchReels(hashtag, userId, 3)

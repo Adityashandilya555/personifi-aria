@@ -63,7 +63,7 @@ export function filterOutput(output: string): OutputFilterResult {
   }
 
   // 3. Limit response length (prevent runaway responses)
-  const maxLength = 2000
+  const maxLength = 800
   let filtered = output
   if (output.length > maxLength) {
     // Truncate at sentence boundary if possible

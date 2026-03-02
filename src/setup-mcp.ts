@@ -12,7 +12,7 @@
  * Zomato:  dynamic registration → UUID client_id + secret "Z-MCP", PKCE S256
  *
  * Run:  npx tsx src/setup-mcp.ts [swiggy|zomato|both]
- * Writes tokens to .env: SWIGGY_MCP_TOKEN, ZOMATO_MCP_TOKEN (+ refresh tokens)
+ * Local `travel-mcp` tools (flights/hotels) are in-process and do not require OAuth setup.
  */
 
 import * as fs from 'node:fs'

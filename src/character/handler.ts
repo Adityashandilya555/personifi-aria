@@ -90,7 +90,7 @@ const groq = new Groq({
 
 // Model configuration (kept for reference / 8B classifier in cognitive.ts)
 const MODEL = 'llama-3.3-70b-versatile'
-const MAX_TOKENS = 500
+const MAX_TOKENS = 150
 const TEMPERATURE = 0.8
 
 /**

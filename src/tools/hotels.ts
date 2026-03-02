@@ -97,7 +97,7 @@ export async function searchHotels(params: HotelSearchParams): Promise<ToolExecu
 
 export const hotelToolDefinition = {
     name: 'search_hotels',
-    description: 'Search for hotels in a specific city/location.',
+    description: 'Search for hotels in a specific city/location. IMPORTANT: If the user has not specified check-in and check-out dates, DO NOT guess. You must ask the user for their travel dates before calling this tool.',
     parameters: {
         type: 'object',
         properties: {
