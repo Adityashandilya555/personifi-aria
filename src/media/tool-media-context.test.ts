@@ -18,6 +18,22 @@ describe('extractToolMediaContext', () => {
     expect(ctx?.searchQuery).toContain('Third Wave Coffee')
   })
 
+
+
+  it('prefers place image payloads and ignores static map previews', () => {
+    const ctx = extractToolMediaContext('search_places', {
+      raw: [{ displayName: { text: 'Araku Coffee' } }],
+      images: [
+        { url: 'https://maps.googleapis.com/maps/api/staticmap?center=12,77' },
+        { url: 'https://places.googleapis.com/v1/places/abc/media?key=test' },
+      ],
+    })
+
+    expect(ctx).not.toBeNull()
+    expect(ctx?.photoUrls).toContain('https://places.googleapis.com/v1/places/abc/media?key=test')
+    expect(ctx?.photoUrls.some(url => url.includes('staticmap'))).toBe(false)
+  })
+
   it('extracts dish-level images from food tool output', () => {
     const ctx = extractToolMediaContext('compare_food_prices', {
       raw: [

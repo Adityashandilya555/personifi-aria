@@ -353,11 +353,12 @@ function extractMediaFromToolResult(rawData: unknown): MessageResponse['media'] 
   if (!rawData || typeof rawData !== 'object') return undefined
 
   const data = rawData as any
+  const isMapPreviewUrl = (url: string): boolean => /maps\.googleapis\.com\/maps\/api\/staticmap/i.test(url)
 
   // Grocery comparison: has a top-level images[] array with {url, caption}
   if (Array.isArray(data?.images)) {
     const media = data.images
-      .filter((img: any) => img?.url)
+      .filter((img: any) => typeof img?.url === 'string' && !isMapPreviewUrl(img.url))
       .slice(0, 6)
       .map((img: any) => ({
         type: 'photo' as const,
@@ -1184,7 +1185,8 @@ export async function handleMessage(
       }]
       : undefined
 
-    const venuePreviewMedia = !inlineMediaItem
+const venuePreviewMedia = !inlineMediaItem
+      && routeDecision.toolName !== 'search_places'
       ? buildVenuePreviewMedia(
         venues,
         typeof routeDecision.toolParams?.location === 'string' ? routeDecision.toolParams.location : user.homeLocation,

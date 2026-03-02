@@ -22,14 +22,25 @@ function pushUnique(target: string[], value: unknown): void {
     if (!target.includes(trimmed)) target.push(trimmed)
 }
 
+function isMapPreviewUrl(url: string): boolean {
+    return /maps\.googleapis\.com\/maps\/api\/staticmap/i.test(url)
+}
+
+function pushPhotoUrl(target: string[], value: unknown): void {
+    if (typeof value !== 'string') return
+    const trimmed = value.trim()
+    if (!trimmed || isMapPreviewUrl(trimmed)) return
+    if (!target.includes(trimmed)) target.push(trimmed)
+}
+
 function extractFromPlace(entry: any, placeNames: string[], photoUrls: string[]): void {
     pushUnique(placeNames, entry?.displayName?.text)
     pushUnique(placeNames, entry?.name)
-    pushUnique(photoUrls, entry?.photoUrl)
-    pushUnique(photoUrls, entry?.imageUrl)
+    pushPhotoUrl(photoUrls, entry?.photoUrl)
+    pushPhotoUrl(photoUrls, entry?.imageUrl)
     if (Array.isArray(entry?.photos)) {
         for (const p of entry.photos) {
-            pushUnique(photoUrls, p?.url)
+            pushPhotoUrl(photoUrls, p?.url)
         }
     }
 }
@@ -38,14 +49,14 @@ function extractFromFoodEntry(entry: any, placeNames: string[], itemNames: strin
     pushUnique(placeNames, entry?.restaurantName)
     pushUnique(placeNames, entry?.restaurant)
     pushUnique(placeNames, entry?.name)
-    pushUnique(photoUrls, entry?.restaurantImageUrl)
-    pushUnique(photoUrls, entry?.imageUrl)
+    pushPhotoUrl(photoUrls, entry?.restaurantImageUrl)
+    pushPhotoUrl(photoUrls, entry?.imageUrl)
 
     if (Array.isArray(entry?.items)) {
         for (const item of entry.items) {
             pushUnique(itemNames, item?.name)
-            pushUnique(photoUrls, item?.imageUrl)
-            pushUnique(photoUrls, item?.image)
+            pushPhotoUrl(photoUrls, item?.imageUrl)
+            pushPhotoUrl(photoUrls, item?.image)
         }
     }
 }
@@ -76,6 +87,11 @@ export function extractToolMediaContext(toolName: string, rawData: unknown): Too
             : null
 
     if (toolName === 'search_places' && Array.isArray(rootArray)) {
+        if (Array.isArray(data?.images)) {
+            for (const img of data.images.slice(0, 8)) {
+                pushPhotoUrl(photoUrls, img?.url)
+            }
+        }
         for (const place of rootArray.slice(0, 8)) {
             extractFromPlace(place, placeNames, photoUrls)
         }
@@ -102,8 +118,8 @@ export function extractToolMediaContext(toolName: string, rawData: unknown): Too
         if (Array.isArray(rootArray)) {
             for (const entry of rootArray.slice(0, 8)) {
                 pushUnique(itemNames, entry?.name)
-                pushUnique(photoUrls, entry?.imageUrl)
-                pushUnique(photoUrls, entry?.image)
+                pushPhotoUrl(photoUrls, entry?.imageUrl)
+                pushPhotoUrl(photoUrls, entry?.image)
             }
         }
     } else if (Array.isArray(rootArray)) {
@@ -128,4 +144,3 @@ export function extractToolMediaContext(toolName: string, rawData: unknown): Too
         photoUrls,
     }
 }
-
