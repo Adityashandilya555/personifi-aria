@@ -24,6 +24,8 @@ import { addFriend, resolveUserByPlatformId } from '../social/friend-graph.js'
 export interface OnboardingResult {
     handled: boolean
     reply?: string
+    /** When true, channel layer should show Telegram location-share keyboard */
+    requestLocation?: boolean
     /** Optional Telegram inline keyboard buttons */
     buttons?: Array<Array<{ text: string; callback_data: string }>>
 }
@@ -38,7 +40,7 @@ interface OnboardingState {
 const STEP_MESSAGES: Record<string, string> = {
     name: `Hey! I'm Aria — your Bengaluru guide 🙌
 
-Before we dive in, what do I call you?`,
+First things first: share your current location (tap 📍) or type your area in Bengaluru so I can tailor everything for you.`,
 
     city: `Nice to meet you, {name}!
 
@@ -62,6 +64,15 @@ You can also share a friend's phone number or Telegram username to add them.
 I know your area, your vibe, and I've got your crew linked. From here on, I'll proactively reach out when something's relevant — weather, traffic, festivals, or just when your friends are making plans.
 
 What's on your mind today?`,
+}
+
+function looksLikeLocationInput(message: string): boolean {
+    const msg = message.trim().toLowerCase()
+    if (!msg) return false
+    if (/\b(near|in|at|from)\s+[a-z]/i.test(msg)) return true
+    if (/\b(bengaluru|bangalore|koramangala|indiranagar|whitefield|hsr|jayanagar|btm|hebbal|jp nagar)\b/i.test(msg)) return true
+    if (msg.includes(',')) return true
+    return false
 }
 
 const FOOD_PREF_BUTTONS = [
@@ -243,23 +254,48 @@ export async function handleOnboarding(
     // ── Step: name ────────────────────────────────────────────────────────────
     if (currentStep === 'name') {
         if (!message || message.trim().length < 1) {
-            return { handled: true, reply: STEP_MESSAGES.name }
+            return { handled: true, reply: STEP_MESSAGES.name, requestLocation: true }
+        }
+
+        // Support location-first onboarding: if user shares area before name,
+        // store it immediately and then ask only for their name.
+        if (!state.homeLocation && looksLikeLocationInput(message)) {
+            await saveUserCity(userId, message.trim())
+            return {
+                handled: true,
+                reply: `Perfect — got your location as ${message.trim()} 📍\n\nNow what should I call you?`,
+            }
         }
 
         const name = message.trim().split(/\s+/)[0] // take first word as name
         await saveUserName(userId, name)
+
+        if (state.homeLocation) {
+            await advanceOnboardingStep(userId, 'prefs_1')
+            return {
+                handled: true,
+                reply: STEP_MESSAGES.prefs_1,
+                buttons: FOOD_PREF_BUTTONS,
+            }
+        }
+
         await advanceOnboardingStep(userId, 'city')
 
         return {
             handled: true,
             reply: STEP_MESSAGES.city.replace('{name}', name),
+            requestLocation: true,
         }
     }
 
     // ── Step: city ────────────────────────────────────────────────────────────
     if (currentStep === 'city') {
         if (!message || message.trim().length < 2) {
-            return { handled: true, reply: STEP_MESSAGES.city.replace('{name}', state.displayName ?? 'there') }
+            return {
+                handled: true,
+                reply: STEP_MESSAGES.city.replace('{name}', state.displayName ?? 'there'),
+                requestLocation: true,
+            }
         }
 
         await saveUserCity(userId, message.trim())

@@ -283,6 +283,58 @@ function extractLocationCandidate(message: string): string | null {
   return null
 }
 
+async function buildSearchPlacesContextHint(
+  brainHooks: ReturnType<typeof getBrainHooks>,
+  location: string | null,
+): Promise<string> {
+  if (!location) return ''
+
+  const weatherResult = await brainHooks.executeToolPipeline(
+    {
+      useTool: true,
+      toolName: 'get_weather',
+      toolParams: { location },
+    },
+    {
+      userMessage: `Weather for ${location}`,
+      channel: 'telegram',
+      userId: 'system',
+      personId: null,
+      classification: {
+        needs_tool: true,
+        tool_hint: 'get_weather',
+        tool_args: { location },
+        message_complexity: 'simple',
+        skip_memory: true,
+        skip_graph: true,
+        skip_cognitive: true,
+        userSignal: 'normal',
+      },
+      memories: [],
+      graphContext: [],
+      history: [],
+    }
+  ).catch(() => null)
+
+  const weatherSummary = weatherResult?.success && typeof weatherResult.data === 'string'
+    ? weatherResult.data.slice(0, 280)
+    : ''
+
+  const parts = [
+    '[ARIA HINT: After listing places, add one short context block with:',
+    '- Current weather for the destination and whether this is a good time/day to go (e.g. Sunday outing vs indoor plan).',
+    '- A practical traffic caveat (peak-hour caution + suggest sharing live location for exact ETA/routing).',
+    '- Ask one concrete follow-up question ("Want me to check route + travel time from your live location?").',
+  ]
+
+  if (weatherSummary) {
+    parts.push(`Weather snapshot: ${weatherSummary}`)
+  }
+
+  parts.push(']')
+  return `\n\n${parts.join('\n')}`
+}
+
 // ─── Exported helper ──────────────────────────────────────────────────────────
 
 /** Save a resolved location as the user's homeLocation. */
@@ -391,6 +443,23 @@ function extractVenuesFromToolResult(
   return undefined
 }
 
+function buildVenuePreviewMedia(
+  venues: MessageResponse['venues'] | undefined,
+  locationLabel?: string | null,
+): MessageResponse['media'] | undefined {
+  if (!venues || venues.length === 0) return undefined
+  const first = venues[0]
+  const key = process.env.GOOGLE_MAPS_API_KEY
+  if (!key) return undefined
+
+  const mapUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${first.lat},${first.lng}&zoom=15&size=900x500&markers=color:red%7C${first.lat},${first.lng}&key=${key}`
+  const caption = locationLabel
+    ? `📍 ${first.name} (${locationLabel})`
+    : `📍 ${first.name}`
+
+  return [{ type: 'photo', url: mapUrl, caption }]
+}
+
 /**
  * Compact formatter for compare_prices_proactive results.
  * Keeps tool context under 400 tokens so the 70B model stays within budget.
@@ -460,6 +529,7 @@ export async function handleMessage(
       if (onboardingResult.handled) {
         return {
           text: onboardingResult.reply ?? "Hey! Let me set you up — what's your name?",
+          ...(onboardingResult.requestLocation ? { requestLocation: true } : {}),
           ...(onboardingResult.buttons ? { _buttons: onboardingResult.buttons } : {}),
         } as MessageResponse
       }
@@ -745,6 +815,11 @@ export async function handleMessage(
     // ─── Step 8c: Proactive offer hint after places search ─────────
     if (!isRejection && routeDecision.toolName === 'search_places' && toolResultStr && !onboardingJustCompleted) {
       toolResultStr += '\n\n[ARIA HINT: The user found places nearby. Naturally offer to check delivery prices on Swiggy or Zomato if they seem interested in food, or compare grocery apps if it is a grocery query. Keep it conversational — do not make it sound like an ad.]'
+
+      const toolLocation = typeof routeDecision.toolParams?.location === 'string'
+        ? routeDecision.toolParams.location
+        : (user.homeLocation ?? null)
+      toolResultStr += await buildSearchPlacesContextHint(brainHooks, toolLocation)
     }
 
     // ─── Step 8d: New user onboarding hint ────────────────────────
@@ -916,7 +991,6 @@ export async function handleMessage(
       userSignal: classification.userSignal,
       activeTopics,
     })
-    const mediaHint = influenceStrategy?.mediaHint ?? false
     const activeToolContext = routeDecision.toolName && toolRawData
       ? extractToolMediaContext(routeDecision.toolName, toolRawData)
       : null
@@ -925,6 +999,8 @@ export async function handleMessage(
       : null
     const effectiveToolContext = activeToolContext ?? recentToolContext?.context ?? null
     const effectiveMediaDirective = toolMediaDirective ?? recentToolContext?.mediaDirective ?? null
+    const hasStrongToolPhotos = !!(effectiveToolContext?.photoUrls?.length)
+    const mediaHint = (influenceStrategy?.mediaHint ?? false) || hasStrongToolPhotos
     const weatherStimulus = getWeatherState()?.stimulus ?? null
 
     const tier2Messages: ChatMessage[] = messages.map(m => ({
@@ -934,7 +1010,7 @@ export async function handleMessage(
 
     // Fire both concurrently — media selection races with a 1500ms ceiling
     // so it never adds latency on top of the LLM (LLM typically takes 1-3s)
-    const MEDIA_TIMEOUT_MS = 1500
+    const MEDIA_TIMEOUT_MS = 3000
     const [{ text: tier2Response, provider: tier2Provider }, inlineMediaItem] = await Promise.all([
       generateResponse(tier2Messages, { maxTokens: MAX_TOKENS, temperature: TEMPERATURE }),
       Promise.race([
@@ -1098,6 +1174,8 @@ export async function handleMessage(
       })
     }
 
+    const venues = extractVenuesFromToolResult(routeDecision.toolName, toolRawData)
+
     const fallbackMediaFromContext = (!inlineMediaItem && effectiveToolContext?.photoUrls?.length)
       ? [{
         type: 'photo' as const,
@@ -1106,14 +1184,21 @@ export async function handleMessage(
       }]
       : undefined
 
+    const venuePreviewMedia = !inlineMediaItem
+      ? buildVenuePreviewMedia(
+        venues,
+        typeof routeDecision.toolParams?.location === 'string' ? routeDecision.toolParams.location : user.homeLocation,
+      )
+      : undefined
+
     return {
       text: assistantResponse,
       // Inline media (reel/image from influence strategy) takes precedence over
       // tool-extracted product photos. Falls back gracefully when neither is available.
       media: inlineMediaItem
         ? [inlineMediaItem]
-        : (extractMediaFromToolResult(toolRawData) ?? fallbackMediaFromContext),
-      venues: extractVenuesFromToolResult(routeDecision.toolName, toolRawData),
+        : (extractMediaFromToolResult(toolRawData) ?? fallbackMediaFromContext ?? venuePreviewMedia),
+      venues,
     }
 
   } catch (error) {

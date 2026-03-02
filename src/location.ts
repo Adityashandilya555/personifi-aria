@@ -46,12 +46,17 @@ const NEAR_ME_PATTERNS = [
     /\bnearby\b/i,
 ]
 
-const FOOD_GROCERY_HINTS = [
+const LOCATION_SENSITIVE_TOOL_HINTS = [
     'compare_food_prices',
     'compare_grocery_prices',
     'search_swiggy_food',
     'search_dineout',
+    'search_places',
 ]
+
+function hasExplicitLocationInMessage(msg: string): boolean {
+    return /\b(?:in|at|from|near)\s+[a-z][a-z\s]{2,40}\b/i.test(msg)
+}
 
 /**
  * Determine if Aria should ask the user for their location.
@@ -67,8 +72,10 @@ export function shouldRequestLocation(
     // "near me" pattern always triggers location request
     if (NEAR_ME_PATTERNS.some(p => p.test(msg))) return true
 
-    // Food/grocery tool but no saved home location
-    if (!homeLocation && toolHint && FOOD_GROCERY_HINTS.includes(toolHint)) return true
+    // Location-sensitive tool but no saved home location and user didn't name an area.
+    if (!homeLocation && toolHint && LOCATION_SENSITIVE_TOOL_HINTS.includes(toolHint)) {
+        return !hasExplicitLocationInMessage(msg)
+    }
 
     return false
 }

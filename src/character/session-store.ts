@@ -301,6 +301,13 @@ export async function runMigrations(): Promise<void> {
   await p.query(`CREATE INDEX IF NOT EXISTS idx_topic_intents_active ON topic_intents(user_id) WHERE phase NOT IN ('completed', 'abandoned')`)
   await p.query(`CREATE INDEX IF NOT EXISTS idx_topic_intents_warm ON topic_intents(user_id, last_signal_at) WHERE phase NOT IN ('completed', 'abandoned')`)
 
+  // ── rejection/preference memory columns (Issue #89 compatibility) ───────
+  await p.query(`
+    ALTER TABLE user_preferences
+      ADD COLUMN IF NOT EXISTS rejected_entities JSONB NOT NULL DEFAULT '[]'::jsonb,
+      ADD COLUMN IF NOT EXISTS preferred_entities JSONB NOT NULL DEFAULT '[]'::jsonb
+  `)
+
   // ── proactive_user_state — persistent proactive scheduling state ──────────
   await p.query(`
     CREATE TABLE IF NOT EXISTS proactive_user_state (

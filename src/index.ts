@@ -301,18 +301,22 @@ server.post('/webhook/telegram', async (request, reply) => {
       // Dismiss the GPS share keyboard + confirm in Aria's voice
       await dismissKeyboard(chatId, pick(LOCATION_ACKS)(address))
 
-      const originalQuery = pending?.originalMessage || ''
-      const retriggerMsg = originalQuery
-        ? `${originalQuery.replace(/near\s+me/i, '').trim()} near ${address}`
-        : `near ${address}`
+      if (pending) {
+        const originalQuery = pending.originalMessage || ''
+        const retriggerMsg = originalQuery
+          ? `${originalQuery.replace(/near\s+me/i, '').trim()} near ${address}`
+          : `near ${address}`
 
-      sendChatAction(chatId, 'find_location')
-      const response = await handleMessage('telegram', userId, retriggerMsg)
+        sendChatAction(chatId, 'find_location')
+        const response = await handleMessage('telegram', userId, retriggerMsg)
 
-      if (response.media?.length && channels.telegram.sendMedia) {
-        await channels.telegram.sendMedia(chatId, response.media)
+        if (response.media?.length && channels.telegram.sendMedia) {
+          await channels.telegram.sendMedia(chatId, response.media)
+        }
+        await channels.telegram.sendMessage(chatId, response.text)
+      } else {
+        await channels.telegram.sendMessage(chatId, 'Lovely — location saved ✅ What should I call you?')
       }
-      await channels.telegram.sendMessage(chatId, response.text)
     } catch (err) {
       server.log.error(err, 'Failed to handle Telegram location message')
       await channels.telegram.sendMessage(chatId, pick(LOCATION_ERRORS))
@@ -330,11 +334,15 @@ server.post('/webhook/telegram', async (request, reply) => {
 
   // /start command — onboarding entry point
   if (msgText === '/start') {
-    const greetings = [
-      "Hey! 👋 I'm Aria — your Bengaluru bestie. Food, cafes, what's open, where to go — that's my whole thing. What should I call you?",
-      "Ayy, you found me da 👋 I'm Aria. Tell me your name first — once I know your area, I can suggest what to hit right now.",
-    ]
-    await channels.telegram.sendMessage(chatId, pick(greetings))
+    await tgFetch('sendMessage', {
+      chat_id: chatId,
+      text: "Hey! 👋 I'm Aria — before we begin, share your location so I can personalize food, traffic, weather, and places around you.",
+      reply_markup: {
+        keyboard: [[{ text: '📍 Share my location', request_location: true }]],
+        one_time_keyboard: true,
+        resize_keyboard: true,
+      },
+    })
     return { ok: true }
   }
 
@@ -385,11 +393,14 @@ server.post('/webhook/telegram', async (request, reply) => {
           resize_keyboard: true,
           one_time_keyboard: true,
         })
-        pendingLocationStore.set(parsedMessage.userId, {
-          toolHint: 'food_grocery',
-          chatId,
-          originalMessage: msgText,
-        })
+        const user = await getOrCreateUser(parsedMessage.channel, parsedMessage.userId)
+        if (user.authenticated) {
+          pendingLocationStore.set(parsedMessage.userId, {
+            toolHint: 'food_grocery',
+            chatId,
+            originalMessage: msgText,
+          })
+        }
       } else if (response._buttons?.length) {
         // Onboarding / social bridge inline keyboard buttons
         await sendTelegramWithKeyboard(chatId, response.text, {
