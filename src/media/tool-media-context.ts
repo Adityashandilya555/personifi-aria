@@ -44,7 +44,6 @@ function extractFromPlace(entry: any, placeNames: string[], photoUrls: string[])
             pushPhotoUrl(photoUrls, p?.url)
             pushPhotoUrl(photoUrls, p?.photoUri)
             pushPhotoUrl(photoUrls, p?.imageUri)
-            pushPhotoUrl(photoUrls, p?.name)
         }
     }
 }

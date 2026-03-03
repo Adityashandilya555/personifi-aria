@@ -75,8 +75,12 @@ export async function handleCallbackAction(
         const generated = await handleMessage(
           channel,
           userId,
-          result.reply ?? 'continue onboarding',
-          { bypassOnboarding: true, onboardingResult: result },
+          `[onboarding_callback] ${callbackData}`,
+          {
+            bypassOnboarding: true,
+            onboardingResult: result,
+            lightweightOnboarding: true,
+          },
         )
         return {
           text: generated.text,

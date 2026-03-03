@@ -26,10 +26,11 @@ export interface ChannelAdapter {
   sendMedia?: (chatId: string, media: MediaItem[]) => Promise<void>
 }
 
-function inferDownloadSource(url: string): 'instagram' | 'tiktok' | 'youtube' | 'places' {
+function inferDownloadSource(url: string): 'instagram' | 'tiktok' | 'youtube' | 'places' | 'unknown' {
   const normalized = url.toLowerCase()
   if (normalized.includes('tiktok')) return 'tiktok'
   if (normalized.includes('youtube') || normalized.includes('youtu.be')) return 'youtube'
+  if (normalized.includes('instagram') || normalized.includes('cdninstagram') || normalized.includes('fbcdn')) return 'instagram'
   if (
     normalized.includes('places.googleapis.com')
     || normalized.includes('googleusercontent.com')
@@ -37,7 +38,7 @@ function inferDownloadSource(url: string): 'instagram' | 'tiktok' | 'youtube' | 
   ) {
     return 'places'
   }
-  return 'instagram'
+  return 'unknown'
 }
 
 function isPlacesPhotoUrl(url: string): boolean {
@@ -116,7 +117,10 @@ export const telegramAdapter: ChannelAdapter = {
 
     if (media.length === 1 && media[0].type === 'video') {
       // Single video — download first (CDN URLs expire!), then multipart upload
-      const downloaded = await downloadMedia(media[0].url, inferDownloadSource(media[0].url)).catch(() => null)
+      const source = inferDownloadSource(media[0].url)
+      const downloaded = source === 'unknown'
+        ? null
+        : await downloadMedia(media[0].url, source).catch(() => null)
       if (downloaded) {
         const result = await uploadVideoToTelegram(chatId, downloaded, media[0].caption || '', { supportsStreaming: true })
         if (result.success) return
@@ -152,7 +156,9 @@ export const telegramAdapter: ChannelAdapter = {
     } else if (media.length === 1) {
       // Single photo — download first, then multipart upload
       const source = inferDownloadSource(media[0].url)
-      const downloaded = await downloadMedia(media[0].url, source).catch(() => null)
+      const downloaded = source === 'unknown'
+        ? null
+        : await downloadMedia(media[0].url, source).catch(() => null)
       if (downloaded) {
         const result = await uploadPhotoToTelegram(chatId, downloaded, media[0].caption || '')
         if (result.success) return
@@ -186,7 +192,9 @@ export const telegramAdapter: ChannelAdapter = {
       let sentCount = 0
       for (const item of media.slice(0, 10)) {
         const source = inferDownloadSource(item.url)
-        const downloaded = await downloadMedia(item.url, source).catch(() => null)
+        const downloaded = source === 'unknown'
+          ? null
+          : await downloadMedia(item.url, source).catch(() => null)
         if (downloaded) {
           const result = await uploadPhotoToTelegram(chatId, downloaded, item.caption || '')
           if (result.success) { sentCount++; continue }

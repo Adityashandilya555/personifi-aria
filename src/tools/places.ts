@@ -10,6 +10,15 @@ interface PlaceSearchParams {
 }
 
 const PLACES_CACHE_TTL = 30 * 60 * 1000 // 30 minutes
+const PHOTO_URI_CACHE_TTL = 30 * 60 * 1000 // 30 minutes
+
+type PlaceImage = { url: string; caption: string }
+type PlacesPayload = {
+    formatted?: string
+    raw?: any[]
+    images?: PlaceImage[]
+    imagesResolvedAt?: number
+} | null
 
 // ─── Defaults (Bengaluru) ───────────────────────────────────────────────────
 
@@ -55,8 +64,23 @@ function buildPhotoMetadataUrl(photoName: string, apiKey: string, maxHeightPx = 
     return `https://places.googleapis.com/v1/${photoName}/media?maxHeightPx=${maxHeightPx}&skipHttpRedirect=true&key=${apiKey}`
 }
 
+const photoUriCache = new Map<string, { uri: string; expiresAt: number }>()
+
+function getCachedPhotoUri(photoName: string): string | null {
+    const cached = photoUriCache.get(photoName)
+    if (!cached) return null
+    if (cached.expiresAt <= Date.now()) {
+        photoUriCache.delete(photoName)
+        return null
+    }
+    return cached.uri
+}
+
 /** Resolve a stable, direct photo URI for a place photo resource name. */
 async function resolvePhotoUri(photoName: string, apiKey: string): Promise<string | null> {
+    const cachedUri = getCachedPhotoUri(photoName)
+    if (cachedUri) return cachedUri
+
     try {
         const response = await fetch(buildPhotoMetadataUrl(photoName, apiKey), {
             signal: AbortSignal.timeout(5000),
@@ -64,6 +88,10 @@ async function resolvePhotoUri(photoName: string, apiKey: string): Promise<strin
         if (!response.ok) return null
         const payload = await response.json() as { photoUri?: string }
         if (typeof payload.photoUri === 'string' && payload.photoUri.length > 0) {
+            photoUriCache.set(photoName, {
+                uri: payload.photoUri,
+                expiresAt: Date.now() + PHOTO_URI_CACHE_TTL,
+            })
             return payload.photoUri
         }
         return null
@@ -75,25 +103,29 @@ async function resolvePhotoUri(photoName: string, apiKey: string): Promise<strin
 async function hydratePlaceImages(
     places: any[],
     apiKey: string,
-): Promise<Array<{ url: string; caption: string }>> {
-    const images: Array<{ url: string; caption: string }> = []
-    for (const place of places.slice(0, 5)) {
+): Promise<PlaceImage[]> {
+    const results = await Promise.allSettled(places.slice(0, 5).map(async (place): Promise<PlaceImage | null> => {
         const name = place.displayName?.text || 'Unknown'
         const rating = place.rating
             ? `⭐ ${place.rating} (${(place.userRatingCount || 0).toLocaleString()} reviews)`
             : 'No rating yet'
         const photoName = place.photos?.[0]?.name
-        if (!photoName) continue
+        if (!photoName) return null
 
         const resolvedPhotoUrl = await resolvePhotoUri(photoName, apiKey)
-        if (!resolvedPhotoUrl) continue
+        if (!resolvedPhotoUrl) return null
 
-        // Keep raw payload and media context extractors aligned.
-        place.photoUrl = resolvedPhotoUrl
-        images.push({
+        return {
             url: resolvedPhotoUrl,
             caption: `📍 ${name} — ${rating}`,
-        })
+        }
+    }))
+
+    const images: PlaceImage[] = []
+    for (const result of results) {
+        if (result.status === 'fulfilled' && result.value) {
+            images.push(result.value)
+        }
     }
     return images
 }
@@ -127,15 +159,23 @@ export async function searchPlaces(params: PlaceSearchParams): Promise<ToolExecu
     const cached = cacheGet<ToolExecutionResult>(key)
     if (cached) {
         console.log(`[Places Tool] Cache hit for "${normalizedQuery}" @ "${normalizedLocation}"`)
-        const payload = cached.data as { formatted?: string; raw?: any[]; images?: Array<{ url: string; caption: string }> } | null
+        const payload = cached.data as PlacesPayload
         if (payload && typeof payload === 'object' && Array.isArray(payload.raw)) {
-            // Do not reuse cached photoUri values; re-resolve short-lived URLs per request.
+            const hasFreshImages = Array.isArray(payload.images)
+                && payload.images.length > 0
+                && typeof payload.imagesResolvedAt === 'number'
+                && (Date.now() - payload.imagesResolvedAt) < PHOTO_URI_CACHE_TTL
+            if (hasFreshImages) {
+                return cached
+            }
+
             const images = await hydratePlaceImages(payload.raw, apiKey)
             return {
                 ...cached,
                 data: {
                     ...payload,
                     images,
+                    imagesResolvedAt: Date.now(),
                 },
             }
         }
@@ -262,16 +302,10 @@ export async function searchPlaces(params: PlaceSearchParams): Promise<ToolExecu
                 formatted,
                 raw: data.places,
                 images: images.slice(0, 5), // cap at 5 photos for Telegram
+                imagesResolvedAt: Date.now(),
             },
         }
-        cacheSet(key, {
-            ...result,
-            data: {
-                formatted,
-                raw: data.places,
-                images: [],
-            },
-        }, PLACES_CACHE_TTL)
+        cacheSet(key, result, PLACES_CACHE_TTL)
         return result
 
     } catch (error: any) {

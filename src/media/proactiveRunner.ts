@@ -530,7 +530,11 @@ async function resolveUserHomeLocation(channelUserId: string): Promise<string> {
 
     try {
         const { rows } = await getPool().query<{ home_location: string | null }>(
-            `SELECT home_location FROM users WHERE channel = 'telegram' AND channel_user_id = $1 LIMIT 1`,
+            `SELECT home_location
+             FROM users
+             WHERE channel_user_id = $1
+             ORDER BY CASE WHEN channel = 'telegram' THEN 0 ELSE 1 END, updated_at DESC
+             LIMIT 1`,
             [channelUserId],
         )
         return (rows[0]?.home_location ?? '').trim() || 'Bengaluru'
@@ -545,8 +549,9 @@ async function resolveUserPreferenceSummary(channelUserId: string, limit = 5): P
             `SELECT p.category, p.value, p.confidence
              FROM users u
              JOIN user_preferences p ON p.user_id = u.user_id
-             WHERE u.channel = 'telegram' AND u.channel_user_id = $1
-             ORDER BY p.confidence DESC, p.mention_count DESC, p.updated_at DESC
+             WHERE u.channel_user_id = $1
+             ORDER BY CASE WHEN u.channel = 'telegram' THEN 0 ELSE 1 END,
+                      p.confidence DESC, p.mention_count DESC, p.updated_at DESC
              LIMIT $2`,
             [channelUserId, limit],
         )
@@ -842,7 +847,9 @@ async function updateStateAfterSend(
         `INSERT INTO proactive_messages (user_id, message_type, sent_at, category, hashtag)
          SELECT u.user_id, 'proactive_content', NOW(), $2, $3
          FROM users u
-         WHERE u.channel = 'telegram' AND u.channel_user_id = $1`,
+         WHERE u.channel_user_id = $1
+         ORDER BY CASE WHEN u.channel = 'telegram' THEN 0 ELSE 1 END, u.updated_at DESC
+         LIMIT 1`,
         [userId, category, hashtag]
     ).catch(() => { })
 }

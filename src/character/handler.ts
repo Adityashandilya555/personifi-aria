@@ -155,6 +155,7 @@ export interface MessageResponse {
 export interface HandleMessageOptions {
   bypassOnboarding?: boolean
   onboardingResult?: OnboardingResult | null
+  lightweightOnboarding?: boolean
 }
 
 // ─── Confirmation / Location Gate ────────────────────────────────────────────
@@ -538,6 +539,7 @@ export async function handleMessage(
       })
     }
     const onboardingActive = !!onboardingResult?.handled
+    const lightweightOnboarding = options.lightweightOnboarding === true || onboardingActive
 
     // ─── Step 3: Check rate limit ─────────────────────────────────
     const withinLimit = await checkRateLimit(user.userId)
@@ -551,7 +553,7 @@ export async function handleMessage(
     // ─── Step 4.5: Active funnel reply interception (Issue #63) ───
     // If the user is in an active proactive funnel, route reply before the full
     // classifier/memory pipeline. This avoids funnel-state collisions.
-    if (channel === 'telegram') {
+    if (channel === 'telegram' && !lightweightOnboarding) {
       const funnelReply = await handleFunnelReply(channelUserId, userMessage).catch(err => {
         console.warn('[handler] Funnel reply handling failed, continuing normal pipeline:', safeError(err))
         return { handled: false as const }
@@ -564,7 +566,7 @@ export async function handleMessage(
     // ─── Step 4.6: Task orchestrator interception (Issue #64) ──────
     // If the user is in an active task workflow, route reply before the
     // classifier/memory pipeline. Supports multi-step actionable flows.
-    if (channel === 'telegram') {
+    if (channel === 'telegram' && !lightweightOnboarding) {
       const taskReply = await handleTaskReply(channelUserId, userMessage).catch(err => {
         console.warn('[handler] Task orchestrator reply handling failed, continuing normal pipeline:', safeError(err))
         return { handled: false as const } as const
@@ -575,21 +577,42 @@ export async function handleMessage(
     }
 
     // ─── Step 5: Classify message via 8B ──────────────────────────
-    const classification = await classifyMessage(
-      userMessage,
-      session.messages.slice(-4),
-      user.userId,
-      user.homeLocation ?? undefined,
-    )
+    const classification: Awaited<ReturnType<typeof classifyMessage>> = lightweightOnboarding
+      ? {
+        message_complexity: 'simple',
+        needs_tool: false,
+        tool_hint: null,
+        tool_args: {},
+        skip_memory: true,
+        skip_graph: true,
+        skip_cognitive: true,
+        userSignal: 'normal',
+        detected_topic: null,
+        interest_signal: 'neutral',
+        cognitiveState: {
+          internalMonologue: 'Onboarding step active. Keep response concise and advance exactly one onboarding step.',
+          emotionalState: 'curious',
+          conversationGoal: 'clarify',
+          relevantMemories: [],
+        },
+      }
+      : await classifyMessage(
+        userMessage,
+        session.messages.slice(-4),
+        user.userId,
+        user.homeLocation ?? undefined,
+      )
 
-    console.log('[handler] Classification:', {
-      complexity: classification.message_complexity,
-      needsTool: classification.needs_tool,
-      toolHint: classification.tool_hint,
-      skipMemory: classification.skip_memory,
-      skipGraph: classification.skip_graph,
-      skipCognitive: classification.skip_cognitive,
-    })
+    if (!lightweightOnboarding) {
+      console.log('[handler] Classification:', {
+        complexity: classification.message_complexity,
+        needsTool: classification.needs_tool,
+        toolHint: classification.tool_hint,
+        skipMemory: classification.skip_memory,
+        skipGraph: classification.skip_graph,
+        skipCognitive: classification.skip_cognitive,
+      })
+    }
 
     // ─── Rejection guard: clear parked tool + media context when user rejects ─
     // Catches cancellation phrases AND negative interest signals from the classifier.
@@ -630,7 +653,7 @@ export async function handleMessage(
 
     const isSimple = classification.message_complexity === 'simple'
 
-    if (!isSimple) {
+    if (!isSimple && !lightweightOnboarding) {
       // Pre-fetch active topics (cached, 30s TTL) so we can augment memory search
       activeTopics = await topicIntentService.getActiveTopics(user.userId, 3).catch(() => [] as TopicIntent[])
       topicStrategy = activeTopics.length > 0 ? (activeTopics[0].strategy ?? null) : null
@@ -684,7 +707,7 @@ export async function handleMessage(
       activeGoal = pipelineResults[3]
       agendaStack = pipelineResults[4]
       pulseEngagementState = pipelineResults[5] as 'PASSIVE' | 'CURIOUS' | 'ENGAGED' | 'PROACTIVE'
-    } else {
+    } else if (!lightweightOnboarding) {
       // Agenda is consulted on every message (Issue #67), including simple turns.
       agendaStack = await agendaPlanner.getStack(user.userId, session.sessionId).catch(() => [])
     }
@@ -703,199 +726,203 @@ export async function handleMessage(
       history: session.messages.slice(-6),
     }
 
-    let routeDecision = await brainHooks.routeMessage(routeContext)
-
-    if (onboardingActive) {
-      routeDecision = { useTool: false, toolName: null, toolParams: {} }
-    }
-
-    // ─── Step 7.1: Execution Bridge — override when 8B misses confirmatory intent ─
-    // When a topic is in 'executing' phase and the user sends a confirmatory message
-    // ("yeah check it", "sure", "go ahead"), the 8B classifier may not detect it as a
-    // tool request. We override routeDecision to fire the correct tool.
+    let routeDecision: RouteDecision = { useTool: false, toolName: null, toolParams: {} }
+    let toolResultStr: string | undefined
+    let toolRawData: unknown = null
+    let toolMediaDirective: ToolMediaDirective | null = null
     let executingTopic: TopicIntent | null = null
-    if (!routeDecision.useTool && activeTopics.length > 0) {
-      executingTopic = activeTopics.find(t => t.phase === 'executing') ?? null
-      if (executingTopic && isConfirmatoryMessage(userMessage)) {
-        const toolMapping = resolveToolFromTopic(executingTopic)
-        if (toolMapping) {
-          routeDecision = {
-            ...routeDecision,
-            useTool: true,
-            toolName: toolMapping.toolName,
-            toolParams: toolMapping.toolParams,
+    const isFirstMessage = session.messages.length === 0
+
+    if (!lightweightOnboarding) {
+      routeDecision = await brainHooks.routeMessage(routeContext)
+
+      if (onboardingActive) {
+        routeDecision = { useTool: false, toolName: null, toolParams: {} }
+      }
+
+      // ─── Step 7.1: Execution Bridge — override when 8B misses confirmatory intent ─
+      // When a topic is in 'executing' phase and the user sends a confirmatory message
+      // ("yeah check it", "sure", "go ahead"), the 8B classifier may not detect it as a
+      // tool request. We override routeDecision to fire the correct tool.
+      if (!routeDecision.useTool && activeTopics.length > 0) {
+        executingTopic = activeTopics.find(t => t.phase === 'executing') ?? null
+        if (executingTopic && isConfirmatoryMessage(userMessage)) {
+          const toolMapping = resolveToolFromTopic(executingTopic)
+          if (toolMapping) {
+            routeDecision = {
+              ...routeDecision,
+              useTool: true,
+              toolName: toolMapping.toolName,
+              toolParams: toolMapping.toolParams,
+            }
+            logExecutionBridge(user.userId, executingTopic.id, executingTopic.topic, toolMapping.toolName)
           }
-          logExecutionBridge(user.userId, executingTopic.id, executingTopic.topic, toolMapping.toolName)
         }
       }
-    }
 
-    // ─── Step 7.5: Location check — ask before running location-dependent tools ─
-    if (routeDecision.useTool && routeDecision.toolName &&
-      shouldRequestLocation(userMessage, user.homeLocation, routeDecision.toolName)) {
-      // Park the tool so we can execute it once the user shares their location
-      pendingToolStore.set(user.userId, {
-        toolName: routeDecision.toolName,
-        toolParams: routeDecision.toolParams,
-      })
-      return {
-        text: "📍 To find the best results near you, could you share your location? Tap the button below, or just type your area/neighbourhood name!",
-        requestLocation: true,
-      }
-    }
-
-    // ─── Step 7.55: Pulse gate — compare_prices_proactive only runs when ENGAGED+ ─
-    // Prevents the bot from pushing food comparisons at new/passive users.
-    if (routeDecision.useTool && routeDecision.toolName === 'compare_prices_proactive' &&
-      (pulseEngagementState === 'PASSIVE' || pulseEngagementState === 'CURIOUS')) {
-      routeDecision = { useTool: false, toolName: null, toolParams: {} }
-    }
-
-    // ─── Step 7.6: Confirmation gate for expensive scraping tools ─────────────
-    if (routeDecision.useTool && routeDecision.toolName &&
-      TOOLS_REQUIRING_CONFIRM.has(routeDecision.toolName) &&
-      !isConfirmatoryMessage(userMessage) &&
-      !isExplicitPlatformRequest(userMessage)) {
-      // Only gate if this is an ambiguous first-time request (not already a confirmation)
-      const pending = pendingToolStore.get(user.userId)
-      if (!pending || pending.toolName !== routeDecision.toolName) {
+      // ─── Step 7.5: Location check — ask before running location-dependent tools ─
+      if (routeDecision.useTool && routeDecision.toolName &&
+        shouldRequestLocation(userMessage, user.homeLocation, routeDecision.toolName)) {
+        // Park the tool so we can execute it once the user shares their location
         pendingToolStore.set(user.userId, {
           toolName: routeDecision.toolName,
           toolParams: routeDecision.toolParams,
         })
-        const toolLabel = routeDecision.toolName === 'compare_grocery_prices'
-          ? 'grocery prices on Blinkit, Instamart & Zepto'
-          : 'food prices on Swiggy & Zomato'
         return {
-          text: `Want me to check ${toolLabel}? It takes a few seconds — shall I go ahead?`,
+          text: "📍 To find the best results near you, could you share your location? Tap the button below, or just type your area/neighbourhood name!",
+          requestLocation: true,
         }
       }
-    }
 
-    // Clear any pending entry once the tool is about to run
-    if (routeDecision.useTool && routeDecision.toolName) {
-      pendingToolStore.delete(user.userId)
-    }
+      // ─── Step 7.55: Pulse gate — compare_prices_proactive only runs when ENGAGED+ ─
+      // Prevents the bot from pushing food comparisons at new/passive users.
+      if (routeDecision.useTool && routeDecision.toolName === 'compare_prices_proactive' &&
+        (pulseEngagementState === 'PASSIVE' || pulseEngagementState === 'CURIOUS')) {
+        routeDecision = { useTool: false, toolName: null, toolParams: {} }
+      }
 
-    // ─── Step 8: Execute tool pipeline if needed (Dev 1) ──────────
-    let toolResultStr: string | undefined
-    let toolRawData: unknown = null
-    let toolMediaDirective: ToolMediaDirective | null = null
-    if (routeDecision.useTool) {
-      const toolResult = await brainHooks.executeToolPipeline(routeDecision, routeContext)
-      if (toolResult?.success && toolResult.data) {
-        toolResultStr = toolResult.data
-        toolRawData = toolResult.raw
-        toolMediaDirective = toolResult.mediaDirective ?? null
+      // ─── Step 7.6: Confirmation gate for expensive scraping tools ─────────────
+      if (routeDecision.useTool && routeDecision.toolName &&
+        TOOLS_REQUIRING_CONFIRM.has(routeDecision.toolName) &&
+        !isConfirmatoryMessage(userMessage) &&
+        !isExplicitPlatformRequest(userMessage)) {
+        // Only gate if this is an ambiguous first-time request (not already a confirmation)
+        const pending = pendingToolStore.get(user.userId)
+        if (!pending || pending.toolName !== routeDecision.toolName) {
+          pendingToolStore.set(user.userId, {
+            toolName: routeDecision.toolName,
+            toolParams: routeDecision.toolParams,
+          })
+          const toolLabel = routeDecision.toolName === 'compare_grocery_prices'
+            ? 'grocery prices on Blinkit, Instamart & Zepto'
+            : 'food prices on Swiggy & Zomato'
+          return {
+            text: `Want me to check ${toolLabel}? It takes a few seconds — shall I go ahead?`,
+          }
+        }
+      }
+
+      // Clear any pending entry once the tool is about to run
+      if (routeDecision.useTool && routeDecision.toolName) {
+        pendingToolStore.delete(user.userId)
+      }
+
+      // ─── Step 8: Execute tool pipeline if needed (Dev 1) ──────────
+      if (routeDecision.useTool) {
+        const toolResult = await brainHooks.executeToolPipeline(routeDecision, routeContext)
+        if (toolResult?.success && toolResult.data) {
+          toolResultStr = toolResult.data
+          toolRawData = toolResult.raw
+          toolMediaDirective = toolResult.mediaDirective ?? null
+          if (routeDecision.toolName) {
+            rememberToolContext(
+              user.userId,
+              extractToolMediaContext(routeDecision.toolName, toolResult.raw),
+              toolMediaDirective,
+            )
+          }
+        }
+        // Register active flow so follow-up replies ("15th", "2 adults") get context
         if (routeDecision.toolName) {
+          const flow = toolToFlow(routeDecision.toolName)
+          setScene(user.userId, { flow, partialArgs: routeDecision.toolParams })
+        }
+      }
+
+      // Include additional context from router
+      if (routeDecision.additionalContext) {
+        toolResultStr = toolResultStr
+          ? `${toolResultStr}\n\n${routeDecision.additionalContext}`
+          : routeDecision.additionalContext
+      }
+
+      // ─── Step 8b: Compact proactive formatter (keeps token budget) ─
+      if (routeDecision.toolName === 'compare_prices_proactive' && toolRawData) {
+        toolResultStr = formatProactiveForPrompt(toolRawData)
+      }
+
+      // This turn-level signal is computed before Step 17 persists profile updates.
+      // At this point user.homeLocation is intentionally still stale from DB.
+      const locationCandidate = user.displayName && !user.homeLocation
+        ? extractLocationCandidate(userMessage)
+        : null
+      const onboardingJustCompleted = !!user.displayName && !user.homeLocation && !!locationCandidate
+      const isEarlyConversation = session.messages.length <= 6
+
+      // ─── Step 8c: Proactive offer hint after places search ─────────
+      if (!isRejection && routeDecision.toolName === 'search_places' && toolResultStr && !onboardingJustCompleted) {
+        toolResultStr += '\n\n[ARIA HINT: The user found places nearby. Naturally offer to check delivery prices on Swiggy or Zomato if they seem interested in food, or compare grocery apps if it is a grocery query. Keep it conversational — do not make it sound like an ad.]'
+
+        const toolLocation = typeof routeDecision.toolParams?.location === 'string'
+          ? routeDecision.toolParams.location
+          : (user.homeLocation ?? null)
+        toolResultStr += await buildSearchPlacesContextHint(brainHooks, toolLocation)
+      }
+
+      // ─── Step 8d: New user onboarding hint ────────────────────────
+      // On the very first message, nudge Aria to collect name + location
+      if (!onboardingActive && isFirstMessage && !user.displayName) {
+        const onboardingHint = '\n\n[ARIA HINT: This is the user\'s first message. Warmly greet them, ask their name, and gently mention you\'d love to know their city so you can give local food & travel recommendations. Keep it natural and friendly — one question at a time.]'
+        toolResultStr = toolResultStr ? toolResultStr + onboardingHint : onboardingHint
+      }
+
+      // ─── Step 8e: Onboarding completion → proactive city suggestion ───────────
+      // If user just provided their location (name already known), run a lightweight
+      // places query and force a specific opener instead of generic "what's on your mind?".
+      if (!onboardingActive && onboardingJustCompleted && isEarlyConversation && !routeDecision.useTool) {
+        const proactive = getProactiveSuggestionQuery(locationCandidate)
+        const proactiveLocation = proactive.location || locationCandidate || user.homeLocation || 'Bengaluru'
+        const weatherState = getWeatherState(proactiveLocation)
+        const trafficState = getTrafficState(proactiveLocation)
+        const preferDelivery = !!weatherState?.isRaining || trafficState?.severity === 'heavy'
+
+        const proactiveDecision: RouteDecision = preferDelivery
+          ? {
+            useTool: true,
+            toolName: 'compare_food_prices',
+            toolParams: {
+              query: weatherState?.isRaining ? 'comfort food delivery' : 'top delivery deals',
+              location: proactiveLocation,
+            },
+          }
+          : {
+            useTool: true,
+            toolName: 'search_places',
+            toolParams: {
+              query: proactive.query,
+              location: proactive.location,
+              openNow: proactive.openNow,
+            },
+          }
+
+        const proactiveResult = await brainHooks.executeToolPipeline(proactiveDecision, routeContext).catch(err => {
+          console.warn('[handler] Proactive onboarding tool call failed:', safeError(err))
+          return null
+        })
+
+        const proactiveHint =
+          `\n\n[ARIA HINT: Onboarding just completed. The user shared their area (${proactive.location}). ` +
+          `Current context: weather=${weatherState?.condition ?? 'unknown'}, traffic=${trafficState?.severity ?? 'unknown'}. ` +
+          `${preferDelivery ? 'Conditions are friction-heavy — prioritize delivery/indoor recommendations.' : 'Conditions are workable — suggest one specific nearby place.'} ` +
+          `Lead with ONE specific, opinionated suggestion grounded in current context (${proactive.moodTag}) and tool data. ` +
+          `Offer one concrete next action. Do NOT ask generic openers like "what are you in the mood for?" or "what's on your mind?"]`
+
+        if (proactiveResult?.success && proactiveResult.data) {
+          routeDecision = proactiveDecision
+          toolRawData = proactiveResult.raw
+          toolMediaDirective = proactiveResult.mediaDirective ?? null
           rememberToolContext(
             user.userId,
-            extractToolMediaContext(routeDecision.toolName, toolResult.raw),
+            extractToolMediaContext(proactiveDecision.toolName!, proactiveResult.raw),
             toolMediaDirective,
           )
+          toolResultStr = toolResultStr
+            ? `${toolResultStr}\n\n${proactiveResult.data}${proactiveHint}`
+            : `${proactiveResult.data}${proactiveHint}`
+        } else {
+          // Tool failure should still keep the proactive onboarding behavior.
+          toolResultStr = toolResultStr ? toolResultStr + proactiveHint : proactiveHint
         }
-      }
-      // Register active flow so follow-up replies ("15th", "2 adults") get context
-      if (routeDecision.toolName) {
-        const flow = toolToFlow(routeDecision.toolName)
-        setScene(user.userId, { flow, partialArgs: routeDecision.toolParams })
-      }
-    }
-
-    // Include additional context from router
-    if (routeDecision.additionalContext) {
-      toolResultStr = toolResultStr
-        ? `${toolResultStr}\n\n${routeDecision.additionalContext}`
-        : routeDecision.additionalContext
-    }
-
-    // ─── Step 8b: Compact proactive formatter (keeps token budget) ─
-    if (routeDecision.toolName === 'compare_prices_proactive' && toolRawData) {
-      toolResultStr = formatProactiveForPrompt(toolRawData)
-    }
-
-    // This turn-level signal is computed before Step 17 persists profile updates.
-    // At this point user.homeLocation is intentionally still stale from DB.
-    const locationCandidate = user.displayName && !user.homeLocation
-      ? extractLocationCandidate(userMessage)
-      : null
-    const onboardingJustCompleted = !!user.displayName && !user.homeLocation && !!locationCandidate
-    const isEarlyConversation = session.messages.length <= 6
-
-    // ─── Step 8c: Proactive offer hint after places search ─────────
-    if (!isRejection && routeDecision.toolName === 'search_places' && toolResultStr && !onboardingJustCompleted) {
-      toolResultStr += '\n\n[ARIA HINT: The user found places nearby. Naturally offer to check delivery prices on Swiggy or Zomato if they seem interested in food, or compare grocery apps if it is a grocery query. Keep it conversational — do not make it sound like an ad.]'
-
-      const toolLocation = typeof routeDecision.toolParams?.location === 'string'
-        ? routeDecision.toolParams.location
-        : (user.homeLocation ?? null)
-      toolResultStr += await buildSearchPlacesContextHint(brainHooks, toolLocation)
-    }
-
-    // ─── Step 8d: New user onboarding hint ────────────────────────
-    // On the very first message, nudge Aria to collect name + location
-    const isFirstMessage = session.messages.length === 0
-    if (!onboardingActive && isFirstMessage && !user.displayName) {
-      const onboardingHint = '\n\n[ARIA HINT: This is the user\'s first message. Warmly greet them, ask their name, and gently mention you\'d love to know their city so you can give local food & travel recommendations. Keep it natural and friendly — one question at a time.]'
-      toolResultStr = toolResultStr ? toolResultStr + onboardingHint : onboardingHint
-    }
-
-    // ─── Step 8e: Onboarding completion → proactive city suggestion ───────────
-    // If user just provided their location (name already known), run a lightweight
-    // places query and force a specific opener instead of generic "what's on your mind?".
-    if (!onboardingActive && onboardingJustCompleted && isEarlyConversation && !routeDecision.useTool) {
-      const proactive = getProactiveSuggestionQuery(locationCandidate)
-      const proactiveLocation = proactive.location || locationCandidate || user.homeLocation || 'Bengaluru'
-      const weatherState = getWeatherState(proactiveLocation)
-      const trafficState = getTrafficState(proactiveLocation)
-      const preferDelivery = !!weatherState?.isRaining || trafficState?.severity === 'heavy'
-
-      const proactiveDecision: RouteDecision = preferDelivery
-        ? {
-          useTool: true,
-          toolName: 'compare_food_prices',
-          toolParams: {
-            query: weatherState?.isRaining ? 'comfort food delivery' : 'top delivery deals',
-            location: proactiveLocation,
-          },
-        }
-        : {
-          useTool: true,
-          toolName: 'search_places',
-          toolParams: {
-            query: proactive.query,
-            location: proactive.location,
-            openNow: proactive.openNow,
-          },
-        }
-
-      const proactiveResult = await brainHooks.executeToolPipeline(proactiveDecision, routeContext).catch(err => {
-        console.warn('[handler] Proactive onboarding tool call failed:', safeError(err))
-        return null
-      })
-
-      const proactiveHint =
-        `\n\n[ARIA HINT: Onboarding just completed. The user shared their area (${proactive.location}). ` +
-        `Current context: weather=${weatherState?.condition ?? 'unknown'}, traffic=${trafficState?.severity ?? 'unknown'}. ` +
-        `${preferDelivery ? 'Conditions are friction-heavy — prioritize delivery/indoor recommendations.' : 'Conditions are workable — suggest one specific nearby place.'} ` +
-        `Lead with ONE specific, opinionated suggestion grounded in current context (${proactive.moodTag}) and tool data. ` +
-        `Offer one concrete next action. Do NOT ask generic openers like "what are you in the mood for?" or "what's on your mind?"]`
-
-      if (proactiveResult?.success && proactiveResult.data) {
-        routeDecision = proactiveDecision
-        toolRawData = proactiveResult.raw
-        toolMediaDirective = proactiveResult.mediaDirective ?? null
-        rememberToolContext(
-          user.userId,
-          extractToolMediaContext(proactiveDecision.toolName!, proactiveResult.raw),
-          toolMediaDirective,
-        )
-        toolResultStr = toolResultStr
-          ? `${toolResultStr}\n\n${proactiveResult.data}${proactiveHint}`
-          : `${proactiveResult.data}${proactiveHint}`
-      } else {
-        // Tool failure should still keep the proactive onboarding behavior.
-        toolResultStr = toolResultStr ? toolResultStr + proactiveHint : proactiveHint
       }
     }
 
