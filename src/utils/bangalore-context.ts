@@ -11,11 +11,11 @@ export interface ProactiveSuggestionQuery {
     moodTag: string
 }
 
-function getIstNow(now: Date = new Date()): Date {
+export function getIstNow(now: Date = new Date()): Date {
     return new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }))
 }
 
-function isBengaluru(location?: string | null): boolean {
+export function isBengaluru(location?: string | null): boolean {
     const v = (location ?? '').toLowerCase()
     return /bengaluru|bangalore|blr|koramangala|indiranagar|whitefield|hsr|jayanagar/.test(v)
 }
