@@ -59,7 +59,7 @@ const MAX_CAPTION_LENGTH = 1024              // Telegram limit
  */
 export async function downloadMedia(
     url: string,
-    source: 'instagram' | 'tiktok' | 'youtube'
+    source: 'instagram' | 'tiktok' | 'youtube' | 'places'
 ): Promise<DownloadedMedia | null> {
     try {
         const controller = new AbortController()

@@ -29,6 +29,7 @@ function isMapPreviewUrl(url: string): boolean {
 function pushPhotoUrl(target: string[], value: unknown): void {
     if (typeof value !== 'string') return
     const trimmed = value.trim()
+    if (!/^https?:\/\//i.test(trimmed)) return
     if (!trimmed || isMapPreviewUrl(trimmed)) return
     if (!target.includes(trimmed)) target.push(trimmed)
 }
@@ -41,6 +42,9 @@ function extractFromPlace(entry: any, placeNames: string[], photoUrls: string[])
     if (Array.isArray(entry?.photos)) {
         for (const p of entry.photos) {
             pushPhotoUrl(photoUrls, p?.url)
+            pushPhotoUrl(photoUrls, p?.photoUri)
+            pushPhotoUrl(photoUrls, p?.imageUri)
+            pushPhotoUrl(photoUrls, p?.name)
         }
     }
 }
@@ -112,7 +116,7 @@ export function extractToolMediaContext(toolName: string, rawData: unknown): Too
     ) {
         if (Array.isArray(data?.images)) {
             for (const img of data.images.slice(0, 8)) {
-                pushUnique(photoUrls, img?.url)
+                pushPhotoUrl(photoUrls, img?.url)
             }
         }
         if (Array.isArray(rootArray)) {

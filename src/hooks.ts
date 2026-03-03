@@ -23,6 +23,8 @@ export interface RouteContext {
     userId: string
     /** Person ID (cross-channel identity) */
     personId: string | null
+    /** User home location (if known) for location-aware routing/reflection */
+    homeLocation?: string
     /** Result from the 8B classifier */
     classification: ClassifierResult
     /** Retrieved memories (may be empty if skipped) */

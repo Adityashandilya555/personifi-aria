@@ -4,6 +4,7 @@ import { getBodyHooks } from '../hook-registry.js'
 import { reflectToolResult, buildSummaryForPrompt, buildFallbackMediaDirective } from './tool-reflection.js'
 import { getWeatherState } from '../weather/weather-stimulus.js'
 import { getTrafficState } from '../stimulus/traffic-stimulus.js'
+import { getFestivalState } from '../stimulus/festival-stimulus.js'
 
 export const brainHooks: BrainHooks = {
     async routeMessage(context: RouteContext): Promise<RouteDecision> {
@@ -48,11 +49,14 @@ export const brainHooks: BrainHooks = {
             let mediaDirective: ToolResult['mediaDirective'] | undefined
             if (result.success) {
                 formattedData = JSON.stringify(result.data, null, 2)
-                const weather = getWeatherState('Bengaluru')
-                const traffic = getTrafficState('Bengaluru')
+                const location = context.homeLocation?.trim() || 'Bengaluru'
+                const weather = getWeatherState(location)
+                const traffic = getTrafficState(location)
+                const festival = getFestivalState(location)
                 const environmentalHint = [
                     weather ? `weather ${weather.condition} ${weather.temperatureC}C${weather.isRaining ? ' raining' : ''}` : '',
                     traffic ? `traffic ${traffic.severity}${traffic.durationMinutes > 0 ? ` delay~${traffic.durationMinutes}m` : ''}` : '',
+                    festival?.active && festival.festival ? `festival ${festival.festival.name}` : '',
                 ].filter(Boolean).join(' | ')
 
                 const reflected = await reflectToolResult(

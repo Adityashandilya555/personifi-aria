@@ -59,6 +59,7 @@ import type { RouteContext, RouteDecision, ToolMediaDirective } from '../hooks.j
 import { getProactiveSuggestionQuery } from '../utils/bangalore-context.js'
 import { extractToolMediaContext, type ToolMediaContext } from '../media/tool-media-context.js'
 import { getWeatherState } from '../weather/weather-stimulus.js'
+import { getTrafficState } from '../stimulus/traffic-stimulus.js'
 
 // Location utilities
 import { shouldRequestLocation } from '../location.js'
@@ -78,7 +79,7 @@ import { createSquad, inviteToSquad, acceptSquadInvite, leaveSquad, getSquadsFor
 import { detectIntentCategory, recordIntentForUserSquads } from '../social/squad-intent.js'
 import { topicIntentService } from '../topic-intent/index.js'
 import type { TopicIntent } from '../topic-intent/types.js'
-import { handleOnboarding, needsOnboarding } from '../onboarding/onboarding-flow.js'
+import { handleOnboarding, type OnboardingResult } from '../onboarding/onboarding-flow.js'
 import { extractRejectionSignals, persistRejectionSignals, entityTypeToCategory } from '../intelligence/rejection-memory.js'
 import { resolveToolFromTopic } from '../topic-intent/tool-map.js'
 import { logExecutionBridge, logTopicCompleted } from '../topic-intent/logger.js'
@@ -149,6 +150,11 @@ export interface MessageResponse {
   requestLocation?: boolean
   /** Venue pins to drop as Telegram map markers (places, directions destinations). */
   venues?: { name: string; address: string; lat: number; lng: number }[]
+}
+
+export interface HandleMessageOptions {
+  bypassOnboarding?: boolean
+  onboardingResult?: OnboardingResult | null
 }
 
 // ─── Confirmation / Location Gate ────────────────────────────────────────────
@@ -479,7 +485,8 @@ function formatProactiveForPrompt(rawData: unknown): string {
 export async function handleMessage(
   channel: string,
   channelUserId: string,
-  rawMessage: string
+  rawMessage: string,
+  options: HandleMessageOptions = {},
 ): Promise<MessageResponse> {
   try {
     // ─── Step 0: Detect slash commands (before sanitization) ────
@@ -521,20 +528,16 @@ export async function handleMessage(
     }
 
     // ─── Step 2.5: Onboarding intercept (Issue #92) ──────────────
-    // New users must complete onboarding before entering the normal pipeline.
-    if (!user.authenticated) {
-      const onboardingResult = await handleOnboarding(user.userId, userMessage).catch(err => {
+    // New users must complete onboarding, but responses should still flow through
+    // the normal 70B + output-filter pipeline (no early return).
+    let onboardingResult: OnboardingResult | null = options.onboardingResult ?? null
+    if (!options.bypassOnboarding && !user.authenticated) {
+      onboardingResult = await handleOnboarding(user.userId, userMessage).catch(err => {
         console.warn('[handler] Onboarding handling failed:', safeError(err))
         return { handled: false as const }
       })
-      if (onboardingResult.handled) {
-        return {
-          text: onboardingResult.reply ?? "Hey! Let me set you up — what's your name?",
-          ...(onboardingResult.requestLocation ? { requestLocation: true } : {}),
-          ...(onboardingResult.buttons ? { _buttons: onboardingResult.buttons } : {}),
-        } as MessageResponse
-      }
     }
+    const onboardingActive = !!onboardingResult?.handled
 
     // ─── Step 3: Check rate limit ─────────────────────────────────
     const withinLimit = await checkRateLimit(user.userId)
@@ -575,7 +578,8 @@ export async function handleMessage(
     const classification = await classifyMessage(
       userMessage,
       session.messages.slice(-4),
-      user.userId
+      user.userId,
+      user.homeLocation ?? undefined,
     )
 
     console.log('[handler] Classification:', {
@@ -692,6 +696,7 @@ export async function handleMessage(
       channel,
       userId: user.userId,
       personId: user.personId || null,
+      homeLocation: user.homeLocation ?? undefined,
       classification,
       memories,
       graphContext,
@@ -699,6 +704,10 @@ export async function handleMessage(
     }
 
     let routeDecision = await brainHooks.routeMessage(routeContext)
+
+    if (onboardingActive) {
+      routeDecision = { useTool: false, toolName: null, toolParams: {} }
+    }
 
     // ─── Step 7.1: Execution Bridge — override when 8B misses confirmatory intent ─
     // When a topic is in 'executing' phase and the user sends a confirmatory message
@@ -826,7 +835,7 @@ export async function handleMessage(
     // ─── Step 8d: New user onboarding hint ────────────────────────
     // On the very first message, nudge Aria to collect name + location
     const isFirstMessage = session.messages.length === 0
-    if (isFirstMessage && !user.displayName) {
+    if (!onboardingActive && isFirstMessage && !user.displayName) {
       const onboardingHint = '\n\n[ARIA HINT: This is the user\'s first message. Warmly greet them, ask their name, and gently mention you\'d love to know their city so you can give local food & travel recommendations. Keep it natural and friendly — one question at a time.]'
       toolResultStr = toolResultStr ? toolResultStr + onboardingHint : onboardingHint
     }
@@ -834,17 +843,31 @@ export async function handleMessage(
     // ─── Step 8e: Onboarding completion → proactive city suggestion ───────────
     // If user just provided their location (name already known), run a lightweight
     // places query and force a specific opener instead of generic "what's on your mind?".
-    if (onboardingJustCompleted && isEarlyConversation && !routeDecision.useTool) {
+    if (!onboardingActive && onboardingJustCompleted && isEarlyConversation && !routeDecision.useTool) {
       const proactive = getProactiveSuggestionQuery(locationCandidate)
-      const proactiveDecision: RouteDecision = {
-        useTool: true,
-        toolName: 'search_places',
-        toolParams: {
-          query: proactive.query,
-          location: proactive.location,
-          openNow: proactive.openNow,
-        },
-      }
+      const proactiveLocation = proactive.location || locationCandidate || user.homeLocation || 'Bengaluru'
+      const weatherState = getWeatherState(proactiveLocation)
+      const trafficState = getTrafficState(proactiveLocation)
+      const preferDelivery = !!weatherState?.isRaining || trafficState?.severity === 'heavy'
+
+      const proactiveDecision: RouteDecision = preferDelivery
+        ? {
+          useTool: true,
+          toolName: 'compare_food_prices',
+          toolParams: {
+            query: weatherState?.isRaining ? 'comfort food delivery' : 'top delivery deals',
+            location: proactiveLocation,
+          },
+        }
+        : {
+          useTool: true,
+          toolName: 'search_places',
+          toolParams: {
+            query: proactive.query,
+            location: proactive.location,
+            openNow: proactive.openNow,
+          },
+        }
 
       const proactiveResult = await brainHooks.executeToolPipeline(proactiveDecision, routeContext).catch(err => {
         console.warn('[handler] Proactive onboarding tool call failed:', safeError(err))
@@ -853,6 +876,8 @@ export async function handleMessage(
 
       const proactiveHint =
         `\n\n[ARIA HINT: Onboarding just completed. The user shared their area (${proactive.location}). ` +
+        `Current context: weather=${weatherState?.condition ?? 'unknown'}, traffic=${trafficState?.severity ?? 'unknown'}. ` +
+        `${preferDelivery ? 'Conditions are friction-heavy — prioritize delivery/indoor recommendations.' : 'Conditions are workable — suggest one specific nearby place.'} ` +
         `Lead with ONE specific, opinionated suggestion grounded in current context (${proactive.moodTag}) and tool data. ` +
         `Offer one concrete next action. Do NOT ask generic openers like "what are you in the mood for?" or "what's on your mind?"]`
 
@@ -872,6 +897,19 @@ export async function handleMessage(
         // Tool failure should still keep the proactive onboarding behavior.
         toolResultStr = toolResultStr ? toolResultStr + proactiveHint : proactiveHint
       }
+    }
+
+    if (onboardingActive) {
+      const onboardingContext = onboardingResult?.onboardingContext
+        || onboardingResult?.reply
+        || "Continue onboarding naturally. Ask only the next required question."
+      const stepContext = onboardingResult?.stepCompleted
+        ? `Completed step: ${onboardingResult.stepCompleted}.`
+        : ''
+      const onboardingHint =
+        `\n\n[ARIA HINT: Onboarding is active. ${stepContext} ${onboardingContext} ` +
+        `Respond in your normal voice, keep it natural, and move exactly one onboarding step forward.]`
+      toolResultStr = toolResultStr ? `${toolResultStr}${onboardingHint}` : onboardingHint
     }
 
     // ─── Step 9: Compose dynamic system prompt ────────────────────
@@ -1201,6 +1239,8 @@ const venuePreviewMedia = !inlineMediaItem
         ? [inlineMediaItem]
         : (extractMediaFromToolResult(toolRawData) ?? fallbackMediaFromContext ?? venuePreviewMedia),
       venues,
+      ...(onboardingActive && onboardingResult?.requestLocation ? { requestLocation: true } : {}),
+      ...(onboardingActive && onboardingResult?.buttons ? { _buttons: onboardingResult.buttons } : {}),
     }
 
   } catch (error) {

@@ -50,9 +50,52 @@ function formatHours(openingHours?: any): string {
     return ''
 }
 
-/** Construct a Google Places photo media URL (returns a redirect to the image) */
-function buildPhotoUrl(photoName: string, apiKey: string, maxHeightPx = 400): string {
-    return `https://places.googleapis.com/v1/${photoName}/media?maxHeightPx=${maxHeightPx}&key=${apiKey}`
+/** Construct a Google Places photo metadata URL (returns JSON with photoUri) */
+function buildPhotoMetadataUrl(photoName: string, apiKey: string, maxHeightPx = 400): string {
+    return `https://places.googleapis.com/v1/${photoName}/media?maxHeightPx=${maxHeightPx}&skipHttpRedirect=true&key=${apiKey}`
+}
+
+/** Resolve a stable, direct photo URI for a place photo resource name. */
+async function resolvePhotoUri(photoName: string, apiKey: string): Promise<string | null> {
+    try {
+        const response = await fetch(buildPhotoMetadataUrl(photoName, apiKey), {
+            signal: AbortSignal.timeout(5000),
+        })
+        if (!response.ok) return null
+        const payload = await response.json() as { photoUri?: string }
+        if (typeof payload.photoUri === 'string' && payload.photoUri.length > 0) {
+            return payload.photoUri
+        }
+        return null
+    } catch {
+        return null
+    }
+}
+
+async function hydratePlaceImages(
+    places: any[],
+    apiKey: string,
+): Promise<Array<{ url: string; caption: string }>> {
+    const images: Array<{ url: string; caption: string }> = []
+    for (const place of places.slice(0, 5)) {
+        const name = place.displayName?.text || 'Unknown'
+        const rating = place.rating
+            ? `⭐ ${place.rating} (${(place.userRatingCount || 0).toLocaleString()} reviews)`
+            : 'No rating yet'
+        const photoName = place.photos?.[0]?.name
+        if (!photoName) continue
+
+        const resolvedPhotoUrl = await resolvePhotoUri(photoName, apiKey)
+        if (!resolvedPhotoUrl) continue
+
+        // Keep raw payload and media context extractors aligned.
+        place.photoUrl = resolvedPhotoUrl
+        images.push({
+            url: resolvedPhotoUrl,
+            caption: `📍 ${name} — ${rating}`,
+        })
+    }
+    return images
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────────
@@ -65,6 +108,7 @@ export async function searchPlaces(params: PlaceSearchParams): Promise<ToolExecu
     const { query, location, openNow = false, minRating = 0 } = params
     const normalizedQuery = query.toLowerCase().trim()
     const normalizedLocation = (location ?? 'bengaluru').toLowerCase().trim()
+    const apiKey = process.env.GOOGLE_PLACES_API_KEY || process.env.GOOGLE_MAPS_API_KEY
     const key = cacheKey('search_places', {
         query: normalizedQuery,
         location: normalizedLocation,
@@ -72,20 +116,30 @@ export async function searchPlaces(params: PlaceSearchParams): Promise<ToolExecu
         minRating: Number(minRating) || 0,
     })
 
-    const cached = cacheGet<ToolExecutionResult>(key)
-    if (cached) {
-        console.log(`[Places Tool] Cache hit for "${normalizedQuery}" @ "${normalizedLocation}"`)
-        return cached
-    }
-
-    const apiKey = process.env.GOOGLE_PLACES_API_KEY || process.env.GOOGLE_MAPS_API_KEY
-
     if (!apiKey) {
         return {
             success: false,
             data: null,
             error: 'Configuration error: Google API key is missing (set GOOGLE_PLACES_API_KEY or GOOGLE_MAPS_API_KEY).',
         }
+    }
+
+    const cached = cacheGet<ToolExecutionResult>(key)
+    if (cached) {
+        console.log(`[Places Tool] Cache hit for "${normalizedQuery}" @ "${normalizedLocation}"`)
+        const payload = cached.data as { formatted?: string; raw?: any[]; images?: Array<{ url: string; caption: string }> } | null
+        if (payload && typeof payload === 'object' && Array.isArray(payload.raw)) {
+            // Do not reuse cached photoUri values; re-resolve short-lived URLs per request.
+            const images = await hydratePlaceImages(payload.raw, apiKey)
+            return {
+                ...cached,
+                data: {
+                    ...payload,
+                    images,
+                },
+            }
+        }
+        return cached
     }
 
     // Refine query with location if provided as a name (not lat/lng)
@@ -174,11 +228,10 @@ export async function searchPlaces(params: PlaceSearchParams): Promise<ToolExecu
 
         // ── Build formatted output + photo URLs ─────────────────────
 
-        const images: { url: string; caption: string }[] = []
-
         const lines: string[] = [`📍 Top results for "${textQuery}":\n`]
 
-        data.places.forEach((place: any, i: number) => {
+        for (let i = 0; i < data.places.length; i++) {
+            const place = data.places[i]
             const name = place.displayName?.text || 'Unknown'
             const address = place.formattedAddress || ''
             const rating = place.rating
@@ -198,18 +251,9 @@ export async function searchPlaces(params: PlaceSearchParams): Promise<ToolExecu
 
             lines.push(parts.join('\n'))
 
-            // Extract first photo for Telegram media
-            if (place.photos && place.photos.length > 0) {
-                const photoName = place.photos[0].name
-                if (photoName) {
-                    images.push({
-                        url: buildPhotoUrl(photoName, apiKey),
-                        caption: `📍 ${name} — ${rating}`,
-                    })
-                }
-            }
-        })
+        }
 
+        const images = await hydratePlaceImages(data.places, apiKey)
         const formatted = lines.join('\n\n')
 
         const result: ToolExecutionResult = {
@@ -220,7 +264,14 @@ export async function searchPlaces(params: PlaceSearchParams): Promise<ToolExecu
                 images: images.slice(0, 5), // cap at 5 photos for Telegram
             },
         }
-        cacheSet(key, result, PLACES_CACHE_TTL)
+        cacheSet(key, {
+            ...result,
+            data: {
+                formatted,
+                raw: data.places,
+                images: [],
+            },
+        }, PLACES_CACHE_TTL)
         return result
 
     } catch (error: any) {

@@ -24,6 +24,10 @@ import { addFriend, resolveUserByPlatformId } from '../social/friend-graph.js'
 export interface OnboardingResult {
     handled: boolean
     reply?: string
+    /** Structured next-step guidance consumed by the normal 70B handler path. */
+    onboardingContext?: string
+    /** Optional marker for the step that just completed. */
+    stepCompleted?: string
     /** When true, channel layer should show Telegram location-share keyboard */
     requestLocation?: boolean
     /** Optional Telegram inline keyboard buttons */
@@ -73,6 +77,12 @@ function looksLikeLocationInput(message: string): boolean {
     if (/\b(bengaluru|bangalore|koramangala|indiranagar|whitefield|hsr|jayanagar|btm|hebbal|jp nagar)\b/i.test(msg)) return true
     if (msg.includes(',')) return true
     return false
+}
+
+function normalizeOnboardingMessage(message: string): string {
+    const trimmed = message.trim()
+    if (trimmed === '/start') return ''
+    return trimmed
 }
 
 const FOOD_PREF_BUTTONS = [
@@ -239,6 +249,7 @@ export async function handleOnboarding(
     message: string,
     callbackData?: string,
 ): Promise<OnboardingResult> {
+    const inboundMessage = normalizeOnboardingMessage(message)
     let state: Awaited<ReturnType<typeof getUserOnboardingState>>
 
     try {
@@ -253,21 +264,21 @@ export async function handleOnboarding(
 
     // ── Step: name ────────────────────────────────────────────────────────────
     if (currentStep === 'name') {
-        if (!message || message.trim().length < 1) {
+        if (!inboundMessage || inboundMessage.length < 1) {
             return { handled: true, reply: STEP_MESSAGES.name, requestLocation: true }
         }
 
         // Support location-first onboarding: if user shares area before name,
         // store it immediately and then ask only for their name.
-        if (!state.homeLocation && looksLikeLocationInput(message)) {
-            await saveUserCity(userId, message.trim())
+        if (!state.homeLocation && looksLikeLocationInput(inboundMessage)) {
+            await saveUserCity(userId, inboundMessage)
             return {
                 handled: true,
-                reply: `Perfect — got your location as ${message.trim()} 📍\n\nNow what should I call you?`,
+                reply: `Perfect — got your location as ${inboundMessage} 📍\n\nNow what should I call you?`,
             }
         }
 
-        const name = message.trim().split(/\s+/)[0] // take first word as name
+        const name = inboundMessage.split(/\s+/)[0] // take first word as name
         await saveUserName(userId, name)
 
         if (state.homeLocation) {
@@ -290,7 +301,7 @@ export async function handleOnboarding(
 
     // ── Step: city ────────────────────────────────────────────────────────────
     if (currentStep === 'city') {
-        if (!message || message.trim().length < 2) {
+        if (!inboundMessage || inboundMessage.length < 2) {
             return {
                 handled: true,
                 reply: STEP_MESSAGES.city.replace('{name}', state.displayName ?? 'there'),
@@ -298,7 +309,7 @@ export async function handleOnboarding(
             }
         }
 
-        await saveUserCity(userId, message.trim())
+        await saveUserCity(userId, inboundMessage)
         await advanceOnboardingStep(userId, 'prefs_1')
 
         return {
@@ -313,8 +324,8 @@ export async function handleOnboarding(
         if (callbackData) {
             const decoded = decodePrefCallback(callbackData)
             if (decoded) await saveUserPreference(userId, decoded.category, decoded.value)
-        } else if (message.trim().length > 1) {
-            await saveUserPreference(userId, 'dietary', message.trim())
+        } else if (inboundMessage.length > 1) {
+            await saveUserPreference(userId, 'dietary', inboundMessage)
         } else {
             return { handled: true, reply: STEP_MESSAGES.prefs_1, buttons: FOOD_PREF_BUTTONS }
         }
@@ -328,8 +339,8 @@ export async function handleOnboarding(
         if (callbackData) {
             const decoded = decodePrefCallback(callbackData)
             if (decoded) await saveUserPreference(userId, decoded.category, decoded.value)
-        } else if (message.trim().length > 1) {
-            await saveUserPreference(userId, 'budget', message.trim())
+        } else if (inboundMessage.length > 1) {
+            await saveUserPreference(userId, 'budget', inboundMessage)
         } else {
             return { handled: true, reply: STEP_MESSAGES.prefs_2, buttons: BUDGET_PREF_BUTTONS }
         }
@@ -343,8 +354,8 @@ export async function handleOnboarding(
         if (callbackData) {
             const decoded = decodePrefCallback(callbackData)
             if (decoded) await saveUserPreference(userId, decoded.category, decoded.value)
-        } else if (message.trim().length > 1) {
-            await saveUserPreference(userId, 'travel_style', message.trim())
+        } else if (inboundMessage.length > 1) {
+            await saveUserPreference(userId, 'travel_style', inboundMessage)
         } else {
             return { handled: true, reply: STEP_MESSAGES.prefs_3, buttons: TRAVEL_PREF_BUTTONS }
         }
@@ -409,8 +420,8 @@ export async function handleOnboarding(
         }
 
         // Handle text input (phone number or username)
-        if (message.trim().length > 2) {
-            const input = message.trim()
+        if (inboundMessage.length > 2) {
+            const input = inboundMessage
 
             // Try to resolve by username or phone
             let resolvedId: string | null = null

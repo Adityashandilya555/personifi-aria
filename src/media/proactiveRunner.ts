@@ -539,9 +539,29 @@ async function resolveUserHomeLocation(channelUserId: string): Promise<string> {
     }
 }
 
+async function resolveUserPreferenceSummary(channelUserId: string, limit = 5): Promise<string[]> {
+    try {
+        const { rows } = await getPool().query<{ category: string; value: string; confidence: number }>(
+            `SELECT p.category, p.value, p.confidence
+             FROM users u
+             JOIN user_preferences p ON p.user_id = u.user_id
+             WHERE u.channel = 'telegram' AND u.channel_user_id = $1
+             ORDER BY p.confidence DESC, p.mention_count DESC, p.updated_at DESC
+             LIMIT $2`,
+            [channelUserId, limit],
+        )
+        return rows
+            .map(r => `${r.category}:${r.value}`)
+            .filter(v => v.length > 0)
+    } catch {
+        return []
+    }
+}
+
 async function runProactiveForUser(userId: string, chatId: string): Promise<void> {
     const state = await getOrCreateState(userId, chatId)
     const homeLocation = await resolveUserHomeLocation(userId)
+    const preferenceSummary = await resolveUserPreferenceSummary(userId)
 
     // Smart adaptive gate check
     const gate = computeSmartGate(state)
@@ -602,10 +622,18 @@ async function runProactiveForUser(userId: string, chatId: string): Promise<void
 
     const time = getCurrentTimeIST()
     const forcedContentType = pickContentType()
+    const liveWeather = getWeatherState(homeLocation)
+    const liveTraffic = getTrafficState(homeLocation)
+    const liveFestival = getFestivalState(homeLocation)
 
     // Build context for proactive agent (TEXT ONLY — no URLs)
     const context = [
         `user_id: ${userId}`,
+        `home_location: ${homeLocation}`,
+        `preference_profile: ${preferenceSummary.join('; ') || 'none recorded'}`,
+        `live_weather: ${liveWeather ? `${liveWeather.condition}, ${liveWeather.temperatureC}C, raining=${liveWeather.isRaining}` : 'unknown'}`,
+        `live_traffic: ${liveTraffic ? `${liveTraffic.severity}${liveTraffic.durationMinutes > 0 ? ` delay~${liveTraffic.durationMinutes}m` : ''}` : 'unknown'}`,
+        `live_festival: ${liveFestival?.active && liveFestival.festival ? liveFestival.festival.name : 'none'}`,
         `current_time: ${time.formatted}`,
         `is_weekend: ${time.isWeekend}`,
         `last_sent_at: ${state.lastSentAt ? new Date(state.lastSentAt).toISOString() : 'never'}`,

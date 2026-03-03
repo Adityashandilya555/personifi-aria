@@ -26,6 +26,24 @@ export interface ChannelAdapter {
   sendMedia?: (chatId: string, media: MediaItem[]) => Promise<void>
 }
 
+function inferDownloadSource(url: string): 'instagram' | 'tiktok' | 'youtube' | 'places' {
+  const normalized = url.toLowerCase()
+  if (normalized.includes('tiktok')) return 'tiktok'
+  if (normalized.includes('youtube') || normalized.includes('youtu.be')) return 'youtube'
+  if (
+    normalized.includes('places.googleapis.com')
+    || normalized.includes('googleusercontent.com')
+    || normalized.includes('gstatic.com')
+  ) {
+    return 'places'
+  }
+  return 'instagram'
+}
+
+function isPlacesPhotoUrl(url: string): boolean {
+  return inferDownloadSource(url) === 'places'
+}
+
 // ============================================
 // Telegram Adapter
 // ============================================
@@ -98,7 +116,7 @@ export const telegramAdapter: ChannelAdapter = {
 
     if (media.length === 1 && media[0].type === 'video') {
       // Single video — download first (CDN URLs expire!), then multipart upload
-      const downloaded = await downloadMedia(media[0].url, 'instagram').catch(() => null)
+      const downloaded = await downloadMedia(media[0].url, inferDownloadSource(media[0].url)).catch(() => null)
       if (downloaded) {
         const result = await uploadVideoToTelegram(chatId, downloaded, media[0].caption || '', { supportsStreaming: true })
         if (result.success) return
@@ -133,11 +151,20 @@ export const telegramAdapter: ChannelAdapter = {
       }
     } else if (media.length === 1) {
       // Single photo — download first, then multipart upload
-      const downloaded = await downloadMedia(media[0].url, 'instagram').catch(() => null)
+      const source = inferDownloadSource(media[0].url)
+      const downloaded = await downloadMedia(media[0].url, source).catch(() => null)
       if (downloaded) {
         const result = await uploadPhotoToTelegram(chatId, downloaded, media[0].caption || '')
         if (result.success) return
         console.warn('[Telegram] sendMedia: multipart photo upload failed, trying URL-based fallback')
+      }
+      if (isPlacesPhotoUrl(media[0].url)) {
+        // Places image URLs should not fall back to URL-based Telegram send because
+        // redirect previews can degrade into static map thumbnails.
+        if (media[0].caption) {
+          await telegramAdapter.sendMessage(chatId, media[0].caption)
+        }
+        return
       }
       // Fallback: URL-based send
       const resp = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
@@ -158,10 +185,17 @@ export const telegramAdapter: ChannelAdapter = {
       // Multiple photos — try downloading each and uploading individually; fall back to URL-based sendMediaGroup
       let sentCount = 0
       for (const item of media.slice(0, 10)) {
-        const downloaded = await downloadMedia(item.url, 'instagram').catch(() => null)
+        const source = inferDownloadSource(item.url)
+        const downloaded = await downloadMedia(item.url, source).catch(() => null)
         if (downloaded) {
           const result = await uploadPhotoToTelegram(chatId, downloaded, item.caption || '')
           if (result.success) { sentCount++; continue }
+        }
+        if (isPlacesPhotoUrl(item.url)) {
+          if (item.caption) {
+            await telegramAdapter.sendMessage(chatId, item.caption)
+          }
+          continue
         }
         // Per-item fallback: URL-based photo send (check response to track success)
         const resp = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {

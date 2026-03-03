@@ -332,20 +332,6 @@ server.post('/webhook/telegram', async (request, reply) => {
   const chatId = parsedMessage.chatId
   const msgText = parsedMessage.text
 
-  // /start command — onboarding entry point
-  if (msgText === '/start') {
-    await tgFetch('sendMessage', {
-      chat_id: chatId,
-      text: "Hey! 👋 I'm Aria — before we begin, share your location so I can personalize food, traffic, weather, and places around you.",
-      reply_markup: {
-        keyboard: [[{ text: '📍 Share my location', request_location: true }]],
-        one_time_keyboard: true,
-        resize_keyboard: true,
-      },
-    })
-    return { ok: true }
-  }
-
   try {
     // Fire typing indicator immediately — before anything else runs
     sendChatAction(chatId, typingActionFor(msgText))
