@@ -117,10 +117,17 @@ STEP 1 — Call a tool if the user needs real-time data:
 - Air quality, pollution, AQI, smog → get_air_quality
 - Pollen, allergies, hay fever, outdoor allergy forecast → get_pollen
 - "What time is it in X", timezone, time difference → get_timezone
+- IMAGES/PHOTOS: "send me images", "show me photos", "pictures of X", "show me X" → search_places (ALWAYS use search_places for image/photo requests)
 - If it is raining now, prefer compare_food_prices for delivery-first outcomes.
 - If traffic is heavy, prefer compare_rides or nearby low-friction options.
 - If current conditions are poor (rain/heavy traffic), prefer tools that mitigate friction (e.g., compare_rides, search_places nearby, delivery comparisons)
 - If user suggests outdoor plans or asks about going outside, strongly consider get_air_quality or get_pollen to enrich recommendations
+
+Routing examples:
+  "show me photos of Burger King" → search_places({query: "Burger King"})
+  "send me images of cafes in Koramangala" → search_places({query: "cafes", location: "Koramangala"})
+  "send me few images" (follow-up) → search_places with the previous topic as query
+  "pictures of rooftop restaurants" → search_places({query: "rooftop restaurants"})
 
 STEP 2 — If NO tool needed, reply with ONLY this JSON (nothing else):
 {"c":"simple"} — greetings, farewells, yes/no, thanks, one-word replies

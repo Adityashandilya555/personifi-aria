@@ -25,6 +25,19 @@ const FORBIDDEN_OUTPUT_PATTERNS = [
   /how\s*to\s*(make|create|build)\s*(a\s*)?(bomb|weapon|drug)/gi,
 ]
 
+// Patterns that indicate the LLM is refusing to send images (it doesn't know the backend handles images)
+const IMAGE_REFUSAL_PATTERNS = [
+  /i('?m| am)\s*(a\s*)?text[- ]based\s*(ai\s*)?model/i,
+  /i\s*(can't|cannot|don't|do not|am not able to|'m unable to|am unable to)\s*(send|share|provide|generate|create|display|show)\s*(you\s*)?(any\s*)?(images?|photos?|pictures?|visuals?)/i,
+  /not\s*(capable|able)\s*of\s*sending\s*(images?|photos?|pictures?)/i,
+  /i\s*don'?t\s*have\s*(the\s*)?(capability|ability)\s*to\s*send\s*(images?|photos?|pictures?)/i,
+  /can\s*only\s*communicate\s*through\s*text/i,
+  /use\s*(text[- ]based|ASCII)\s*representations?/i,
+  /visit\s*(the|a)\s*\w+\s*website\s*(or\s*social\s*media)?\s*(pages?)?\s*to\s*view/i,
+  /search\s*for\s*images?\s*on\s*a\s*search\s*engine/i,
+  /use\s*a\s*stock\s*photo\s*website/i,
+]
+
 // Expected patterns for Aria (sanity check)
 const ARIA_VOICE_INDICATORS = [
   /\b(hey|awesome|love|great|cool|amazing|ooh|hmm)\b/i,
@@ -41,6 +54,18 @@ export interface OutputFilterResult {
  * Filter assistant output before sending to user
  */
 export function filterOutput(output: string): OutputFilterResult {
+  // 0. Check for image refusal patterns (LLM doesn't know backend sends photos)
+  for (const pattern of IMAGE_REFUSAL_PATTERNS) {
+    if (pattern.test(output)) {
+      return {
+        filtered: getImageFallbackResponse(),
+        wasFiltered: true,
+        reason: 'image_refusal_replaced',
+      }
+    }
+    pattern.lastIndex = 0
+  }
+
   // 1. Check for forbidden patterns
   for (const pattern of FORBIDDEN_OUTPUT_PATTERNS) {
     if (pattern.test(output)) {
@@ -95,6 +120,20 @@ function getFallbackResponse(): string {
     "Hmm, let me try that again! What were you looking for? 🌍",
     "Oops, got a bit tangled there! So where are we exploring today?",
     "Ha, my brain glitched for a sec! What can I help you find?",
+  ]
+  return fallbacks[Math.floor(Math.random() * fallbacks.length)]
+}
+
+/**
+ * Fallback response when image refusal is detected.
+ * The backend photo system will attach real images alongside this text.
+ */
+function getImageFallbackResponse(): string {
+  const fallbacks = [
+    "Here you go! 📸",
+    "Check these out da! 📸",
+    "Here are a few pics for you! 📸",
+    "Got some visuals for you — check it out! 📸",
   ]
   return fallbacks[Math.floor(Math.random() * fallbacks.length)]
 }

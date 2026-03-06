@@ -1117,7 +1117,8 @@ export async function handleMessage(
     const effectiveToolContext = activeToolContext ?? recentToolContext?.context ?? null
     const effectiveMediaDirective = toolMediaDirective ?? recentToolContext?.mediaDirective ?? null
     const hasStrongToolPhotos = !!(effectiveToolContext?.photoUrls?.length)
-    const mediaHint = (influenceStrategy?.mediaHint ?? false) || hasStrongToolPhotos
+    const userAsksForMedia = /\b(image|images|photo|photos|pic|pics|picture|pictures|show\s*me|send\s*me)\b/i.test(userMessage)
+    const mediaHint = (influenceStrategy?.mediaHint ?? false) || hasStrongToolPhotos || userAsksForMedia
     const weatherStimulus = getWeatherState()?.stimulus ?? null
 
     const tier2Messages: ChatMessage[] = messages.map(m => ({
