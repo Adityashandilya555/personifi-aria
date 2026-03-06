@@ -58,11 +58,14 @@ function normalize(
         return { formatted: result.error ?? 'No data returned.', raw: null }
     }
 
-    // Most tools return { formatted, raw } — use formatted directly
+    // Most tools return { formatted, raw, ... } — use formatted directly
+    // IMPORTANT: preserve the FULL data object as raw (not just d.raw)
+    // so that downstream consumers (e.g. extractMediaFromToolResult) can
+    // access images, imagesResolvedAt, etc.
     if (typeof data === 'object' && data !== null && 'formatted' in data) {
         const d = data as { formatted: string; raw: unknown }
         const formatted = normalizeFormatted(toolName, d.formatted)
-        return { formatted, raw: d.raw }
+        return { formatted, raw: data }
     }
 
     // String result
