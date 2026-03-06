@@ -1342,9 +1342,15 @@ export async function handleMessage(
       : undefined
 
     const toolExtractedMedia = extractMediaFromToolResult(routeDecision.toolName, toolRawData)
-    const resolvedMedia = inlineMediaItem
-      ? [inlineMediaItem]
-      : (toolExtractedMedia ?? fallbackMediaFromContext ?? venuePreviewMedia)
+    // Priority logic:
+    // 1. If user explicitly asks for media AND we have tool-extracted photos (Google Places), prioritize those.
+    // 2. Otherwise, if the influence strategy wants to serve a reel (inlineMediaItem), show that.
+    // 3. Fallback to tool media or context fallbacks.
+    const resolvedMedia = (userAsksForMedia && toolExtractedMedia)
+      ? toolExtractedMedia
+      : (inlineMediaItem
+        ? [inlineMediaItem]
+        : (toolExtractedMedia ?? fallbackMediaFromContext ?? venuePreviewMedia))
 
     // Diagnostic logging for media pipeline
     console.log(`[handler] Media pipeline: toolName=${routeDecision.toolName} | inlineMediaItem=${!!inlineMediaItem} | toolExtracted=${toolExtractedMedia?.length ?? 0} | fallbackFromCtx=${fallbackMediaFromContext?.length ?? 0} | venuePreview=${venuePreviewMedia?.length ?? 0} | final=${resolvedMedia?.length ?? 0}`)
