@@ -72,9 +72,19 @@ export async function handleCallbackAction(
       const user = await getOrCreateUser(channel, userId)
       const result = await handleOnboarding(user.userId, '', callbackData)
       if (result.handled) {
+        const generated = await handleMessage(
+          channel,
+          userId,
+          `[onboarding_callback] ${callbackData}`,
+          {
+            bypassOnboarding: true,
+            onboardingResult: result,
+            lightweightOnboarding: true,
+          },
+        )
         return {
-          text: result.reply ?? '',
-          choices: result.buttons?.flat().map(b => ({ label: b.text, action: b.callback_data })),
+          text: generated.text,
+          choices: (generated._buttons ?? result.buttons)?.flat().map(b => ({ label: b.text, action: b.callback_data })),
         }
       }
     } catch (err) {

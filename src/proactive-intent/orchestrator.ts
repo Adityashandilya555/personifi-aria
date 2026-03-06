@@ -2,7 +2,7 @@ import { getPool } from '../character/session-store.js'
 import { FUNNEL_BY_KEY, generateFunnelFromTopic } from './funnels.js'
 import { recordFunnelEvent } from './analytics.js'
 import { evaluateCallback, evaluateReply } from './funnel-state.js'
-import { loadIntentContext, selectFunnelForUser } from './intent-selector.js'
+import { loadIntentContext, selectFunnelForUserAsync } from './intent-selector.js'
 import { recordSignal } from '../topic-intent/index.js'
 import type {
   FunnelCallbackResult,
@@ -225,7 +225,7 @@ export async function tryStartIntentDrivenFunnel(
   const context = await loadIntentContext(platformUserId, chatId)
   if (!context) return { started: false, reason: 'user context unavailable' }
 
-  const selection = await selectFunnelForUser(context)
+  const selection = await selectFunnelForUserAsync(context)
   if (!selection) return { started: false, reason: `no eligible funnel for pulse=${context.pulseState}` }
 
   const pool = getPool()

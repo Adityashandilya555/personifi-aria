@@ -30,6 +30,8 @@ function pushPhotoUrl(target: string[], value: unknown): void {
     if (typeof value !== 'string') return
     const trimmed = value.trim()
     if (!trimmed || isMapPreviewUrl(trimmed)) return
+    // Only accept valid HTTP(S) URLs — skip resource names like "places/xxx/photos/yyy"
+    if (!/^https?:\/\//i.test(trimmed)) return
     if (!target.includes(trimmed)) target.push(trimmed)
 }
 
@@ -37,10 +39,13 @@ function extractFromPlace(entry: any, placeNames: string[], photoUrls: string[])
     pushUnique(placeNames, entry?.displayName?.text)
     pushUnique(placeNames, entry?.name)
     pushPhotoUrl(photoUrls, entry?.photoUrl)
+    pushPhotoUrl(photoUrls, entry?.photoUri)    // resolved via skipHttpRedirect
     pushPhotoUrl(photoUrls, entry?.imageUrl)
+    pushPhotoUrl(photoUrls, entry?.imageUri)    // resolved via skipHttpRedirect
     if (Array.isArray(entry?.photos)) {
         for (const p of entry.photos) {
             pushPhotoUrl(photoUrls, p?.url)
+            pushPhotoUrl(photoUrls, p?.photoUri)
         }
     }
 }

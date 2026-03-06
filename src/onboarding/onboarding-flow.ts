@@ -12,8 +12,8 @@
  *  5. done      — Mark onboarding_complete = TRUE, trigger squad invite if possible
  *
  * Returns OnboardingResult:
- *  { handled: true, reply: string }  → intercepted; send this reply back, skip normal pipeline
- *  { handled: false }                → onboarding complete or not active; normal pipeline continues
+ *  { handled: true, ... }  → onboarding is active; handler will route through normal 70B path with structured context
+ *  { handled: false }      → onboarding complete or not active; normal pipeline continues
  */
 
 import { getPool } from '../character/session-store.js'
@@ -24,6 +24,12 @@ import { addFriend, resolveUserByPlatformId } from '../social/friend-graph.js'
 export interface OnboardingResult {
     handled: boolean
     reply?: string
+    /** Structured next-step guidance consumed by the normal 70B handler path. */
+    onboardingContext?: string
+    /** Optional marker for the step that just completed. */
+    stepCompleted?: string
+    /** True when onboarding has just completed on this turn. */
+    onboardingCompleted?: boolean
     /** When true, channel layer should show Telegram location-share keyboard */
     requestLocation?: boolean
     /** Optional Telegram inline keyboard buttons */
@@ -33,6 +39,27 @@ export interface OnboardingResult {
 interface OnboardingState {
     step: 'name' | 'city' | 'prefs' | 'friends' | 'done'
     collectedPrefs: number // 0-3 questions answered
+}
+
+interface HandledOnboardingPayload {
+    reply: string
+    onboardingContext: string
+    stepCompleted?: string
+    onboardingCompleted?: boolean
+    requestLocation?: boolean
+    buttons?: Array<Array<{ text: string; callback_data: string }>>
+}
+
+function handledOnboarding(payload: HandledOnboardingPayload): OnboardingResult {
+    return {
+        handled: true,
+        reply: payload.reply,
+        onboardingContext: payload.onboardingContext,
+        ...(payload.stepCompleted ? { stepCompleted: payload.stepCompleted } : {}),
+        ...(payload.onboardingCompleted ? { onboardingCompleted: true } : {}),
+        ...(payload.requestLocation ? { requestLocation: true } : {}),
+        ...(payload.buttons ? { buttons: payload.buttons } : {}),
+    }
 }
 
 // ─── Step messages ────────────────────────────────────────────────────────────
@@ -73,6 +100,12 @@ function looksLikeLocationInput(message: string): boolean {
     if (/\b(bengaluru|bangalore|koramangala|indiranagar|whitefield|hsr|jayanagar|btm|hebbal|jp nagar)\b/i.test(msg)) return true
     if (msg.includes(',')) return true
     return false
+}
+
+function normalizeOnboardingMessage(message: string): string {
+    const trimmed = message.trim()
+    if (/^\/start(?:@\w+)?(?:\s+.*)?$/i.test(trimmed)) return ''
+    return trimmed
 }
 
 const FOOD_PREF_BUTTONS = [
@@ -239,6 +272,7 @@ export async function handleOnboarding(
     message: string,
     callbackData?: string,
 ): Promise<OnboardingResult> {
+    const inboundMessage = normalizeOnboardingMessage(message)
     let state: Awaited<ReturnType<typeof getUserOnboardingState>>
 
     try {
@@ -253,59 +287,67 @@ export async function handleOnboarding(
 
     // ── Step: name ────────────────────────────────────────────────────────────
     if (currentStep === 'name') {
-        if (!message || message.trim().length < 1) {
-            return { handled: true, reply: STEP_MESSAGES.name, requestLocation: true }
+        if (!inboundMessage || inboundMessage.length < 1) {
+            return handledOnboarding({
+                reply: STEP_MESSAGES.name,
+                requestLocation: true,
+                onboardingContext: 'Start onboarding. Ask for current Bengaluru area. Keep it short and wait for location/name input.',
+            })
         }
 
         // Support location-first onboarding: if user shares area before name,
         // store it immediately and then ask only for their name.
-        if (!state.homeLocation && looksLikeLocationInput(message)) {
-            await saveUserCity(userId, message.trim())
-            return {
-                handled: true,
-                reply: `Perfect — got your location as ${message.trim()} 📍\n\nNow what should I call you?`,
-            }
+        if (!state.homeLocation && looksLikeLocationInput(inboundMessage)) {
+            await saveUserCity(userId, inboundMessage)
+            return handledOnboarding({
+                reply: `Perfect — got your location as ${inboundMessage} 📍\n\nNow what should I call you?`,
+                stepCompleted: 'city',
+                onboardingContext: 'Location captured first. Ask only for name next.',
+            })
         }
 
-        const name = message.trim().split(/\s+/)[0] // take first word as name
+        const name = inboundMessage.split(/\s+/)[0] // take first word as name
         await saveUserName(userId, name)
 
         if (state.homeLocation) {
             await advanceOnboardingStep(userId, 'prefs_1')
-            return {
-                handled: true,
+            return handledOnboarding({
                 reply: STEP_MESSAGES.prefs_1,
                 buttons: FOOD_PREF_BUTTONS,
-            }
+                stepCompleted: 'name',
+                onboardingContext: 'Name captured. Ask food preference next and present food preference buttons.',
+            })
         }
 
         await advanceOnboardingStep(userId, 'city')
 
-        return {
-            handled: true,
+        return handledOnboarding({
             reply: STEP_MESSAGES.city.replace('{name}', name),
             requestLocation: true,
-        }
+            stepCompleted: 'name',
+            onboardingContext: 'Name captured. Ask for home area/location in Bengaluru before moving forward.',
+        })
     }
 
     // ── Step: city ────────────────────────────────────────────────────────────
     if (currentStep === 'city') {
-        if (!message || message.trim().length < 2) {
-            return {
-                handled: true,
+        if (!inboundMessage || inboundMessage.length < 2) {
+            return handledOnboarding({
                 reply: STEP_MESSAGES.city.replace('{name}', state.displayName ?? 'there'),
                 requestLocation: true,
-            }
+                onboardingContext: 'Still waiting for city/area input. Ask for Bengaluru area and keep the request specific.',
+            })
         }
 
-        await saveUserCity(userId, message.trim())
+        await saveUserCity(userId, inboundMessage)
         await advanceOnboardingStep(userId, 'prefs_1')
 
-        return {
-            handled: true,
+        return handledOnboarding({
             reply: STEP_MESSAGES.prefs_1,
             buttons: FOOD_PREF_BUTTONS,
-        }
+            stepCompleted: 'city',
+            onboardingContext: 'City captured. Ask food preference next with inline buttons.',
+        })
     }
 
     // ── Step: prefs_1 (food) ──────────────────────────────────────────────────
@@ -313,14 +355,23 @@ export async function handleOnboarding(
         if (callbackData) {
             const decoded = decodePrefCallback(callbackData)
             if (decoded) await saveUserPreference(userId, decoded.category, decoded.value)
-        } else if (message.trim().length > 1) {
-            await saveUserPreference(userId, 'dietary', message.trim())
+        } else if (inboundMessage.length > 1) {
+            await saveUserPreference(userId, 'dietary', inboundMessage)
         } else {
-            return { handled: true, reply: STEP_MESSAGES.prefs_1, buttons: FOOD_PREF_BUTTONS }
+            return handledOnboarding({
+                reply: STEP_MESSAGES.prefs_1,
+                buttons: FOOD_PREF_BUTTONS,
+                onboardingContext: 'Still collecting food preference. Ask only this question and keep the same buttons.',
+            })
         }
 
         await advanceOnboardingStep(userId, 'prefs_2')
-        return { handled: true, reply: STEP_MESSAGES.prefs_2, buttons: BUDGET_PREF_BUTTONS }
+        return handledOnboarding({
+            reply: STEP_MESSAGES.prefs_2,
+            buttons: BUDGET_PREF_BUTTONS,
+            stepCompleted: 'prefs_1',
+            onboardingContext: 'Food preference captured. Ask budget preference next with budget buttons.',
+        })
     }
 
     // ── Step: prefs_2 (budget) ────────────────────────────────────────────────
@@ -328,14 +379,23 @@ export async function handleOnboarding(
         if (callbackData) {
             const decoded = decodePrefCallback(callbackData)
             if (decoded) await saveUserPreference(userId, decoded.category, decoded.value)
-        } else if (message.trim().length > 1) {
-            await saveUserPreference(userId, 'budget', message.trim())
+        } else if (inboundMessage.length > 1) {
+            await saveUserPreference(userId, 'budget', inboundMessage)
         } else {
-            return { handled: true, reply: STEP_MESSAGES.prefs_2, buttons: BUDGET_PREF_BUTTONS }
+            return handledOnboarding({
+                reply: STEP_MESSAGES.prefs_2,
+                buttons: BUDGET_PREF_BUTTONS,
+                onboardingContext: 'Still collecting budget preference. Ask only this question and keep the same buttons.',
+            })
         }
 
         await advanceOnboardingStep(userId, 'prefs_3')
-        return { handled: true, reply: STEP_MESSAGES.prefs_3, buttons: TRAVEL_PREF_BUTTONS }
+        return handledOnboarding({
+            reply: STEP_MESSAGES.prefs_3,
+            buttons: TRAVEL_PREF_BUTTONS,
+            stepCompleted: 'prefs_2',
+            onboardingContext: 'Budget preference captured. Ask travel style next with travel-style buttons.',
+        })
     }
 
     // ── Step: prefs_3 (travel style) ─────────────────────────────────────────
@@ -343,10 +403,14 @@ export async function handleOnboarding(
         if (callbackData) {
             const decoded = decodePrefCallback(callbackData)
             if (decoded) await saveUserPreference(userId, decoded.category, decoded.value)
-        } else if (message.trim().length > 1) {
-            await saveUserPreference(userId, 'travel_style', message.trim())
+        } else if (inboundMessage.length > 1) {
+            await saveUserPreference(userId, 'travel_style', inboundMessage)
         } else {
-            return { handled: true, reply: STEP_MESSAGES.prefs_3, buttons: TRAVEL_PREF_BUTTONS }
+            return handledOnboarding({
+                reply: STEP_MESSAGES.prefs_3,
+                buttons: TRAVEL_PREF_BUTTONS,
+                onboardingContext: 'Still collecting travel style. Ask only this question and keep the same buttons.',
+            })
         }
 
         await advanceOnboardingStep(userId, 'friends')
@@ -370,11 +434,12 @@ export async function handleOnboarding(
 
         friendButtons.push([{ text: '⏭️ Skip for now', callback_data: 'onboarding_skip_friends' }])
 
-        return {
-            handled: true,
+        return handledOnboarding({
             reply: STEP_MESSAGES.friends.replace('{existing_friends_msg}', existingFriendsMsg),
             buttons: friendButtons,
-        }
+            stepCompleted: 'prefs_3',
+            onboardingContext: 'Travel style captured. Ask user to add at least one friend or skip using provided buttons.',
+        })
     }
 
     // ── Step: friends ─────────────────────────────────────────────────────────
@@ -388,13 +453,18 @@ export async function handleOnboarding(
             if (friendCount >= 1) {
                 await completeOnboarding(userId)
                 const name = state.displayName ?? 'there'
-                return { handled: true, reply: STEP_MESSAGES.done.replace('{name}', name) }
+                return handledOnboarding({
+                    reply: STEP_MESSAGES.done.replace('{name}', name),
+                    stepCompleted: 'friends',
+                    onboardingCompleted: true,
+                    onboardingContext: 'Onboarding completed. Congratulate the user and smoothly transition into normal conversation.',
+                })
             }
 
-            return {
-                handled: true,
+            return handledOnboarding({
                 reply: `${result.message}\n\nAdd one more or type a username/phone to continue.`,
-            }
+                onboardingContext: 'Friend add attempted but onboarding still in friends step. Ask for one valid friend or allow skip.',
+            })
         }
 
         // Handle skip
@@ -402,15 +472,17 @@ export async function handleOnboarding(
             // Allow skip but remind they can add friends later
             await completeOnboarding(userId)
             const name = state.displayName ?? 'there'
-            return {
-                handled: true,
+            return handledOnboarding({
                 reply: `${STEP_MESSAGES.done.replace('{name}', name)}\n\n_You can add friends anytime with /friend add @username_`,
-            }
+                stepCompleted: 'friends',
+                onboardingCompleted: true,
+                onboardingContext: 'Onboarding completed with friend-step skip. Transition naturally and mention they can add friends later.',
+            })
         }
 
         // Handle text input (phone number or username)
-        if (message.trim().length > 2) {
-            const input = message.trim()
+        if (inboundMessage.length > 2) {
+            const input = inboundMessage
 
             // Try to resolve by username or phone
             let resolvedId: string | null = null
@@ -436,21 +508,26 @@ export async function handleOnboarding(
                 if (friendCount >= 1) {
                     await completeOnboarding(userId)
                     const name = state.displayName ?? 'there'
-                    return { handled: true, reply: STEP_MESSAGES.done.replace('{name}', name) }
+                    return handledOnboarding({
+                        reply: STEP_MESSAGES.done.replace('{name}', name),
+                        stepCompleted: 'friends',
+                        onboardingCompleted: true,
+                        onboardingContext: 'Onboarding completed after friend resolution. Transition naturally into regular conversation.',
+                    })
                 }
             } else {
-                return {
-                    handled: true,
+                return handledOnboarding({
                     reply: `Hmm, couldn't find that user. Try their Telegram @username or tap one of the buttons above.`,
-                }
+                    onboardingContext: 'Friend lookup failed. Stay on friend step and ask for a valid username/phone or a button tap.',
+                })
             }
         }
 
         // No valid input
-        return {
-            handled: true,
+        return handledOnboarding({
             reply: `Need at least one friend to enable group features! Tap a name above or type a Telegram @username.`,
-        }
+            onboardingContext: 'Still in friend step. Ask for one friend using buttons or username input.',
+        })
     }
 
     return { handled: false }

@@ -10,6 +10,17 @@ interface PlaceSearchParams {
 }
 
 const PLACES_CACHE_TTL = 30 * 60 * 1000 // 30 minutes
+const PHOTO_URI_CACHE_TTL = 30 * 60 * 1000 // 30 minutes
+const PHOTO_URI_CACHE_MAX_SIZE = 2000
+const PHOTO_URI_CACHE_SWEEP_INTERVAL = 100
+
+type PlaceImage = { url: string; caption: string }
+type PlacesPayload = {
+    formatted?: string
+    raw?: any[]
+    images?: PlaceImage[]
+    imagesResolvedAt?: number
+} | null
 
 // ─── Defaults (Bengaluru) ───────────────────────────────────────────────────
 
@@ -50,9 +61,100 @@ function formatHours(openingHours?: any): string {
     return ''
 }
 
-/** Construct a Google Places photo media URL (returns a redirect to the image) */
-function buildPhotoUrl(photoName: string, apiKey: string, maxHeightPx = 400): string {
-    return `https://places.googleapis.com/v1/${photoName}/media?maxHeightPx=${maxHeightPx}&key=${apiKey}`
+// ─── Photo URI Resolution ───────────────────────────────────────────────────
+
+/** Construct a Google Places photo metadata URL (returns JSON with photoUri instead of redirect) */
+function buildPhotoMetadataUrl(photoName: string, apiKey: string, maxHeightPx = 400): string {
+    return `https://places.googleapis.com/v1/${photoName}/media?maxHeightPx=${maxHeightPx}&skipHttpRedirect=true&key=${apiKey}`
+}
+
+const photoUriCache = new Map<string, { uri: string; expiresAt: number }>()
+let photoUriCacheOps = 0
+
+function sweepPhotoUriCache(force = false): void {
+    photoUriCacheOps++
+    if (!force && photoUriCacheOps % PHOTO_URI_CACHE_SWEEP_INTERVAL !== 0 && photoUriCache.size <= PHOTO_URI_CACHE_MAX_SIZE) {
+        return
+    }
+
+    const now = Date.now()
+    for (const [name, entry] of photoUriCache.entries()) {
+        if (entry.expiresAt <= now) {
+            photoUriCache.delete(name)
+        }
+    }
+
+    while (photoUriCache.size > PHOTO_URI_CACHE_MAX_SIZE) {
+        const oldestKey = photoUriCache.keys().next().value as string | undefined
+        if (!oldestKey) break
+        photoUriCache.delete(oldestKey)
+    }
+}
+
+function getCachedPhotoUri(photoName: string): string | null {
+    sweepPhotoUriCache()
+    const cached = photoUriCache.get(photoName)
+    if (!cached) return null
+    if (cached.expiresAt <= Date.now()) {
+        photoUriCache.delete(photoName)
+        return null
+    }
+    return cached.uri
+}
+
+/** Resolve a stable, direct photo URI for a place photo resource name. */
+async function resolvePhotoUri(photoName: string, apiKey: string): Promise<string | null> {
+    const cachedUri = getCachedPhotoUri(photoName)
+    if (cachedUri) return cachedUri
+
+    try {
+        const response = await fetch(buildPhotoMetadataUrl(photoName, apiKey), {
+            signal: AbortSignal.timeout(5000),
+        })
+        if (!response.ok) return null
+        const payload = await response.json() as { photoUri?: string }
+        if (typeof payload.photoUri === 'string' && payload.photoUri.length > 0) {
+            photoUriCache.set(photoName, {
+                uri: payload.photoUri,
+                expiresAt: Date.now() + PHOTO_URI_CACHE_TTL,
+            })
+            sweepPhotoUriCache()
+            return payload.photoUri
+        }
+        return null
+    } catch {
+        return null
+    }
+}
+
+async function hydratePlaceImages(
+    places: any[],
+    apiKey: string,
+): Promise<PlaceImage[]> {
+    const results = await Promise.allSettled(places.slice(0, 5).map(async (place): Promise<PlaceImage | null> => {
+        const name = place.displayName?.text || 'Unknown'
+        const rating = place.rating
+            ? `⭐ ${place.rating} (${(place.userRatingCount || 0).toLocaleString()} reviews)`
+            : 'No rating yet'
+        const photoName = place.photos?.[0]?.name
+        if (!photoName) return null
+
+        const resolvedPhotoUrl = await resolvePhotoUri(photoName, apiKey)
+        if (!resolvedPhotoUrl) return null
+
+        return {
+            url: resolvedPhotoUrl,
+            caption: `📍 ${name} — ${rating}`,
+        }
+    }))
+
+    const images: PlaceImage[] = []
+    for (const result of results) {
+        if (result.status === 'fulfilled' && result.value) {
+            images.push(result.value)
+        }
+    }
+    return images
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────────
@@ -65,6 +167,7 @@ export async function searchPlaces(params: PlaceSearchParams): Promise<ToolExecu
     const { query, location, openNow = false, minRating = 0 } = params
     const normalizedQuery = query.toLowerCase().trim()
     const normalizedLocation = (location ?? 'bengaluru').toLowerCase().trim()
+    const apiKey = process.env.GOOGLE_PLACES_API_KEY || process.env.GOOGLE_MAPS_API_KEY
     const key = cacheKey('search_places', {
         query: normalizedQuery,
         location: normalizedLocation,
@@ -72,20 +175,47 @@ export async function searchPlaces(params: PlaceSearchParams): Promise<ToolExecu
         minRating: Number(minRating) || 0,
     })
 
-    const cached = cacheGet<ToolExecutionResult>(key)
-    if (cached) {
-        console.log(`[Places Tool] Cache hit for "${normalizedQuery}" @ "${normalizedLocation}"`)
-        return cached
-    }
-
-    const apiKey = process.env.GOOGLE_PLACES_API_KEY || process.env.GOOGLE_MAPS_API_KEY
-
     if (!apiKey) {
         return {
             success: false,
             data: null,
             error: 'Configuration error: Google API key is missing (set GOOGLE_PLACES_API_KEY or GOOGLE_MAPS_API_KEY).',
         }
+    }
+
+    const cached = cacheGet<ToolExecutionResult>(key)
+    if (cached) {
+        console.log(`[Places Tool] Cache hit for "${normalizedQuery}" @ "${normalizedLocation}"`)
+        const payload = cached.data as PlacesPayload
+        if (payload && typeof payload === 'object' && Array.isArray(payload.raw)) {
+            const hasFreshImages = Array.isArray(payload.images)
+                && payload.images.length > 0
+                && typeof payload.imagesResolvedAt === 'number'
+                && (Date.now() - payload.imagesResolvedAt) < PHOTO_URI_CACHE_TTL
+            if (hasFreshImages) {
+                return cached
+            }
+
+            // Re-hydrate images (photoUri may have expired)
+            const hydratedImages = await hydratePlaceImages(payload.raw, apiKey)
+            const fallbackImages = hydratedImages.length > 0
+                ? hydratedImages
+                : (Array.isArray(payload.images) ? payload.images : [])
+
+            const refreshedResult: ToolExecutionResult = {
+                ...cached,
+                data: {
+                    ...payload,
+                    images: fallbackImages,
+                    imagesResolvedAt: hydratedImages.length > 0
+                        ? Date.now()
+                        : (payload.imagesResolvedAt ?? Date.now()),
+                },
+            }
+            cacheSet(key, refreshedResult, PLACES_CACHE_TTL)
+            return refreshedResult
+        }
+        return cached
     }
 
     // Refine query with location if provided as a name (not lat/lng)
@@ -174,11 +304,10 @@ export async function searchPlaces(params: PlaceSearchParams): Promise<ToolExecu
 
         // ── Build formatted output + photo URLs ─────────────────────
 
-        const images: { url: string; caption: string }[] = []
-
         const lines: string[] = [`📍 Top results for "${textQuery}":\n`]
 
-        data.places.forEach((place: any, i: number) => {
+        for (let i = 0; i < data.places.length; i++) {
+            const place = data.places[i]
             const name = place.displayName?.text || 'Unknown'
             const address = place.formattedAddress || ''
             const rating = place.rating
@@ -197,19 +326,10 @@ export async function searchPlaces(params: PlaceSearchParams): Promise<ToolExecu
             if (extras.length > 0) parts.push(`   ${extras.join(' • ')}`)
 
             lines.push(parts.join('\n'))
+        }
 
-            // Extract first photo for Telegram media
-            if (place.photos && place.photos.length > 0) {
-                const photoName = place.photos[0].name
-                if (photoName) {
-                    images.push({
-                        url: buildPhotoUrl(photoName, apiKey),
-                        caption: `📍 ${name} — ${rating}`,
-                    })
-                }
-            }
-        })
-
+        // Resolve actual photo URIs server-side (no redirect URLs)
+        const images = await hydratePlaceImages(data.places, apiKey)
         const formatted = lines.join('\n\n')
 
         const result: ToolExecutionResult = {
@@ -218,6 +338,7 @@ export async function searchPlaces(params: PlaceSearchParams): Promise<ToolExecu
                 formatted,
                 raw: data.places,
                 images: images.slice(0, 5), // cap at 5 photos for Telegram
+                imagesResolvedAt: Date.now(),
             },
         }
         cacheSet(key, result, PLACES_CACHE_TTL)

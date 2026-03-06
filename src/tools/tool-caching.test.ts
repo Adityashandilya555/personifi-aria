@@ -79,18 +79,26 @@ describe('tool caching integration', () => {
   it('caches places responses using normalized query/location key', async () => {
     process.env.GOOGLE_PLACES_API_KEY = 'test-places'
 
-    const fetchMock = vi.fn(async () => mockJsonResponse({
-      places: [
-        {
-          displayName: { text: 'Cafe Coffee Day' },
-          formattedAddress: 'Koramangala, Bengaluru',
-          rating: 4.2,
-          userRatingCount: 1200,
-          priceLevel: 'PRICE_LEVEL_MODERATE',
-          photos: [{ name: 'places/abc/photos/1' }],
-        },
-      ],
-    }))
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url.includes('/media?')) {
+        return mockJsonResponse({
+          photoUri: 'https://lh3.googleusercontent.com/test-place-photo',
+        })
+      }
+      return mockJsonResponse({
+        places: [
+          {
+            displayName: { text: 'Cafe Coffee Day' },
+            formattedAddress: 'Koramangala, Bengaluru',
+            rating: 4.2,
+            userRatingCount: 1200,
+            priceLevel: 'PRICE_LEVEL_MODERATE',
+            photos: [{ name: 'places/abc/photos/1' }],
+          },
+        ],
+      })
+    })
     vi.stubGlobal('fetch', fetchMock)
 
     const first = await searchPlaces({ query: 'Coffee', location: 'Koramangala' })
@@ -98,7 +106,7 @@ describe('tool caching integration', () => {
 
     expect(first.success).toBe(true)
     expect(second.success).toBe(true)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it('caches currency responses with normalized amount and currency codes', async () => {

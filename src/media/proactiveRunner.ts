@@ -122,6 +122,8 @@ function pickContentType(): ContentPickType {
 const userStates = new Map<string, UserProactiveState>()
 const weatherStimulusSentAt = new Map<string, { stimulus: WeatherStimulusKind; ts: number }>()
 const WEATHER_STIMULUS_COOLDOWN_MS = 90 * 60 * 1000
+const INTERNAL_USER_ID_TTL_MS = 30 * 60 * 1000
+const internalUserIdCache = new Map<string, { userId: string; expiresAt: number }>()
 
 /**
  * Load proactive state for a user from DB.
@@ -374,7 +376,9 @@ async function trySendWeatherStimulus(
     state: UserProactiveState,
     location: string,
 ): Promise<boolean> {
-    await refreshWeatherState(location).catch(() => null)
+    if (typeof refreshWeatherState === 'function') {
+        await refreshWeatherState(location).catch(() => null)
+    }
     const weather = getWeatherState(location)
     if (!weather?.stimulus) return false
 
@@ -438,7 +442,9 @@ async function trySendTrafficStimulus(
     state: UserProactiveState,
     location: string,
 ): Promise<boolean> {
-    await refreshTrafficState(location).catch(() => null)
+    if (typeof refreshTrafficState === 'function') {
+        await refreshTrafficState(location).catch(() => null)
+    }
     const traffic = getTrafficState(location)
     if (!traffic?.stimulus || traffic.stimulus === 'CLEAR_TRAFFIC') return false
 
@@ -484,7 +490,9 @@ async function trySendFestivalStimulus(
     state: UserProactiveState,
     location: string,
 ): Promise<boolean> {
-    await refreshFestivalState(location).catch(() => null)
+    if (typeof refreshFestivalState === 'function') {
+        await refreshFestivalState(location).catch(() => null)
+    }
     const festival = getFestivalState(location)
     if (!festival?.active || !festival.festival) return false
 
@@ -530,7 +538,11 @@ async function resolveUserHomeLocation(channelUserId: string): Promise<string> {
 
     try {
         const { rows } = await getPool().query<{ home_location: string | null }>(
-            `SELECT home_location FROM users WHERE channel = 'telegram' AND channel_user_id = $1 LIMIT 1`,
+            `SELECT home_location
+             FROM users
+             WHERE channel_user_id = $1
+             ORDER BY CASE WHEN channel = 'telegram' THEN 0 ELSE 1 END, updated_at DESC
+             LIMIT 1`,
             [channelUserId],
         )
         return (rows[0]?.home_location ?? '').trim() || 'Bengaluru'
@@ -539,9 +551,61 @@ async function resolveUserHomeLocation(channelUserId: string): Promise<string> {
     }
 }
 
+async function resolveUserPreferenceSummary(channelUserId: string, limit = 5): Promise<string[]> {
+    try {
+        const { rows } = await getPool().query<{ category: string; value: string; confidence: number }>(
+            `SELECT p.category, p.value, p.confidence
+             FROM users u
+             JOIN user_preferences p ON p.user_id = u.user_id
+             WHERE u.channel_user_id = $1
+             ORDER BY CASE WHEN u.channel = 'telegram' THEN 0 ELSE 1 END,
+                      p.confidence DESC, p.mention_count DESC, p.updated_at DESC
+             LIMIT $2`,
+            [channelUserId, limit],
+        )
+        return rows
+            .map(r => `${r.category}:${r.value}`)
+            .filter(v => v.length > 0)
+    } catch {
+        return []
+    }
+}
+
+async function resolveInternalUserId(channelUserId: string): Promise<string | null> {
+    const cached = internalUserIdCache.get(channelUserId)
+    if (cached && cached.expiresAt > Date.now()) {
+        return cached.userId
+    }
+
+    try {
+        const { rows } = await getPool().query<{ user_id: string }>(
+            `SELECT user_id
+             FROM users
+             WHERE channel_user_id = $1
+             ORDER BY CASE WHEN channel = 'telegram' THEN 0 ELSE 1 END, updated_at DESC
+             LIMIT 1`,
+            [channelUserId],
+        )
+        const resolved = rows[0]?.user_id ?? null
+        if (resolved) {
+            internalUserIdCache.set(channelUserId, {
+                userId: resolved,
+                expiresAt: Date.now() + INTERNAL_USER_ID_TTL_MS,
+            })
+        } else {
+            internalUserIdCache.delete(channelUserId)
+        }
+        return resolved
+    } catch {
+        internalUserIdCache.delete(channelUserId)
+        return null
+    }
+}
+
 async function runProactiveForUser(userId: string, chatId: string): Promise<void> {
     const state = await getOrCreateState(userId, chatId)
     const homeLocation = await resolveUserHomeLocation(userId)
+    const preferenceSummary = await resolveUserPreferenceSummary(userId)
 
     // Smart adaptive gate check
     const gate = computeSmartGate(state)
@@ -602,10 +666,18 @@ async function runProactiveForUser(userId: string, chatId: string): Promise<void
 
     const time = getCurrentTimeIST()
     const forcedContentType = pickContentType()
+    const liveWeather = getWeatherState(homeLocation)
+    const liveTraffic = getTrafficState(homeLocation)
+    const liveFestival = getFestivalState(homeLocation)
 
     // Build context for proactive agent (TEXT ONLY — no URLs)
     const context = [
         `user_id: ${userId}`,
+        `home_location: ${homeLocation}`,
+        `preference_profile: ${preferenceSummary.join('; ') || 'none recorded'}`,
+        `live_weather: ${liveWeather ? `${liveWeather.condition}, ${liveWeather.temperatureC}C, raining=${liveWeather.isRaining}` : 'unknown'}`,
+        `live_traffic: ${liveTraffic ? `${liveTraffic.severity}${liveTraffic.durationMinutes > 0 ? ` delay~${liveTraffic.durationMinutes}m` : ''}` : 'unknown'}`,
+        `live_festival: ${liveFestival?.active && liveFestival.festival ? liveFestival.festival.name : 'none'}`,
         `current_time: ${time.formatted}`,
         `is_weekend: ${time.isWeekend}`,
         `last_sent_at: ${state.lastSentAt ? new Date(state.lastSentAt).toISOString() : 'never'}`,
@@ -810,12 +882,13 @@ async function updateStateAfterSend(
 
     saveStateToDB(state)
 
+    const internalUserId = await resolveInternalUserId(userId)
+    if (!internalUserId) return
+
     getPool().query(
         `INSERT INTO proactive_messages (user_id, message_type, sent_at, category, hashtag)
-         SELECT u.user_id, 'proactive_content', NOW(), $2, $3
-         FROM users u
-         WHERE u.channel = 'telegram' AND u.channel_user_id = $1`,
-        [userId, category, hashtag]
+         VALUES ($1, 'proactive_content', NOW(), $2, $3)`,
+        [internalUserId, category, hashtag]
     ).catch(() => { })
 }
 

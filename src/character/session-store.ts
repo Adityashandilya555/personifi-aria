@@ -486,6 +486,21 @@ export async function trimSessionHistory(
   }
 }
 
+/**
+ * Clear stored message history for a session.
+ * Useful after deterministic onboarding flows to avoid polluting normal chat context.
+ */
+export async function clearSessionMessages(sessionId: string): Promise<void> {
+  const db = getPool()
+  await db.query(
+    `UPDATE sessions
+     SET messages = '[]'::jsonb,
+         last_active = NOW()
+     WHERE session_id = $1`,
+    [sessionId]
+  )
+}
+
 // Rate Limiting
 
 const RATE_LIMIT_WINDOW_MS = 60000 // 1 minute

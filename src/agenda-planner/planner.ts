@@ -263,10 +263,14 @@ export class AgendaPlannerService {
     const promotedGoalIds: number[] = []
 
     await this.withSessionLock(input.userId, input.sessionId, async client => {
-      const staleAbandoned = await this.abandonStaleGoals(client, input.userId, input.sessionId, now)
-      if (staleAbandoned.length > 0) {
-        actions.push(`abandoned_stale:${staleAbandoned.length}`)
-        abandonedGoalIds.push(...staleAbandoned)
+      // Avoid stale cleanup during active user turns so fresh intents can
+      // complete existing goals before archival logic runs.
+      if (message.length === 0) {
+        const staleAbandoned = await this.abandonStaleGoals(client, input.userId, input.sessionId, now)
+        if (staleAbandoned.length > 0) {
+          actions.push(`abandoned_stale:${staleAbandoned.length}`)
+          abandonedGoalIds.push(...staleAbandoned)
+        }
       }
 
       if (!input.displayName || !input.homeLocation) {
@@ -753,4 +757,3 @@ export class AgendaPlannerService {
 }
 
 export const agendaPlanner = new AgendaPlannerService()
-

@@ -29,6 +29,7 @@ import { buildSceneHint } from './character/scene-manager.js'
 import { withGroqRetry } from './utils/retry.js'
 import { getWeatherState } from './weather/weather-stimulus.js'
 import { getTrafficState } from './stimulus/traffic-stimulus.js'
+import { getFestivalState } from './stimulus/festival-stimulus.js'
 
 // ─── Type Coercion Helper ───────────────────────────────────────────────────
 // Groq 8B sometimes emits numbers as strings (e.g. "amount": "100").
@@ -74,12 +75,14 @@ const COGNITIVE_MODEL = 'llama-3.1-8b-instant'
 // Built as a function so we can inject today's date dynamically on every call.
 // This lets the 8B model resolve relative dates ("next Friday") → YYYY-MM-DD.
 
-function buildClassifierPrompt(): string {
+function buildClassifierPrompt(location?: string): string {
     const now = new Date()
     const today = now.toISOString().split('T')[0]
     const dayName = now.toLocaleDateString('en-US', { weekday: 'long' })
-    const weather = getWeatherState('Bengaluru')
-    const traffic = getTrafficState('Bengaluru')
+    const city = (location ?? 'Bengaluru').trim() || 'Bengaluru'
+    const weather = getWeatherState(city)
+    const traffic = getTrafficState(city)
+    const festival = getFestivalState(city)
     const contextHints: string[] = []
 
     if (weather) {
@@ -88,10 +91,13 @@ function buildClassifierPrompt(): string {
     if (traffic) {
         contextHints.push(`traffic=${traffic.severity}${traffic.durationMinutes > 0 ? `, delay~${traffic.durationMinutes}m` : ''}`)
     }
+    if (festival?.active && festival.festival) {
+        contextHints.push(`festival=${festival.festival.name}`)
+    }
 
     const contextLine = contextHints.length > 0
-        ? `Current city conditions: ${contextHints.join(' | ')}.`
-        : 'Current city conditions: unavailable.'
+        ? `Current city conditions for ${city}: ${contextHints.join(' | ')}.`
+        : `Current city conditions for ${city}: unavailable.`
 
     return `You are a travel and food chatbot message router for Aria, an AI travel companion.
 Today is ${today} (${dayName}). Always convert relative dates ("next Friday", "tomorrow", "in 3 days") to YYYY-MM-DD format when calling tools.
@@ -111,6 +117,8 @@ STEP 1 — Call a tool if the user needs real-time data:
 - Air quality, pollution, AQI, smog → get_air_quality
 - Pollen, allergies, hay fever, outdoor allergy forecast → get_pollen
 - "What time is it in X", timezone, time difference → get_timezone
+- If it is raining now, prefer compare_food_prices for delivery-first outcomes.
+- If traffic is heavy, prefer compare_rides or nearby low-friction options.
 - If current conditions are poor (rain/heavy traffic), prefer tools that mitigate friction (e.g., compare_rides, search_places nearby, delivery comparisons)
 - If user suggests outdoor plans or asks about going outside, strongly consider get_air_quality or get_pollen to enrich recommendations
 
@@ -153,7 +161,8 @@ signal = user's interest toward that topic: positive|negative|neutral|committed 
 export async function classifyMessage(
     userMessage: string,
     history: Array<{ role: string; content: string }>,
-    userId?: string
+    userId?: string,
+    location?: string,
 ): Promise<ClassifierResult> {
     const client = getGroq()
 
@@ -175,7 +184,7 @@ export async function classifyMessage(
             () => client.chat.completions.create({
                 model: COGNITIVE_MODEL,
                 messages: [
-                    { role: 'system', content: buildClassifierPrompt() },
+                    { role: 'system', content: buildClassifierPrompt(location) },
                     {
                         role: 'user',
                         content: [

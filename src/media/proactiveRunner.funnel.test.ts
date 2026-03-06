@@ -10,6 +10,7 @@ const {
   sendMediaViaPipelineMock,
   sendProactiveContentMock,
   getWeatherStateMock,
+  refreshWeatherStateMock,
   contentCategory,
 } = vi.hoisted(() => ({
   tryStartIntentDrivenFunnelMock: vi.fn(),
@@ -21,6 +22,7 @@ const {
   sendMediaViaPipelineMock: vi.fn(),
   sendProactiveContentMock: vi.fn(),
   getWeatherStateMock: vi.fn(),
+  refreshWeatherStateMock: vi.fn(async () => undefined),
   contentCategory: {
     FOOD_DISCOVERY: 'FOOD_DISCOVERY',
     FOOD_PRICE_DEALS: 'FOOD_PRICE_DEALS',
@@ -81,6 +83,7 @@ vi.mock('../tools/scrapers/retry.js', () => ({
 
 vi.mock('../weather/weather-stimulus.js', () => ({
   getWeatherState: getWeatherStateMock,
+  refreshWeatherState: refreshWeatherStateMock,
 }))
 
 import { registerProactiveUser, runProactiveForAllUsers } from './proactiveRunner.js'

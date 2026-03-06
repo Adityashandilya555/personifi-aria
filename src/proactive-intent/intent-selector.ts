@@ -1,6 +1,6 @@
 import { getPool } from '../character/session-store.js'
-import { generateFunnelFromTopic } from './funnels.js'
-import { pulseStateMeetsMinimum } from './funnel-state.js'
+import { FUNNEL_DEFINITIONS, generateFunnelFromTopic } from './funnels.js'
+import { pulseStateMeetsMinimum, scoreKeywordOverlap } from './funnel-state.js'
 import type { FunnelDefinition, IntentContext, PulseState } from './types.js'
 import type { TopicIntent, TopicPhase } from '../topic-intent/types.js'
 
@@ -168,25 +168,62 @@ export async function loadIntentContext(
   }
 }
 
-/**
- * Select the best funnel for a user by querying warm topics from topic_intents
- * and generating a deterministic FunnelDefinition from the highest-confidence topic.
- *
- * Replaces the previous static FUNNEL_DEFINITIONS iteration.
- * Only returns a funnel if:
- *   - User pulse state is at least ENGAGED
- *   - Warm topics exist (confidence >= 40%, probing/shifting, inactive 4h+)
- *   - No recent funnel for this topic (cooldown check)
- */
-export async function selectFunnelForUser(context: IntentContext): Promise<SelectedFunnel | null> {
+function selectFallbackFunnel(context: IntentContext): SelectedFunnel | null {
   // Gate: require at least ENGAGED pulse state for proactive outreach
   if (!pulseStateMeetsMinimum(context.pulseState, 'ENGAGED')) {
     return null
   }
 
-  // Query warm topics for this user from DB
+  const scored: SelectedFunnel[] = []
+  for (const funnel of FUNNEL_DEFINITIONS) {
+    const inCooldown = context.recentFunnels.some(entry => {
+      if (entry.key !== funnel.key) return false
+      const startedAt = parseDate(entry.startedAt)
+      if (!startedAt) return false
+      return context.now.getTime() - startedAt.getTime() < funnel.cooldownMinutes * 60 * 1000
+    })
+    if (inCooldown) continue
+
+    const pulseBonus = context.pulseState === 'PROACTIVE' ? 24 : 14
+    const preferenceScore = scoreKeywordOverlap(context.preferences, funnel.preferenceKeywords) * 6
+    const goalScore = scoreKeywordOverlap(context.activeGoals, funnel.goalKeywords) * 7
+    const defaultBias = funnel.key === 'weekend_food_plan' ? 3 : 0
+    const score = 10 + pulseBonus + preferenceScore + goalScore + defaultBias
+
+    scored.push({
+      funnel,
+      score,
+      reason: `fallback pulse=${pulseBonus} pref=${preferenceScore} goals=${goalScore} bias=${defaultBias}`,
+    })
+  }
+
+  scored.sort((a, b) => b.score - a.score)
+  return scored[0] ?? null
+}
+
+/**
+ * Backward-compatible synchronous selector used by tests and static callers.
+ * Uses deterministic keyword scoring against static fallback funnels.
+ */
+export function selectFunnelForUser(context: IntentContext): SelectedFunnel | null {
+  return selectFallbackFunnel(context)
+}
+
+/**
+ * Async selector used by orchestrator runtime:
+ * 1) Try topic-driven warm intents from DB.
+ * 2) Fall back to static deterministic funnels when topics are unavailable.
+ */
+export async function selectFunnelForUserAsync(context: IntentContext): Promise<SelectedFunnel | null> {
+  const fallbackSelection = selectFallbackFunnel(context)
+  if (!pulseStateMeetsMinimum(context.pulseState, 'ENGAGED')) {
+    return null
+  }
+
   const pool = getPool()
-  let warmTopics: WarmTopicRow[]
+  const scored: SelectedFunnel[] = []
+  let warmTopics: WarmTopicRow[] = []
+
   try {
     const result = await pool.query<WarmTopicRow>(
       `SELECT *
@@ -202,13 +239,12 @@ export async function selectFunnelForUser(context: IntentContext): Promise<Selec
     warmTopics = result.rows
   } catch (err) {
     console.warn('[IntentSelector] Warm topic query failed:', (err as Error).message)
-    return null
+    return fallbackSelection
   }
 
-  if (warmTopics.length === 0) return null
-
-  // Score and pick the best topic
-  const scored: SelectedFunnel[] = []
+  if (warmTopics.length === 0) {
+    return fallbackSelection
+  }
 
   for (const row of warmTopics) {
     const topicIntent: TopicIntent = {
@@ -261,7 +297,9 @@ export async function selectFunnelForUser(context: IntentContext): Promise<Selec
 
   scored.sort((a, b) => b.score - a.score)
   const best = scored[0]
-  if (!best) return null
-  if (best.score < 12) return null
-  return best
+  if (!best) return fallbackSelection
+  if (best.score < 12) return fallbackSelection
+  return best.score >= (fallbackSelection?.score ?? Number.NEGATIVE_INFINITY)
+    ? best
+    : fallbackSelection
 }

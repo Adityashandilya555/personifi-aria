@@ -59,7 +59,7 @@ const MAX_CAPTION_LENGTH = 1024              // Telegram limit
  */
 export async function downloadMedia(
     url: string,
-    source: 'instagram' | 'tiktok' | 'youtube'
+    source: 'instagram' | 'tiktok' | 'youtube' | 'places'
 ): Promise<DownloadedMedia | null> {
     try {
         const controller = new AbortController()
@@ -67,7 +67,9 @@ export async function downloadMedia(
 
         // Set appropriate headers for each platform's CDN
         const headers: Record<string, string> = {
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
+            'User-Agent': source === 'places'
+                ? 'personifi-aria/1.0'
+                : 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
         }
 
         if (source === 'tiktok') {
@@ -75,6 +77,7 @@ export async function downloadMedia(
         } else if (source === 'instagram') {
             headers['Referer'] = 'https://www.instagram.com/'
         }
+        // places: no referer needed — Google CDN serves images directly
 
         const resp = await fetch(url, {
             method: 'GET',
@@ -105,7 +108,9 @@ export async function downloadMedia(
             return null
         }
 
-        if (buffer.length < 1024) {
+        // Places thumbnails at 400px can be under 1KB; social media reels should be larger
+        const minSize = source === 'places' ? 100 : 1024
+        if (buffer.length < minSize) {
             console.warn(`[MediaDownloader] Downloaded file suspiciously small: ${buffer.length} bytes`)
             return null
         }
@@ -453,7 +458,7 @@ export async function sendMediaViaPipeline(
     if (result.success && result.fileId) {
         cacheFileId(reel.source, reel.id, result.fileId)
         // Write telegram_file_id back to scraped_media DB for persistent re-sends
-        markMediaSent(reel.id, result.fileId).catch(() => {})
+        markMediaSent(reel.id, result.fileId).catch(() => { })
         console.log(`[MediaPipeline] Cached file_id for ${reel.source}:${reel.id}`)
     }
 

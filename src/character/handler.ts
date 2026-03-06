@@ -29,6 +29,7 @@ import {
   updateUserProfile,
   appendMessages,
   trimSessionHistory,
+  clearSessionMessages,
   checkRateLimit,
   trackUsage,
   type Message,
@@ -59,6 +60,7 @@ import type { RouteContext, RouteDecision, ToolMediaDirective } from '../hooks.j
 import { getProactiveSuggestionQuery } from '../utils/bangalore-context.js'
 import { extractToolMediaContext, type ToolMediaContext } from '../media/tool-media-context.js'
 import { getWeatherState } from '../weather/weather-stimulus.js'
+import { getTrafficState } from '../stimulus/traffic-stimulus.js'
 
 // Location utilities
 import { shouldRequestLocation } from '../location.js'
@@ -78,7 +80,7 @@ import { createSquad, inviteToSquad, acceptSquadInvite, leaveSquad, getSquadsFor
 import { detectIntentCategory, recordIntentForUserSquads } from '../social/squad-intent.js'
 import { topicIntentService } from '../topic-intent/index.js'
 import type { TopicIntent } from '../topic-intent/types.js'
-import { handleOnboarding, needsOnboarding } from '../onboarding/onboarding-flow.js'
+import { handleOnboarding, type OnboardingResult } from '../onboarding/onboarding-flow.js'
 import { extractRejectionSignals, persistRejectionSignals, entityTypeToCategory } from '../intelligence/rejection-memory.js'
 import { resolveToolFromTopic } from '../topic-intent/tool-map.js'
 import { logExecutionBridge, logTopicCompleted } from '../topic-intent/logger.js'
@@ -149,6 +151,12 @@ export interface MessageResponse {
   requestLocation?: boolean
   /** Venue pins to drop as Telegram map markers (places, directions destinations). */
   venues?: { name: string; address: string; lat: number; lng: number }[]
+}
+
+export interface HandleMessageOptions {
+  bypassOnboarding?: boolean
+  onboardingResult?: OnboardingResult | null
+  lightweightOnboarding?: boolean
 }
 
 // ─── Confirmation / Location Gate ────────────────────────────────────────────
@@ -281,6 +289,33 @@ function extractLocationCandidate(message: string): string | null {
     return candidate
   }
   return null
+}
+
+/**
+ * Count question-like sentences with a light heuristic.
+ * We combine punctuation and interrogative starters to avoid brittle '?' only checks.
+ */
+function countQuestionLikeSentences(text: string): number {
+  const sentences = text
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map(s => s.trim())
+    .filter(Boolean)
+
+  let count = 0
+  for (const sentence of sentences) {
+    if (sentence.includes('?')) {
+      count++
+      continue
+    }
+
+    const normalized = sentence.replace(/^[^a-zA-Z]+/, '').toLowerCase()
+    if (!normalized) continue
+    if (/^(what|which|where|when|why|how|who|whom|whose|can|could|would|should|do|does|did|is|are|am|will|have|has)\b/.test(normalized)) {
+      count++
+    }
+  }
+
+  return count
 }
 
 async function buildSearchPlacesContextHint(
@@ -479,7 +514,8 @@ function formatProactiveForPrompt(rawData: unknown): string {
 export async function handleMessage(
   channel: string,
   channelUserId: string,
-  rawMessage: string
+  rawMessage: string,
+  options: HandleMessageOptions = {},
 ): Promise<MessageResponse> {
   try {
     // ─── Step 0: Detect slash commands (before sanitization) ────
@@ -521,23 +557,27 @@ export async function handleMessage(
     }
 
     // ─── Step 2.5: Onboarding intercept (Issue #92) ──────────────
-    // New users must complete onboarding before entering the normal pipeline.
-    if (!user.authenticated) {
-      const onboardingResult = await handleOnboarding(user.userId, userMessage).catch(err => {
+    // New users must complete onboarding, but responses should still flow through
+    // the normal 70B + output-filter pipeline (no early return).
+    let onboardingResult: OnboardingResult | null = options.onboardingResult ?? null
+    if (!options.bypassOnboarding && !user.authenticated) {
+      onboardingResult = await handleOnboarding(user.userId, userMessage).catch(err => {
         console.warn('[handler] Onboarding handling failed:', safeError(err))
         return { handled: false as const }
       })
-      if (onboardingResult.handled) {
-        return {
-          text: onboardingResult.reply ?? "Hey! Let me set you up — what's your name?",
-          ...(onboardingResult.requestLocation ? { requestLocation: true } : {}),
-          ...(onboardingResult.buttons ? { _buttons: onboardingResult.buttons } : {}),
-        } as MessageResponse
-      }
     }
+    const onboardingActive = !!onboardingResult?.handled
+    const lightweightOnboarding = options.lightweightOnboarding === true || onboardingActive
+    const modelUserMessage = onboardingActive
+      ? (userMessage.startsWith('[onboarding_callback]')
+        ? 'User selected an onboarding option via inline button.'
+        : 'User shared onboarding details for the current onboarding step.')
+      : userMessage
 
     // ─── Step 3: Check rate limit ─────────────────────────────────
-    const withinLimit = await checkRateLimit(user.userId)
+    // Callback-driven onboarding taps should never get blocked mid-flow.
+    const bypassRateLimit = options.lightweightOnboarding === true
+    const withinLimit = bypassRateLimit ? true : await checkRateLimit(user.userId)
     if (!withinLimit) {
       return { text: "Whoa, we're chatting so fast! Give me a sec to catch my breath 😅 What were you asking about?" }
     }
@@ -548,7 +588,7 @@ export async function handleMessage(
     // ─── Step 4.5: Active funnel reply interception (Issue #63) ───
     // If the user is in an active proactive funnel, route reply before the full
     // classifier/memory pipeline. This avoids funnel-state collisions.
-    if (channel === 'telegram') {
+    if (channel === 'telegram' && !lightweightOnboarding) {
       const funnelReply = await handleFunnelReply(channelUserId, userMessage).catch(err => {
         console.warn('[handler] Funnel reply handling failed, continuing normal pipeline:', safeError(err))
         return { handled: false as const }
@@ -561,7 +601,7 @@ export async function handleMessage(
     // ─── Step 4.6: Task orchestrator interception (Issue #64) ──────
     // If the user is in an active task workflow, route reply before the
     // classifier/memory pipeline. Supports multi-step actionable flows.
-    if (channel === 'telegram') {
+    if (channel === 'telegram' && !lightweightOnboarding) {
       const taskReply = await handleTaskReply(channelUserId, userMessage).catch(err => {
         console.warn('[handler] Task orchestrator reply handling failed, continuing normal pipeline:', safeError(err))
         return { handled: false as const } as const
@@ -572,20 +612,42 @@ export async function handleMessage(
     }
 
     // ─── Step 5: Classify message via 8B ──────────────────────────
-    const classification = await classifyMessage(
-      userMessage,
-      session.messages.slice(-4),
-      user.userId
-    )
+    const classification: Awaited<ReturnType<typeof classifyMessage>> = lightweightOnboarding
+      ? {
+        message_complexity: 'simple',
+        needs_tool: false,
+        tool_hint: null,
+        tool_args: {},
+        skip_memory: true,
+        skip_graph: true,
+        skip_cognitive: true,
+        userSignal: 'normal',
+        detected_topic: null,
+        interest_signal: 'neutral',
+        cognitiveState: {
+          internalMonologue: 'Onboarding step active. Keep response concise and advance exactly one onboarding step.',
+          emotionalState: 'curious',
+          conversationGoal: 'clarify',
+          relevantMemories: [],
+        },
+      }
+      : await classifyMessage(
+        userMessage,
+        session.messages.slice(-4),
+        user.userId,
+        user.homeLocation ?? undefined,
+      )
 
-    console.log('[handler] Classification:', {
-      complexity: classification.message_complexity,
-      needsTool: classification.needs_tool,
-      toolHint: classification.tool_hint,
-      skipMemory: classification.skip_memory,
-      skipGraph: classification.skip_graph,
-      skipCognitive: classification.skip_cognitive,
-    })
+    if (!lightweightOnboarding) {
+      console.log('[handler] Classification:', {
+        complexity: classification.message_complexity,
+        needsTool: classification.needs_tool,
+        toolHint: classification.tool_hint,
+        skipMemory: classification.skip_memory,
+        skipGraph: classification.skip_graph,
+        skipCognitive: classification.skip_cognitive,
+      })
+    }
 
     // ─── Rejection guard: clear parked tool + media context when user rejects ─
     // Catches cancellation phrases AND negative interest signals from the classifier.
@@ -626,7 +688,7 @@ export async function handleMessage(
 
     const isSimple = classification.message_complexity === 'simple'
 
-    if (!isSimple) {
+    if (!isSimple && !lightweightOnboarding) {
       // Pre-fetch active topics (cached, 30s TTL) so we can augment memory search
       activeTopics = await topicIntentService.getActiveTopics(user.userId, 3).catch(() => [] as TopicIntent[])
       topicStrategy = activeTopics.length > 0 ? (activeTopics[0].strategy ?? null) : null
@@ -680,7 +742,7 @@ export async function handleMessage(
       activeGoal = pipelineResults[3]
       agendaStack = pipelineResults[4]
       pulseEngagementState = pipelineResults[5] as 'PASSIVE' | 'CURIOUS' | 'ENGAGED' | 'PROACTIVE'
-    } else {
+    } else if (!lightweightOnboarding) {
       // Agenda is consulted on every message (Issue #67), including simple turns.
       agendaStack = await agendaPlanner.getStack(user.userId, session.sessionId).catch(() => [])
     }
@@ -692,193 +754,241 @@ export async function handleMessage(
       channel,
       userId: user.userId,
       personId: user.personId || null,
+      homeLocation: user.homeLocation ?? undefined,
       classification,
       memories,
       graphContext,
       history: session.messages.slice(-6),
     }
 
-    let routeDecision = await brainHooks.routeMessage(routeContext)
-
-    // ─── Step 7.1: Execution Bridge — override when 8B misses confirmatory intent ─
-    // When a topic is in 'executing' phase and the user sends a confirmatory message
-    // ("yeah check it", "sure", "go ahead"), the 8B classifier may not detect it as a
-    // tool request. We override routeDecision to fire the correct tool.
+    let routeDecision: RouteDecision = { useTool: false, toolName: null, toolParams: {} }
+    let toolResultStr: string | undefined
+    let toolRawData: unknown = null
+    let toolMediaDirective: ToolMediaDirective | null = null
     let executingTopic: TopicIntent | null = null
-    if (!routeDecision.useTool && activeTopics.length > 0) {
-      executingTopic = activeTopics.find(t => t.phase === 'executing') ?? null
-      if (executingTopic && isConfirmatoryMessage(userMessage)) {
-        const toolMapping = resolveToolFromTopic(executingTopic)
-        if (toolMapping) {
-          routeDecision = {
-            ...routeDecision,
-            useTool: true,
-            toolName: toolMapping.toolName,
-            toolParams: toolMapping.toolParams,
+    const isFirstMessage = session.messages.length === 0
+
+    if (!lightweightOnboarding) {
+      routeDecision = await brainHooks.routeMessage(routeContext)
+
+      if (onboardingActive) {
+        routeDecision = { useTool: false, toolName: null, toolParams: {} }
+      }
+
+      // ─── Step 7.1: Execution Bridge — override when 8B misses confirmatory intent ─
+      // When a topic is in 'executing' phase and the user sends a confirmatory message
+      // ("yeah check it", "sure", "go ahead"), the 8B classifier may not detect it as a
+      // tool request. We override routeDecision to fire the correct tool.
+      if (!routeDecision.useTool && activeTopics.length > 0) {
+        executingTopic = activeTopics.find(t => t.phase === 'executing') ?? null
+        if (executingTopic && isConfirmatoryMessage(userMessage)) {
+          const toolMapping = resolveToolFromTopic(executingTopic)
+          if (toolMapping) {
+            routeDecision = {
+              ...routeDecision,
+              useTool: true,
+              toolName: toolMapping.toolName,
+              toolParams: toolMapping.toolParams,
+            }
+            logExecutionBridge(user.userId, executingTopic.id, executingTopic.topic, toolMapping.toolName)
           }
-          logExecutionBridge(user.userId, executingTopic.id, executingTopic.topic, toolMapping.toolName)
         }
       }
-    }
 
-    // ─── Step 7.5: Location check — ask before running location-dependent tools ─
-    if (routeDecision.useTool && routeDecision.toolName &&
-      shouldRequestLocation(userMessage, user.homeLocation, routeDecision.toolName)) {
-      // Park the tool so we can execute it once the user shares their location
-      pendingToolStore.set(user.userId, {
-        toolName: routeDecision.toolName,
-        toolParams: routeDecision.toolParams,
-      })
-      return {
-        text: "📍 To find the best results near you, could you share your location? Tap the button below, or just type your area/neighbourhood name!",
-        requestLocation: true,
-      }
-    }
-
-    // ─── Step 7.55: Pulse gate — compare_prices_proactive only runs when ENGAGED+ ─
-    // Prevents the bot from pushing food comparisons at new/passive users.
-    if (routeDecision.useTool && routeDecision.toolName === 'compare_prices_proactive' &&
-      (pulseEngagementState === 'PASSIVE' || pulseEngagementState === 'CURIOUS')) {
-      routeDecision = { useTool: false, toolName: null, toolParams: {} }
-    }
-
-    // ─── Step 7.6: Confirmation gate for expensive scraping tools ─────────────
-    if (routeDecision.useTool && routeDecision.toolName &&
-      TOOLS_REQUIRING_CONFIRM.has(routeDecision.toolName) &&
-      !isConfirmatoryMessage(userMessage) &&
-      !isExplicitPlatformRequest(userMessage)) {
-      // Only gate if this is an ambiguous first-time request (not already a confirmation)
-      const pending = pendingToolStore.get(user.userId)
-      if (!pending || pending.toolName !== routeDecision.toolName) {
+      // ─── Step 7.5: Location check — ask before running location-dependent tools ─
+      if (routeDecision.useTool && routeDecision.toolName &&
+        shouldRequestLocation(userMessage, user.homeLocation, routeDecision.toolName)) {
+        // Park the tool so we can execute it once the user shares their location
         pendingToolStore.set(user.userId, {
           toolName: routeDecision.toolName,
           toolParams: routeDecision.toolParams,
         })
-        const toolLabel = routeDecision.toolName === 'compare_grocery_prices'
-          ? 'grocery prices on Blinkit, Instamart & Zepto'
-          : 'food prices on Swiggy & Zomato'
         return {
-          text: `Want me to check ${toolLabel}? It takes a few seconds — shall I go ahead?`,
+          text: "📍 To find the best results near you, could you share your location? Tap the button below, or just type your area/neighbourhood name!",
+          requestLocation: true,
         }
       }
-    }
 
-    // Clear any pending entry once the tool is about to run
-    if (routeDecision.useTool && routeDecision.toolName) {
-      pendingToolStore.delete(user.userId)
-    }
+      // ─── Step 7.55: Pulse gate — compare_prices_proactive only runs when ENGAGED+ ─
+      // Prevents the bot from pushing food comparisons at new/passive users.
+      if (routeDecision.useTool && routeDecision.toolName === 'compare_prices_proactive' &&
+        (pulseEngagementState === 'PASSIVE' || pulseEngagementState === 'CURIOUS')) {
+        routeDecision = { useTool: false, toolName: null, toolParams: {} }
+      }
 
-    // ─── Step 8: Execute tool pipeline if needed (Dev 1) ──────────
-    let toolResultStr: string | undefined
-    let toolRawData: unknown = null
-    let toolMediaDirective: ToolMediaDirective | null = null
-    if (routeDecision.useTool) {
-      const toolResult = await brainHooks.executeToolPipeline(routeDecision, routeContext)
-      if (toolResult?.success && toolResult.data) {
-        toolResultStr = toolResult.data
-        toolRawData = toolResult.raw
-        toolMediaDirective = toolResult.mediaDirective ?? null
+      // ─── Step 7.6: Confirmation gate for expensive scraping tools ─────────────
+      if (routeDecision.useTool && routeDecision.toolName &&
+        TOOLS_REQUIRING_CONFIRM.has(routeDecision.toolName) &&
+        !isConfirmatoryMessage(userMessage) &&
+        !isExplicitPlatformRequest(userMessage)) {
+        // Only gate if this is an ambiguous first-time request (not already a confirmation)
+        const pending = pendingToolStore.get(user.userId)
+        if (!pending || pending.toolName !== routeDecision.toolName) {
+          pendingToolStore.set(user.userId, {
+            toolName: routeDecision.toolName,
+            toolParams: routeDecision.toolParams,
+          })
+          const toolLabel = routeDecision.toolName === 'compare_grocery_prices'
+            ? 'grocery prices on Blinkit, Instamart & Zepto'
+            : 'food prices on Swiggy & Zomato'
+          return {
+            text: `Want me to check ${toolLabel}? It takes a few seconds — shall I go ahead?`,
+          }
+        }
+      }
+
+      // Clear any pending entry once the tool is about to run
+      if (routeDecision.useTool && routeDecision.toolName) {
+        pendingToolStore.delete(user.userId)
+      }
+
+      // ─── Step 8: Execute tool pipeline if needed (Dev 1) ──────────
+      if (routeDecision.useTool) {
+        const toolResult = await brainHooks.executeToolPipeline(routeDecision, routeContext)
+        if (toolResult?.success && toolResult.data) {
+          toolResultStr = toolResult.data
+          toolRawData = toolResult.raw
+          toolMediaDirective = toolResult.mediaDirective ?? null
+          if (routeDecision.toolName) {
+            rememberToolContext(
+              user.userId,
+              extractToolMediaContext(routeDecision.toolName, toolResult.raw),
+              toolMediaDirective,
+            )
+          }
+        }
+        // Register active flow so follow-up replies ("15th", "2 adults") get context
         if (routeDecision.toolName) {
+          const flow = toolToFlow(routeDecision.toolName)
+          setScene(user.userId, { flow, partialArgs: routeDecision.toolParams })
+        }
+      }
+
+      // Include additional context from router
+      if (routeDecision.additionalContext) {
+        toolResultStr = toolResultStr
+          ? `${toolResultStr}\n\n${routeDecision.additionalContext}`
+          : routeDecision.additionalContext
+      }
+
+      // ─── Step 8b: Compact proactive formatter (keeps token budget) ─
+      if (routeDecision.toolName === 'compare_prices_proactive' && toolRawData) {
+        toolResultStr = formatProactiveForPrompt(toolRawData)
+      }
+
+      // This turn-level signal is computed before Step 17 persists profile updates.
+      // At this point user.homeLocation is intentionally still stale from DB.
+      const locationCandidate = user.displayName && !user.homeLocation
+        ? extractLocationCandidate(userMessage)
+        : null
+      const onboardingJustCompleted = !!user.displayName && !user.homeLocation && !!locationCandidate
+      const isEarlyConversation = session.messages.length <= 6
+
+      // ─── Step 8c: Proactive offer hint after places search ─────────
+      if (!isRejection && routeDecision.toolName === 'search_places' && toolResultStr && !onboardingJustCompleted) {
+        toolResultStr += '\n\n[ARIA HINT: The user found places nearby. Naturally offer to check delivery prices on Swiggy or Zomato if they seem interested in food, or compare grocery apps if it is a grocery query. Keep it conversational — do not make it sound like an ad.]'
+
+        const toolLocation = typeof routeDecision.toolParams?.location === 'string'
+          ? routeDecision.toolParams.location
+          : (user.homeLocation ?? null)
+        toolResultStr += await buildSearchPlacesContextHint(brainHooks, toolLocation)
+      }
+
+      // ─── Step 8d: New user onboarding hint ────────────────────────
+      // On the very first message, nudge Aria to collect name + location
+      if (!onboardingActive && isFirstMessage && !user.displayName) {
+        const onboardingHint = '\n\n[ARIA HINT: This is the user\'s first message. Warmly greet them, ask their name, and gently mention you\'d love to know their city so you can give local food & travel recommendations. Keep it natural and friendly — one question at a time.]'
+        toolResultStr = toolResultStr ? toolResultStr + onboardingHint : onboardingHint
+      }
+
+      // ─── Step 8e: Onboarding completion → proactive city suggestion ───────────
+      // If user just provided their location (name already known), run a lightweight
+      // places query and force a specific opener instead of generic "what's on your mind?".
+      if (!onboardingActive && onboardingJustCompleted && isEarlyConversation && !routeDecision.useTool) {
+        const proactive = getProactiveSuggestionQuery(locationCandidate)
+        const proactiveLocation = proactive.location || locationCandidate || user.homeLocation || 'Bengaluru'
+        const weatherState = getWeatherState(proactiveLocation)
+        const trafficState = getTrafficState(proactiveLocation)
+        const preferDelivery = !!weatherState?.isRaining || trafficState?.severity === 'heavy'
+
+        const proactiveDecision: RouteDecision = preferDelivery
+          ? {
+            useTool: true,
+            toolName: 'compare_food_prices',
+            toolParams: {
+              query: weatherState?.isRaining ? 'comfort food delivery' : 'top delivery deals',
+              location: proactiveLocation,
+            },
+          }
+          : {
+            useTool: true,
+            toolName: 'search_places',
+            toolParams: {
+              query: proactive.query,
+              location: proactive.location,
+              openNow: proactive.openNow,
+            },
+          }
+
+        const proactiveResult = await brainHooks.executeToolPipeline(proactiveDecision, routeContext).catch(err => {
+          console.warn('[handler] Proactive onboarding tool call failed:', safeError(err))
+          return null
+        })
+
+        const proactiveHint =
+          `\n\n[ARIA HINT: Onboarding just completed. The user shared their area (${proactive.location}). ` +
+          `Current context: weather=${weatherState?.condition ?? 'unknown'}, traffic=${trafficState?.severity ?? 'unknown'}. ` +
+          `${preferDelivery ? 'Conditions are friction-heavy — prioritize delivery/indoor recommendations.' : 'Conditions are workable — suggest one specific nearby place.'} ` +
+          `Lead with ONE specific, opinionated suggestion grounded in current context (${proactive.moodTag}) and tool data. ` +
+          `Offer one concrete next action. Do NOT ask generic openers like "what are you in the mood for?" or "what's on your mind?"]`
+
+        if (proactiveResult?.success && proactiveResult.data) {
+          routeDecision = proactiveDecision
+          toolRawData = proactiveResult.raw
+          toolMediaDirective = proactiveResult.mediaDirective ?? null
           rememberToolContext(
             user.userId,
-            extractToolMediaContext(routeDecision.toolName, toolResult.raw),
+            extractToolMediaContext(proactiveDecision.toolName!, proactiveResult.raw),
             toolMediaDirective,
           )
+          toolResultStr = toolResultStr
+            ? `${toolResultStr}\n\n${proactiveResult.data}${proactiveHint}`
+            : `${proactiveResult.data}${proactiveHint}`
+        } else {
+          // Tool failure should still keep the proactive onboarding behavior.
+          toolResultStr = toolResultStr ? toolResultStr + proactiveHint : proactiveHint
         }
       }
-      // Register active flow so follow-up replies ("15th", "2 adults") get context
-      if (routeDecision.toolName) {
-        const flow = toolToFlow(routeDecision.toolName)
-        setScene(user.userId, { flow, partialArgs: routeDecision.toolParams })
-      }
     }
 
-    // Include additional context from router
-    if (routeDecision.additionalContext) {
-      toolResultStr = toolResultStr
-        ? `${toolResultStr}\n\n${routeDecision.additionalContext}`
-        : routeDecision.additionalContext
-    }
-
-    // ─── Step 8b: Compact proactive formatter (keeps token budget) ─
-    if (routeDecision.toolName === 'compare_prices_proactive' && toolRawData) {
-      toolResultStr = formatProactiveForPrompt(toolRawData)
-    }
-
-    // This turn-level signal is computed before Step 17 persists profile updates.
-    // At this point user.homeLocation is intentionally still stale from DB.
-    const locationCandidate = user.displayName && !user.homeLocation
-      ? extractLocationCandidate(userMessage)
-      : null
-    const onboardingJustCompleted = !!user.displayName && !user.homeLocation && !!locationCandidate
-    const isEarlyConversation = session.messages.length <= 6
-
-    // ─── Step 8c: Proactive offer hint after places search ─────────
-    if (!isRejection && routeDecision.toolName === 'search_places' && toolResultStr && !onboardingJustCompleted) {
-      toolResultStr += '\n\n[ARIA HINT: The user found places nearby. Naturally offer to check delivery prices on Swiggy or Zomato if they seem interested in food, or compare grocery apps if it is a grocery query. Keep it conversational — do not make it sound like an ad.]'
-
-      const toolLocation = typeof routeDecision.toolParams?.location === 'string'
-        ? routeDecision.toolParams.location
-        : (user.homeLocation ?? null)
-      toolResultStr += await buildSearchPlacesContextHint(brainHooks, toolLocation)
-    }
-
-    // ─── Step 8d: New user onboarding hint ────────────────────────
-    // On the very first message, nudge Aria to collect name + location
-    const isFirstMessage = session.messages.length === 0
-    if (isFirstMessage && !user.displayName) {
-      const onboardingHint = '\n\n[ARIA HINT: This is the user\'s first message. Warmly greet them, ask their name, and gently mention you\'d love to know their city so you can give local food & travel recommendations. Keep it natural and friendly — one question at a time.]'
-      toolResultStr = toolResultStr ? toolResultStr + onboardingHint : onboardingHint
-    }
-
-    // ─── Step 8e: Onboarding completion → proactive city suggestion ───────────
-    // If user just provided their location (name already known), run a lightweight
-    // places query and force a specific opener instead of generic "what's on your mind?".
-    if (onboardingJustCompleted && isEarlyConversation && !routeDecision.useTool) {
-      const proactive = getProactiveSuggestionQuery(locationCandidate)
-      const proactiveDecision: RouteDecision = {
-        useTool: true,
-        toolName: 'search_places',
-        toolParams: {
-          query: proactive.query,
-          location: proactive.location,
-          openNow: proactive.openNow,
-        },
-      }
-
-      const proactiveResult = await brainHooks.executeToolPipeline(proactiveDecision, routeContext).catch(err => {
-        console.warn('[handler] Proactive onboarding tool call failed:', safeError(err))
-        return null
-      })
-
-      const proactiveHint =
-        `\n\n[ARIA HINT: Onboarding just completed. The user shared their area (${proactive.location}). ` +
-        `Lead with ONE specific, opinionated suggestion grounded in current context (${proactive.moodTag}) and tool data. ` +
-        `Offer one concrete next action. Do NOT ask generic openers like "what are you in the mood for?" or "what's on your mind?"]`
-
-      if (proactiveResult?.success && proactiveResult.data) {
-        routeDecision = proactiveDecision
-        toolRawData = proactiveResult.raw
-        toolMediaDirective = proactiveResult.mediaDirective ?? null
-        rememberToolContext(
-          user.userId,
-          extractToolMediaContext(proactiveDecision.toolName!, proactiveResult.raw),
-          toolMediaDirective,
-        )
-        toolResultStr = toolResultStr
-          ? `${toolResultStr}\n\n${proactiveResult.data}${proactiveHint}`
-          : `${proactiveResult.data}${proactiveHint}`
-      } else {
-        // Tool failure should still keep the proactive onboarding behavior.
-        toolResultStr = toolResultStr ? toolResultStr + proactiveHint : proactiveHint
-      }
+    if (onboardingActive) {
+      const onboardingContext = onboardingResult?.onboardingContext
+        || onboardingResult?.reply
+        || "Continue onboarding naturally. Ask only the next required question."
+      const stepContext = onboardingResult?.stepCompleted
+        ? `Completed step: ${onboardingResult.stepCompleted}.`
+        : ''
+      const canonicalPrompt = onboardingResult?.reply
+        ? `Canonical step prompt: """${onboardingResult.reply}""".`
+        : ''
+      const locationUiContext = onboardingResult?.requestLocation
+        ? 'A location-share UI is attached; explicitly ask for area/location.'
+        : ''
+      const buttonUiContext = onboardingResult?.buttons?.flat().map(b => b.text).join(' | ')
+      const buttonHint = buttonUiContext
+        ? `Inline buttons are attached (${buttonUiContext}). Keep text aligned to these choices and do not ask unrelated questions.`
+        : ''
+      const onboardingHint =
+        `\n\n[ARIA HINT: Onboarding is active. ${stepContext} ${onboardingContext} ${canonicalPrompt} ${locationUiContext} ${buttonHint} ` +
+        `Respond in your normal voice, keep it natural, ask exactly one onboarding question, and do not jump to other steps.]`
+      toolResultStr = toolResultStr ? `${toolResultStr}${onboardingHint}` : onboardingHint
     }
 
     // ─── Step 9: Compose dynamic system prompt ────────────────────
     let systemPromptComposed: string
     try {
       systemPromptComposed = composeSystemPrompt({
-        userMessage,
+        userMessage: modelUserMessage,
         isAuthenticated: !!(user.displayName && user.homeLocation),
         displayName: user.displayName,
         homeLocation: user.homeLocation,
@@ -925,7 +1035,7 @@ export async function handleMessage(
     let messages = buildMessages(
       systemPromptComposed,
       session.messages,
-      userMessage,
+      modelUserMessage,
       historyLimit,
     )
 
@@ -946,7 +1056,7 @@ export async function handleMessage(
         toolResultStr = toolResultStr.substring(0, 800) + '\n…[truncated for brevity]'
         try {
           systemPromptComposed = composeSystemPrompt({
-            userMessage, isAuthenticated: !!(user.displayName && user.homeLocation),
+            userMessage: modelUserMessage, isAuthenticated: !!(user.displayName && user.homeLocation),
             displayName: user.displayName, homeLocation: user.homeLocation,
             memories, graphContext, cognitiveState, preferences, activeGoal, agendaStack,
             isFirstMessage, isSimpleMessage: isSimple, toolResults: toolResultStr,
@@ -955,14 +1065,14 @@ export async function handleMessage(
             activeTopics, topicStrategy,
           })
         } catch { /* keep existing composed prompt */ }
-        messages = buildMessages(systemPromptComposed, session.messages, userMessage, historyLimit)
+        messages = buildMessages(systemPromptComposed, session.messages, modelUserMessage, historyLimit)
         estimatedTokens = estimateTokens(messages)
       }
 
       // Strategy 2: Reduce history window
       if (estimatedTokens > MAX_PROMPT_TOKENS) {
         historyLimit = Math.max(2, Math.floor(historyLimit / 2))
-        messages = buildMessages(systemPromptComposed, session.messages, userMessage, historyLimit)
+        messages = buildMessages(systemPromptComposed, session.messages, modelUserMessage, historyLimit)
         estimatedTokens = estimateTokens(messages)
       }
 
@@ -1045,7 +1155,22 @@ export async function handleMessage(
 
     // ─── Step 13: Filter output ───────────────────────────────────
     const filterResult = filterOutput(rawResponse)
-    const assistantResponse = filterResult.filtered
+    let assistantResponse = filterResult.filtered
+
+    if (onboardingActive && onboardingResult?.reply) {
+      const generated = assistantResponse.trim()
+      const questionLikeCount = countQuestionLikeSentences(generated)
+      const severeStepDrift = generated.length > 560 || questionLikeCount > 1
+      if (severeStepDrift) {
+        console.warn('[handler] Onboarding drift fallback applied', {
+          userId: user.userId,
+          generatedLength: generated.length,
+          questionLikeCount,
+          preview: generated.slice(0, 140),
+        })
+        assistantResponse = onboardingResult.reply
+      }
+    }
 
     if (needsHumanReview(filterResult)) {
       console.error('[SECURITY] Output filtered for review:', {
@@ -1056,10 +1181,22 @@ export async function handleMessage(
     }
 
     // ─── Step 14: Store messages in session ────────────────────────
-    await appendMessages(session.sessionId, userMessage, assistantResponse)
+    // Onboarding turns are structured wizard steps; avoid polluting normal chat history.
+    const shouldPersistSessionMessages = !onboardingActive
+    if (shouldPersistSessionMessages) {
+      await appendMessages(session.sessionId, userMessage, assistantResponse)
+      // ─── Step 15: Trim history if needed ──────────────────────────
+      await trimSessionHistory(session.sessionId)
+    }
 
-    // ─── Step 15: Trim history if needed ──────────────────────────
-    await trimSessionHistory(session.sessionId)
+    // Ensure post-onboarding conversation starts from a clean context window.
+    // Intentional: onboarding turns are structured/system-guided and should not
+    // bias the first real conversational turn after onboarding completes.
+    if (onboardingActive && onboardingResult?.onboardingCompleted) {
+      await clearSessionMessages(session.sessionId).catch(err => {
+        console.warn('[handler] Failed to clear onboarding session history:', safeError(err))
+      })
+    }
 
     // ─── Step 16: Track usage (estimated) ──────────────────────────
     // Tier manager abstracts the completion object; use estimates
@@ -1074,7 +1211,9 @@ export async function handleMessage(
     )
 
     // ─── Step 17: Extract auth info (existing) ────────────────────
-    await extractAndSaveUserInfo(user.userId, userMessage, user)
+    if (!onboardingActive) {
+      await extractAndSaveUserInfo(user.userId, userMessage, user)
+    }
 
     // ─── Step 17b: Pulse engagement scoring (always fire-and-forget) ─
     const previousUserMessage = [...session.messages]
@@ -1084,54 +1223,56 @@ export async function handleMessage(
       .reverse()
       .find(msg => !!msg.timestamp)?.timestamp ?? null
 
-    setImmediate(() => {
-      // Topic intent processing — fire-and-forget, NEVER block the response
-      if (!isSimple) {
-        topicIntentService.processMessage(
-          user.userId,
-          session.sessionId,
-          userMessage,
-          classification,
-        ).catch(err => {
-          console.error('[handler] Topic intent processing failed:', err)
-        })
-      }
-
-      // ─── Execution Bridge: Completion Hook ─────────────────────────
-      // When a tool fired for an executing-phase topic, mark it as completed.
-      if (routeDecision.useTool && toolResultStr && executingTopic) {
-        topicIntentService.completeTopic(user.userId, executingTopic.id)
-          .then(() => logTopicCompleted(user.userId, executingTopic!.id, executingTopic!.topic))
-          .catch(err => {
-            console.error('[handler] Topic completion failed:', err)
+    if (!lightweightOnboarding) {
+      setImmediate(() => {
+        // Topic intent processing — fire-and-forget, NEVER block the response
+        if (!isSimple) {
+          topicIntentService.processMessage(
+            user.userId,
+            session.sessionId,
+            userMessage,
+            classification,
+          ).catch(err => {
+            console.error('[handler] Topic intent processing failed:', err)
           })
-      }
+        }
 
-      pulseService.recordEngagement({
-        userId: user.userId,
-        message: userMessage,
-        previousUserMessage,
-        previousMessageAt,
-        classifierSignal: classification.userSignal,
-      }).catch(err => {
-        console.error('[handler] Pulse scoring failed:', safeError(err))
-      })
+        // ─── Execution Bridge: Completion Hook ─────────────────────────
+        // When a tool fired for an executing-phase topic, mark it as completed.
+        if (routeDecision.useTool && toolResultStr && executingTopic) {
+          topicIntentService.completeTopic(user.userId, executingTopic.id)
+            .then(() => logTopicCompleted(user.userId, executingTopic!.id, executingTopic!.topic))
+            .catch(err => {
+              console.error('[handler] Topic completion failed:', err)
+            })
+        }
 
-      agendaPlanner.evaluate({
-        userId: user.userId,
-        sessionId: session.sessionId,
-        message: userMessage,
-        displayName: user.displayName,
-        homeLocation: user.homeLocation,
-        pulseState: pulseEngagementState,
-        classifierGoal: cognitiveState.conversationGoal,
-        messageComplexity: classification.message_complexity,
-        activeToolName: routeDecision?.toolName ?? undefined,
-        hasToolResult: !!toolResultStr,
-      }).catch(err => {
-        console.error('[handler] Agenda planner evaluation failed:', safeError(err))
+        pulseService.recordEngagement({
+          userId: user.userId,
+          message: userMessage,
+          previousUserMessage,
+          previousMessageAt,
+          classifierSignal: classification.userSignal,
+        }).catch(err => {
+          console.error('[handler] Pulse scoring failed:', safeError(err))
+        })
+
+        agendaPlanner.evaluate({
+          userId: user.userId,
+          sessionId: session.sessionId,
+          message: userMessage,
+          displayName: user.displayName,
+          homeLocation: user.homeLocation,
+          pulseState: pulseEngagementState,
+          classifierGoal: cognitiveState.conversationGoal,
+          messageComplexity: classification.message_complexity,
+          activeToolName: routeDecision?.toolName ?? undefined,
+          hasToolResult: !!toolResultStr,
+        }).catch(err => {
+          console.error('[handler] Agenda planner evaluation failed:', safeError(err))
+        })
       })
-    })
+    }
 
     // ─── Steps 18-21: Durable memory writes via Archivist queue ───────
     // Replaced fire-and-forget setImmediate() with enqueueMemoryWrite().
@@ -1201,6 +1342,8 @@ const venuePreviewMedia = !inlineMediaItem
         ? [inlineMediaItem]
         : (extractMediaFromToolResult(toolRawData) ?? fallbackMediaFromContext ?? venuePreviewMedia),
       venues,
+      ...(onboardingActive && onboardingResult?.requestLocation ? { requestLocation: true } : {}),
+      ...(onboardingActive && onboardingResult?.buttons ? { _buttons: onboardingResult.buttons } : {}),
     }
 
   } catch (error) {

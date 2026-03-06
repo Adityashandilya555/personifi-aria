@@ -7,10 +7,96 @@
 import type { FunnelDefinition, FunnelStep } from './types.js'
 import type { TopicIntent, TopicCategory, TopicPhase } from '../topic-intent/types.js'
 import { resolveToolFromTopic } from '../topic-intent/tool-map.js'
+import { ContentCategory } from '../media/contentIntelligence.js'
 
-// Re-export the empty array for backward compatibility (nothing iterates it now,
-// but imports in tests and other modules reference it).
-export const FUNNEL_DEFINITIONS: FunnelDefinition[] = []
+// Static fallback funnels kept for backward compatibility and as a no-DB fallback
+// when warm-topic selection is unavailable.
+export const FUNNEL_DEFINITIONS: FunnelDefinition[] = [
+    {
+        key: 'weekend_food_plan',
+        category: ContentCategory.FOOD_DISCOVERY,
+        hashtag: 'bangalorefood',
+        minPulseState: 'ENGAGED',
+        cooldownMinutes: 360,
+        preferenceKeywords: ['weekend', 'brunch', 'outing', 'plan'],
+        goalKeywords: ['weekend', 'plan', 'outing'],
+        steps: [
+            {
+                id: 'hook',
+                text: 'Weekend food plan on your mind? I can line up a quick shortlist for your vibe.',
+                choices: [
+                    { label: 'Yes, plan it', action: 'plan' },
+                    { label: 'Maybe later', action: 'later' },
+                ],
+                nextOnChoice: { plan: 1, later: -1 },
+                intentKeywords: ['yes', 'plan', 'weekend', 'go ahead'],
+                nextOnAnyReply: 1,
+                abandonKeywords: ['not now', 'later', 'skip', 'no'],
+            },
+            {
+                id: 'handoff',
+                text: 'Perfect. Share your area + mood and I will continue with concrete picks.',
+                passThroughOnAnyReply: true,
+            },
+        ],
+    },
+    {
+        key: 'biryani_price_compare',
+        category: ContentCategory.FOOD_PRICE_DEALS,
+        hashtag: 'bangalorefoodunder200',
+        minPulseState: 'ENGAGED',
+        cooldownMinutes: 240,
+        preferenceKeywords: ['biryani', 'cheap', 'budget', 'deal', 'swiggy', 'zomato'],
+        goalKeywords: ['compare', 'price', 'deal', 'biryani'],
+        steps: [
+            {
+                id: 'hook',
+                text: 'Craving biryani tonight? I can compare Swiggy vs Zomato prices near you right now.',
+                choices: [
+                    { label: 'Compare now', action: 'compare' },
+                    { label: 'Later', action: 'later' },
+                ],
+                nextOnChoice: { compare: 1, later: -1 },
+                intentKeywords: ['yes', 'compare', 'deal', 'go ahead', 'do it'],
+                nextOnAnyReply: 1,
+                abandonKeywords: ['not now', 'later', 'skip', 'no'],
+            },
+            {
+                id: 'handoff',
+                text: 'Nice. Share your area and I will continue with the live comparison.',
+                passThroughOnAnyReply: true,
+            },
+        ],
+    },
+    {
+        key: 'quick_food_recommendation',
+        category: ContentCategory.FOOD_DISCOVERY,
+        hashtag: 'bangalorefoodie',
+        minPulseState: 'ENGAGED',
+        cooldownMinutes: 180,
+        preferenceKeywords: ['recommend', 'suggest', 'eat', 'hungry'],
+        goalKeywords: ['recommend', 'eat', 'food'],
+        steps: [
+            {
+                id: 'hook',
+                text: 'Want a quick food recommendation tuned to your mood and budget?',
+                choices: [
+                    { label: 'Yes, suggest', action: 'suggest' },
+                    { label: 'Later', action: 'later' },
+                ],
+                nextOnChoice: { suggest: 1, later: -1 },
+                intentKeywords: ['yes', 'recommend', 'suggest', 'sure'],
+                nextOnAnyReply: 1,
+                abandonKeywords: ['not now', 'later', 'skip', 'no'],
+            },
+            {
+                id: 'handoff',
+                text: 'Done. Tell me your area + craving and I will pick the best option.',
+                passThroughOnAnyReply: true,
+            },
+        ],
+    },
+]
 export const FUNNEL_BY_KEY = new Map(FUNNEL_DEFINITIONS.map(funnel => [funnel.key, funnel]))
 
 // ─── Hook Templates ─────────────────────────────────────────────────────────
