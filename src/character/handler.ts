@@ -396,6 +396,12 @@ function extractMediaFromToolResult(toolName: string | null | undefined, rawData
   const data = rawData as any
   const isMapPreviewUrl = (url: string): boolean => /maps\.googleapis\.com\/maps\/api\/staticmap/i.test(url)
 
+  // Diagnostic: trace what rawData looks like
+  const keys = data ? Object.keys(data) : []
+  const hasImages = Array.isArray(data?.images)
+  const imagesCount = hasImages ? data.images.length : 0
+  console.log(`[extractMedia] keys=${keys.join(',')} | hasImages=${hasImages} | imagesCount=${imagesCount} | firstImageUrl=${data?.images?.[0]?.url?.substring(0, 60) ?? 'N/A'}`)
+
   // Grocery comparison: has a top-level images[] array with {url, caption}
   if (Array.isArray(data?.images)) {
     const media = data.images
