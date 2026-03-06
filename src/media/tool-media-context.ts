@@ -107,7 +107,7 @@ export function extractToolMediaContext(toolName: string, rawData: unknown): Too
     ) {
         if (Array.isArray(rootArray)) {
             for (const entry of rootArray.slice(0, 8)) {
-                extractFromFoodEntry(entry, placeNames, itemNames, photoUrls)
+                extractFromFoodEntry(entry, placeNames, itemNames, []) // Do not capture photos
             }
         }
     } else if (
@@ -115,22 +115,15 @@ export function extractToolMediaContext(toolName: string, rawData: unknown): Too
         || toolName === 'search_blinkit'
         || toolName === 'search_zepto'
     ) {
-        if (Array.isArray(data?.images)) {
-            for (const img of data.images.slice(0, 8)) {
-                pushUnique(photoUrls, img?.url)
-            }
-        }
         if (Array.isArray(rootArray)) {
             for (const entry of rootArray.slice(0, 8)) {
                 pushUnique(itemNames, entry?.name)
-                pushPhotoUrl(photoUrls, entry?.imageUrl)
-                pushPhotoUrl(photoUrls, entry?.image)
             }
         }
     } else if (Array.isArray(rootArray)) {
         for (const entry of rootArray.slice(0, 6)) {
-            extractFromPlace(entry, placeNames, photoUrls)
-            extractFromFoodEntry(entry, placeNames, itemNames, photoUrls)
+            extractFromPlace(entry, placeNames, []) // Do not capture photos
+            extractFromFoodEntry(entry, placeNames, itemNames, []) // Do not capture photos
         }
     }
 

@@ -220,13 +220,18 @@ function getRecentToolContext(userId: string, message: string): RecentToolContex
 
   const normalized = message.trim().toLowerCase()
   const isShortFollowUp = normalized.split(/\s+/).length <= 6
-  const asksForVisual = /\b(show|pic|photo|image|reel|video|that one|looks|vibe)\b/i.test(normalized)
+  const asksForVisual = /\b(show|pic|pics|photo|photos|image|images|reel|video|that one|looks|vibe)\b/i.test(normalized)
   const confirmatory = isConfirmatoryMessage(normalized)
   const mentionsEntity = !!stored.context.entityName
     && normalized.includes(stored.context.entityName.toLowerCase().split(/\s+/)[0])
 
   if (!isShortFollowUp && !asksForVisual && !confirmatory && !mentionsEntity) {
     return null
+  }
+
+  // If the user explicitly asks for visuals in a follow-up, force the media directive to attach
+  if (asksForVisual && stored.mediaDirective) {
+    stored.mediaDirective.shouldAttach = true
   }
 
   return stored
@@ -384,7 +389,8 @@ export async function saveUserLocation(userId: string, location: string): Promis
  *   - Grocery comparison (Blinkit/Instamart/Zepto via data.images[])
  *   - Single-platform food search (raw[].items[].imageUrl)
  */
-function extractMediaFromToolResult(rawData: unknown): MessageResponse['media'] | undefined {
+function extractMediaFromToolResult(toolName: string | null | undefined, rawData: unknown): MessageResponse['media'] | undefined {
+  if (toolName !== 'search_places') return undefined
   if (!rawData || typeof rawData !== 'object') return undefined
 
   const data = rawData as any
@@ -1319,14 +1325,14 @@ export async function handleMessage(
     const venues = extractVenuesFromToolResult(routeDecision.toolName, toolRawData)
 
     const fallbackMediaFromContext = (!inlineMediaItem && effectiveToolContext?.photoUrls?.length)
-      ? [{
+      ? effectiveToolContext.photoUrls.slice(0, 5).map(url => ({
         type: 'photo' as const,
-        url: effectiveToolContext.photoUrls[0],
+        url,
         caption: effectiveMediaDirective?.caption ?? undefined,
-      }]
+      }))
       : undefined
 
-const venuePreviewMedia = !inlineMediaItem
+    const venuePreviewMedia = !inlineMediaItem
       && routeDecision.toolName !== 'search_places'
       ? buildVenuePreviewMedia(
         venues,
@@ -1340,7 +1346,7 @@ const venuePreviewMedia = !inlineMediaItem
       // tool-extracted product photos. Falls back gracefully when neither is available.
       media: inlineMediaItem
         ? [inlineMediaItem]
-        : (extractMediaFromToolResult(toolRawData) ?? fallbackMediaFromContext ?? venuePreviewMedia),
+        : (extractMediaFromToolResult(routeDecision.toolName, toolRawData) ?? fallbackMediaFromContext ?? venuePreviewMedia),
       venues,
       ...(onboardingActive && onboardingResult?.requestLocation ? { requestLocation: true } : {}),
       ...(onboardingActive && onboardingResult?.buttons ? { _buttons: onboardingResult.buttons } : {}),
