@@ -61,7 +61,9 @@ function formatHours(openingHours?: any): string {
     return ''
 }
 
-/** Construct a Google Places photo metadata URL (returns JSON with photoUri) */
+// ─── Photo URI Resolution ───────────────────────────────────────────────────
+
+/** Construct a Google Places photo metadata URL (returns JSON with photoUri instead of redirect) */
 function buildPhotoMetadataUrl(photoName: string, apiKey: string, maxHeightPx = 400): string {
     return `https://places.googleapis.com/v1/${photoName}/media?maxHeightPx=${maxHeightPx}&skipHttpRedirect=true&key=${apiKey}`
 }
@@ -194,6 +196,7 @@ export async function searchPlaces(params: PlaceSearchParams): Promise<ToolExecu
                 return cached
             }
 
+            // Re-hydrate images (photoUri may have expired)
             const hydratedImages = await hydratePlaceImages(payload.raw, apiKey)
             const fallbackImages = hydratedImages.length > 0
                 ? hydratedImages
@@ -323,9 +326,9 @@ export async function searchPlaces(params: PlaceSearchParams): Promise<ToolExecu
             if (extras.length > 0) parts.push(`   ${extras.join(' • ')}`)
 
             lines.push(parts.join('\n'))
-
         }
 
+        // Resolve actual photo URIs server-side (no redirect URLs)
         const images = await hydratePlaceImages(data.places, apiKey)
         const formatted = lines.join('\n\n')
 

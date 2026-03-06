@@ -29,8 +29,9 @@ function isMapPreviewUrl(url: string): boolean {
 function pushPhotoUrl(target: string[], value: unknown): void {
     if (typeof value !== 'string') return
     const trimmed = value.trim()
-    if (!/^https?:\/\//i.test(trimmed)) return
     if (!trimmed || isMapPreviewUrl(trimmed)) return
+    // Only accept valid HTTP(S) URLs — skip resource names like "places/xxx/photos/yyy"
+    if (!/^https?:\/\//i.test(trimmed)) return
     if (!target.includes(trimmed)) target.push(trimmed)
 }
 
@@ -38,12 +39,13 @@ function extractFromPlace(entry: any, placeNames: string[], photoUrls: string[])
     pushUnique(placeNames, entry?.displayName?.text)
     pushUnique(placeNames, entry?.name)
     pushPhotoUrl(photoUrls, entry?.photoUrl)
+    pushPhotoUrl(photoUrls, entry?.photoUri)    // resolved via skipHttpRedirect
     pushPhotoUrl(photoUrls, entry?.imageUrl)
+    pushPhotoUrl(photoUrls, entry?.imageUri)    // resolved via skipHttpRedirect
     if (Array.isArray(entry?.photos)) {
         for (const p of entry.photos) {
             pushPhotoUrl(photoUrls, p?.url)
             pushPhotoUrl(photoUrls, p?.photoUri)
-            pushPhotoUrl(photoUrls, p?.imageUri)
         }
     }
 }
@@ -115,7 +117,7 @@ export function extractToolMediaContext(toolName: string, rawData: unknown): Too
     ) {
         if (Array.isArray(data?.images)) {
             for (const img of data.images.slice(0, 8)) {
-                pushPhotoUrl(photoUrls, img?.url)
+                pushUnique(photoUrls, img?.url)
             }
         }
         if (Array.isArray(rootArray)) {

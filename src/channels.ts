@@ -26,35 +26,25 @@ export interface ChannelAdapter {
   sendMedia?: (chatId: string, media: MediaItem[]) => Promise<void>
 }
 
+
+// ─── Media URL Helpers ──────────────────────────────────────────────────────
+
+/** Detect if a URL is a resolved Google Places photo (lh3 CDN or places API) */
 function isLikelyPlacesPhotoUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url)
-    const host = parsed.hostname.toLowerCase()
-    const path = parsed.pathname.toLowerCase()
-
-    if (host.includes('places.googleapis.com')) return true
-    if ((host.endsWith('googleusercontent.com') || host.endsWith('ggpht.com')) && path.includes('/p/')) {
-      return true
-    }
-    return false
-  } catch {
-    return false
-  }
+  return /lh3\.googleusercontent\.com/i.test(url)
+    || /places\.googleapis\.com\/v1\/.+\/media/i.test(url)
 }
 
-function inferDownloadSource(url: string): 'instagram' | 'tiktok' | 'youtube' | 'places' | 'unknown' {
-  const normalized = url.toLowerCase()
-  if (normalized.includes('tiktok')) return 'tiktok'
-  if (normalized.includes('youtube') || normalized.includes('youtu.be')) return 'youtube'
-  if (normalized.includes('instagram') || normalized.includes('cdninstagram') || normalized.includes('fbcdn')) return 'instagram'
-  if (isLikelyPlacesPhotoUrl(url)) {
-    return 'places'
-  }
-  return 'unknown'
-}
-
-function isPlacesPhotoUrl(url: string): boolean {
-  return isLikelyPlacesPhotoUrl(url)
+/**
+ * Infer the correct download source for a media URL.
+ * Returns 'places' for Google Places photos, 'instagram' as default
+ * for generic/unknown URLs (social media reels, etc.).
+ */
+function inferDownloadSource(url: string): 'instagram' | 'tiktok' | 'youtube' | 'places' {
+  if (isLikelyPlacesPhotoUrl(url)) return 'places'
+  if (/tiktok\.com|tiktokcdn/i.test(url)) return 'tiktok'
+  if (/youtube\.com|youtu\.be|googlevideo\.com/i.test(url)) return 'youtube'
+  return 'instagram' // default for unknown / insta CDN URLs
 }
 
 // ============================================
@@ -130,14 +120,21 @@ export const telegramAdapter: ChannelAdapter = {
     if (media.length === 1 && media[0].type === 'video') {
       // Single video — download first (CDN URLs expire!), then multipart upload
       const source = inferDownloadSource(media[0].url)
-      const downloaded = source === 'unknown'
-        ? null
-        : await downloadMedia(media[0].url, source).catch(() => null)
+      const downloaded = await downloadMedia(media[0].url, source).catch(() => null)
       if (downloaded) {
         const result = await uploadVideoToTelegram(chatId, downloaded, media[0].caption || '', { supportsStreaming: true })
         if (result.success) return
         console.warn('[Telegram] sendMedia: multipart video upload failed, trying URL-based fallback')
       }
+
+      // For Places URLs, NEVER do URL-based fallback (produces map thumbnails)
+      if (source === 'places') {
+        if (media[0].caption) {
+          await telegramAdapter.sendMessage(chatId, media[0].caption)
+        }
+        return
+      }
+
       // Fallback: URL-based send (may fail for expired CDN URLs)
       const resp = await fetch(`https://api.telegram.org/bot${token}/sendVideo`, {
         method: 'POST',
@@ -168,22 +165,21 @@ export const telegramAdapter: ChannelAdapter = {
     } else if (media.length === 1) {
       // Single photo — download first, then multipart upload
       const source = inferDownloadSource(media[0].url)
-      const downloaded = source === 'unknown'
-        ? null
-        : await downloadMedia(media[0].url, source).catch(() => null)
+      const downloaded = await downloadMedia(media[0].url, source).catch(() => null)
       if (downloaded) {
         const result = await uploadPhotoToTelegram(chatId, downloaded, media[0].caption || '')
         if (result.success) return
         console.warn('[Telegram] sendMedia: multipart photo upload failed, trying URL-based fallback')
       }
-      if (isPlacesPhotoUrl(media[0].url)) {
-        // Places image URLs should not fall back to URL-based Telegram send because
-        // redirect previews can degrade into static map thumbnails.
+
+      // For Places URLs, NEVER do URL-based fallback (produces map thumbnails)
+      if (source === 'places') {
         if (media[0].caption) {
           await telegramAdapter.sendMessage(chatId, media[0].caption)
         }
         return
       }
+
       // Fallback: URL-based send
       const resp = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
         method: 'POST',
@@ -200,26 +196,20 @@ export const telegramAdapter: ChannelAdapter = {
         console.error('[Telegram] sendPhoto failed:', (err as any)?.description, 'url:', media[0].url)
       }
     } else {
-      // Multiple photos — try downloading each and uploading individually; fall back to URL-based sendMediaGroup
+      // Multiple photos — try downloading each and uploading individually
       let sentCount = 0
-      const mediaGroupFallback: MediaItem[] = []
       for (const item of media.slice(0, 10)) {
         const source = inferDownloadSource(item.url)
-        const downloaded = source === 'unknown'
-          ? null
-          : await downloadMedia(item.url, source).catch(() => null)
+        const downloaded = await downloadMedia(item.url, source).catch(() => null)
         if (downloaded) {
           const result = await uploadPhotoToTelegram(chatId, downloaded, item.caption || '')
           if (result.success) { sentCount++; continue }
         }
-        if (isPlacesPhotoUrl(item.url)) {
-          if (item.caption) {
-            await telegramAdapter.sendMessage(chatId, item.caption)
-            sentCount++
-          }
-          continue
-        }
-        // Per-item fallback: URL-based photo send (check response to track success)
+
+        // For Places URLs, skip URL-based fallback entirely (would show map thumbnail)
+        if (source === 'places') continue
+
+        // Per-item fallback: URL-based photo send
         const resp = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -231,25 +221,34 @@ export const telegramAdapter: ChannelAdapter = {
           }),
         }).catch(() => null)
         if (resp?.ok) sentCount++
-        else mediaGroupFallback.push(item)
       }
 
-      if (sentCount === 0 && mediaGroupFallback.length > 0) {
-        // All individual attempts failed — try sendMediaGroup URL-based as last resort.
-        // Excludes Places URLs to avoid static map thumbnail regressions.
-        const mediaGroup = mediaGroupFallback.map((item, i) => ({
-          type: 'photo' as const,
-          media: item.url,
-          ...(i === 0 && item.caption ? { caption: item.caption, parse_mode: 'HTML' as const } : {}),
-        }))
-        const resp = await fetch(`https://api.telegram.org/bot${token}/sendMediaGroup`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chat_id: chatId, media: mediaGroup }),
-        })
-        if (!resp.ok) {
-          const err = await resp.json().catch(() => ({}))
-          console.error('[Telegram] sendMediaGroup failed:', (err as any)?.description)
+      if (sentCount === 0) {
+        // All individual attempts failed
+        // Only use sendMediaGroup if none of the URLs are Places photos
+        const hasPlacesUrls = media.some(m => isLikelyPlacesPhotoUrl(m.url))
+        if (hasPlacesUrls) {
+          // Send text-only fallback for Places (no map thumbnails)
+          const caption = media[0]?.caption
+          if (caption) {
+            await telegramAdapter.sendMessage(chatId, caption)
+          }
+        } else {
+          // Try sendMediaGroup URL-based as last resort (non-Places URLs)
+          const mediaGroup = media.slice(0, 10).map((item, i) => ({
+            type: 'photo' as const,
+            media: item.url,
+            ...(i === 0 && item.caption ? { caption: item.caption, parse_mode: 'HTML' as const } : {}),
+          }))
+          const resp = await fetch(`https://api.telegram.org/bot${token}/sendMediaGroup`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chatId, media: mediaGroup }),
+          })
+          if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}))
+            console.error('[Telegram] sendMediaGroup failed:', (err as any)?.description)
+          }
         }
       }
     }
@@ -260,11 +259,12 @@ export const telegramAdapter: ChannelAdapter = {
  * Send proactive content to a Telegram chat.
  * Uses download-first pipeline for media (CDN URLs expire!).
  * Falls back gracefully: multipart upload → URL-based → text link.
+ * For Places photos, URL-based fallback is skipped (produces map thumbnails).
  */
 export async function sendProactiveContent(
   chatId: string,
   caption: string,
-  media?: { type: 'video' | 'photo'; url: string; source?: 'instagram' | 'tiktok' | 'youtube' }
+  media?: { type: 'video' | 'photo'; url: string; source?: 'instagram' | 'tiktok' | 'youtube' | 'places' }
 ): Promise<boolean> {
   const token = process.env.TELEGRAM_BOT_TOKEN
   if (!token) {
@@ -276,7 +276,7 @@ export async function sendProactiveContent(
     if (media) {
       // Try download-first pipeline (multipart upload)
       const { downloadMedia, uploadVideoToTelegram, uploadPhotoToTelegram } = await import('./media/mediaDownloader.js')
-      const source = media.source || 'instagram'
+      const source = media.source || inferDownloadSource(media.url)
 
       const downloaded = await downloadMedia(media.url, source)
       if (downloaded) {
@@ -289,7 +289,15 @@ export async function sendProactiveContent(
         console.warn('[Telegram] Multipart upload failed, trying URL-based fallback')
       }
 
+      // For Places URLs, NEVER do URL-based fallback (produces map thumbnails)
+      if (isLikelyPlacesPhotoUrl(media.url)) {
+        console.warn('[Telegram] Skipping URL-based fallback for Places photo (would produce map thumbnail)')
+        await telegramAdapter.sendMessage(chatId, caption)
+        return true
+      }
+
       // Fallback: try URL-based send (may fail for expired CDN URLs)
+      console.warn('[Telegram] Multipart upload failed, trying URL-based fallback')
       const method = media.type === 'video' ? 'sendVideo' : 'sendPhoto'
       const field = media.type === 'video' ? 'video' : 'photo'
 
