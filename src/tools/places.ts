@@ -108,12 +108,20 @@ async function resolvePhotoUri(photoName: string, apiKey: string): Promise<strin
     if (cachedUri) return cachedUri
 
     try {
-        const response = await fetch(buildPhotoMetadataUrl(photoName, apiKey), {
+        const url = buildPhotoMetadataUrl(photoName, apiKey)
+        console.log(`[Places Photo] Resolving: ${photoName.substring(0, 60)}...`)
+        const response = await fetch(url, {
             signal: AbortSignal.timeout(5000),
         })
-        if (!response.ok) return null
+        if (!response.ok) {
+            console.warn(`[Places Photo] Resolution failed: ${response.status} ${response.statusText}`)
+            // Fallback: use direct media URL (will redirect to actual photo)
+            const fallbackUrl = `https://places.googleapis.com/v1/${photoName}/media?maxHeightPx=800&key=${apiKey}`
+            return fallbackUrl
+        }
         const payload = await response.json() as { photoUri?: string }
         if (typeof payload.photoUri === 'string' && payload.photoUri.length > 0) {
+            console.log(`[Places Photo] Resolved: ${payload.photoUri.substring(0, 60)}...`)
             photoUriCache.set(photoName, {
                 uri: payload.photoUri,
                 expiresAt: Date.now() + PHOTO_URI_CACHE_TTL,
@@ -121,9 +129,15 @@ async function resolvePhotoUri(photoName: string, apiKey: string): Promise<strin
             sweepPhotoUriCache()
             return payload.photoUri
         }
-        return null
-    } catch {
-        return null
+        console.warn(`[Places Photo] No photoUri in response, using fallback redirect URL`)
+        // Fallback: use direct media URL (will redirect to actual photo)
+        const fallbackUrl = `https://places.googleapis.com/v1/${photoName}/media?maxHeightPx=800&key=${apiKey}`
+        return fallbackUrl
+    } catch (err) {
+        console.warn(`[Places Photo] Resolution error: ${err instanceof Error ? err.message : String(err)}`)
+        // Fallback: use direct media URL (will redirect to actual photo)
+        const fallbackUrl = `https://places.googleapis.com/v1/${photoName}/media?maxHeightPx=800&key=${apiKey}`
+        return fallbackUrl
     }
 }
 
@@ -137,10 +151,16 @@ async function hydratePlaceImages(
             ? `⭐ ${place.rating} (${(place.userRatingCount || 0).toLocaleString()} reviews)`
             : 'No rating yet'
         const photoName = place.photos?.[0]?.name
-        if (!photoName) return null
+        if (!photoName) {
+            console.log(`[Places Photo] No photo for ${name}`)
+            return null
+        }
 
         const resolvedPhotoUrl = await resolvePhotoUri(photoName, apiKey)
-        if (!resolvedPhotoUrl) return null
+        if (!resolvedPhotoUrl) {
+            console.warn(`[Places Photo] Failed to resolve photo for ${name}`)
+            return null
+        }
 
         return {
             url: resolvedPhotoUrl,
@@ -152,8 +172,11 @@ async function hydratePlaceImages(
     for (const result of results) {
         if (result.status === 'fulfilled' && result.value) {
             images.push(result.value)
+        } else if (result.status === 'rejected') {
+            console.warn(`[Places Photo] Image hydration rejected: ${result.reason}`)
         }
     }
+    console.log(`[Places Photo] Hydrated ${images.length}/${places.length} place images`)
     return images
 }
 
