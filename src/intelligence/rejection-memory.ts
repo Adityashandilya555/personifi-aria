@@ -14,6 +14,7 @@
 
 import Groq from 'groq-sdk'
 import { getPool } from '../character/session-store.js'
+import { extractSignalsViaBedrock } from './bedrock-extractor.js'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -43,8 +44,11 @@ function getGroq(): Groq {
 }
 
 /**
- * Use 8B model to extract explicit rejections and preferences from a single
- * user message. Returns empty arrays on any failure (fire-and-forget safe).
+ * Extract explicit rejections and preferences from a user message.
+ *
+ * Uses Bedrock (Claude Haiku) as the primary extraction engine.
+ * Falls back to Groq 8B when Bedrock is unavailable.
+ * Returns empty arrays on any failure (fire-and-forget safe).
  */
 export async function extractRejectionSignals(
     userMessage: string,
@@ -53,6 +57,20 @@ export async function extractRejectionSignals(
     const empty: ExtractionResult = { rejections: [], preferences: [] }
     if (!userMessage || userMessage.length < 5) return empty
 
+    // ── Try Bedrock first (richer extraction) ────────────────────────────
+    try {
+        const bedrockResult = await extractSignalsViaBedrock(userMessage, assistantReply)
+        if (bedrockResult) {
+            return {
+                rejections: bedrockResult.rejectedEntities,
+                preferences: bedrockResult.preferredEntities,
+            }
+        }
+    } catch {
+        // Bedrock failed — fall through to Groq
+    }
+
+    // ── Fallback: Groq 8B extraction ─────────────────────────────────────
     // Fast keyword pre-filter — avoid LLM call for clearly neutral messages
     const lowerMsg = userMessage.toLowerCase()
     const hasNegativeSignal = /\b(no|nope|don't|dont|hate|not|never|avoid|skip|bad|worst|terrible|awful|dislike|not into|not a fan|i won't|i wont)\b/i.test(lowerMsg)
