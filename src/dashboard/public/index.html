@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Aria — Dashboard</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #0a0e17;
+      --bg-card: rgba(255,255,255,0.04);
+      --bg-card-hover: rgba(255,255,255,0.07);
+      --border: rgba(255,255,255,0.08);
+      --text: #e4e8f1;
+      --text-dim: #8891a5;
+      --accent: #6c5ce7;
+      --accent-glow: rgba(108,92,231,0.25);
+      --green: #00cec9;
+      --orange: #fdcb6e;
+      --red: #ff7675;
+      --pink: #fd79a8;
+      --blue: #74b9ff;
+      --radius: 16px;
+    }
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body {
+      font-family: 'Inter', -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+    /* ── Header ─── */
+    .header {
+      padding: 24px 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      background: rgba(10,14,23,0.8);
+      backdrop-filter: blur(16px);
+      position: sticky; top:0; z-index:100;
+    }
+    .logo {
+      font-size: 22px; font-weight: 700;
+      background: linear-gradient(135deg, var(--accent), var(--pink));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .refresh-info { font-size:12px; color:var(--text-dim); }
+    /* ── Tabs ─── */
+    .tabs {
+      display:flex; gap:4px; padding:16px 32px 0;
+    }
+    .tab {
+      padding:10px 20px; border-radius:12px 12px 0 0;
+      background:transparent; border:1px solid transparent;
+      color:var(--text-dim); cursor:pointer;
+      font-size:14px; font-weight:500; font-family:inherit;
+      transition: all 0.2s;
+    }
+    .tab:hover { color:var(--text); background:var(--bg-card); }
+    .tab.active {
+      color:var(--text); background:var(--bg-card);
+      border-color:var(--border); border-bottom-color:transparent;
+    }
+    /* ── Content ─── */
+    .content {
+      padding:24px 32px 48px;
+    }
+    .panel { display:none; }
+    .panel.active { display:block; animation: fadeIn 0.3s ease; }
+    @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:none} }
+
+    /* ── Cards ─── */
+    .card-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; margin-bottom:24px; }
+    .card {
+      background:var(--bg-card); border:1px solid var(--border);
+      border-radius:var(--radius); padding:20px;
+      transition: all 0.25s;
+    }
+    .card:hover { background:var(--bg-card-hover); transform:translateY(-2px); box-shadow:0 8px 32px rgba(0,0,0,0.3); }
+    .card-label { font-size:12px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px; }
+    .card-value { font-size:32px; font-weight:700; }
+    .card-sub { font-size:12px; color:var(--text-dim); margin-top:4px; }
+
+    /* ── Charts ─── */
+    .chart-row { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:24px; }
+    .chart-box {
+      background:var(--bg-card); border:1px solid var(--border);
+      border-radius:var(--radius); padding:20px;
+    }
+    .chart-box h3 { font-size:14px; font-weight:600; margin-bottom:12px; color:var(--text-dim); }
+    .chart-box canvas { max-height:280px; }
+
+    /* ── Tables ─── */
+    .data-table {
+      width:100%; border-collapse:collapse;
+      background:var(--bg-card); border:1px solid var(--border);
+      border-radius:var(--radius); overflow:hidden;
+    }
+    .data-table th {
+      text-align:left; padding:12px 16px;
+      font-size:11px; text-transform:uppercase; letter-spacing:0.5px;
+      color:var(--text-dim); border-bottom:1px solid var(--border);
+      background:rgba(255,255,255,0.02);
+    }
+    .data-table td {
+      padding:10px 16px; font-size:13px;
+      border-bottom:1px solid var(--border);
+    }
+    .data-table tr:last-child td { border-bottom:none; }
+    .data-table tr:hover td { background:rgba(255,255,255,0.02); }
+
+    /* ── Badges ─── */
+    .badge {
+      display:inline-block; padding:3px 8px; border-radius:6px;
+      font-size:11px; font-weight:600; text-transform:uppercase;
+    }
+    .badge-proactive { background:rgba(108,92,231,0.2); color:#a29bfe; }
+    .badge-engaged { background:rgba(0,206,201,0.2); color:#00cec9; }
+    .badge-curious { background:rgba(253,203,110,0.2); color:#fdcb6e; }
+    .badge-passive { background:rgba(136,145,165,0.2); color:#8891a5; }
+
+    .badge-noticed { background:rgba(136,145,165,0.2); color:#8891a5; }
+    .badge-probing { background:rgba(253,203,110,0.2); color:#fdcb6e; }
+    .badge-shifting { background:rgba(116,185,255,0.2); color:#74b9ff; }
+    .badge-executing { background:rgba(0,206,201,0.2); color:#00cec9; }
+    .badge-completed { background:rgba(108,92,231,0.2); color:#a29bfe; }
+    .badge-abandoned { background:rgba(255,118,117,0.2); color:#ff7675; }
+
+    /* ── Progress bar ─── */
+    .confidence-bar {
+      width:100%; height:6px; border-radius:3px;
+      background:rgba(255,255,255,0.06); overflow:hidden;
+    }
+    .confidence-fill {
+      height:100%; border-radius:3px;
+      transition: width 0.5s ease;
+    }
+
+    /* ── Responsive ─── */
+    @media (max-width:768px) {
+      .chart-row { grid-template-columns:1fr; }
+      .header, .tabs, .content { padding-left:16px; padding-right:16px; }
+      .card-value { font-size:24px; }
+    }
+
+    /* ── Loading ─── */
+    .loading {
+      display:flex; align-items:center; justify-content:center;
+      padding:60px; color:var(--text-dim);
+    }
+    .spinner {
+      width:24px; height:24px; border:3px solid var(--border);
+      border-top-color:var(--accent); border-radius:50%;
+      animation:spin 0.8s linear infinite; margin-right:12px;
+    }
+    @keyframes spin { to{transform:rotate(360deg)} }
+
+    .section-title {
+      font-size:16px; font-weight:600; margin:24px 0 12px;
+      padding-bottom:8px; border-bottom:1px solid var(--border);
+    }
+
+    /* Full-width chart */
+    .chart-full {
+      background:var(--bg-card); border:1px solid var(--border);
+      border-radius:var(--radius); padding:20px; margin-bottom:24px;
+    }
+    .chart-full h3 { font-size:14px; font-weight:600; margin-bottom:12px; color:var(--text-dim); }
+    .chart-full canvas { max-height:300px; }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <div class="logo">✦ Aria Dashboard</div>
+  <div class="refresh-info">Auto-refreshes every 30s · <span id="lastUpdate">—</span></div>
+</div>
+
+<div class="tabs">
+  <button class="tab active" data-panel="engagement">📊 Engagement Overview</button>
+  <button class="tab" data-panel="intelligence">🧠 Conversational Intelligence</button>
+  <button class="tab" data-panel="proactive">🚀 Proactive Performance</button>
+</div>
+
+<div class="content">
+
+  <!-- ═══════════════════════ Panel 1: Engagement ═══════════════════════ -->
+  <div id="engagement" class="panel active">
+    <div id="engagement-loading" class="loading"><div class="spinner"></div>Loading engagement data…</div>
+    <div id="engagement-content" style="display:none">
+      <div class="card-grid" id="engagement-cards"></div>
+      <div class="chart-row">
+        <div class="chart-box"><h3>Pulse State Distribution</h3><canvas id="pulseChart"></canvas></div>
+        <div class="chart-box"><h3>Messages per Day (14d)</h3><canvas id="messagesChart"></canvas></div>
+      </div>
+      <h3 class="section-title">🎯 Active Topic Intents</h3>
+      <table class="data-table" id="topicsTable">
+        <thead><tr><th>User</th><th>Topic</th><th>Confidence</th><th>Phase</th><th>Signals</th><th>Last Signal</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════ Panel 2: Intelligence ═══════════════════════ -->
+  <div id="intelligence" class="panel">
+    <div id="intelligence-loading" class="loading"><div class="spinner"></div>Loading intelligence data…</div>
+    <div id="intelligence-content" style="display:none">
+      <div class="card-grid" id="intelligence-cards"></div>
+      <div class="chart-row">
+        <div class="chart-box"><h3>Tool Usage Breakdown</h3><canvas id="toolsChart"></canvas></div>
+        <div class="chart-box"><h3>Topic Phase Funnel</h3><canvas id="topicFunnelChart"></canvas></div>
+      </div>
+      <div class="chart-full"><h3>Funnel Conversion (Started → Completed vs Abandoned)</h3><canvas id="funnelConversionChart"></canvas></div>
+      <h3 class="section-title">🔧 Tool Performance (30d)</h3>
+      <table class="data-table" id="toolsTable">
+        <thead><tr><th>Tool</th><th>Calls</th><th>Success Rate</th><th>Avg Time</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════ Panel 3: Proactive ═══════════════════════ -->
+  <div id="proactive" class="panel">
+    <div id="proactive-loading" class="loading"><div class="spinner"></div>Loading proactive data…</div>
+    <div id="proactive-content" style="display:none">
+      <div class="card-grid" id="proactive-cards"></div>
+      <div class="chart-row">
+        <div class="chart-box"><h3>Sends vs Responses (14d)</h3><canvas id="sendsChart"></canvas></div>
+        <div class="chart-box"><h3>Smart Gate Decisions (7d)</h3><canvas id="gateChart"></canvas></div>
+      </div>
+      <div class="chart-full"><h3>Content Type Effectiveness</h3><canvas id="contentTypeChart"></canvas></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ─── Chart.js Defaults ───────────────────────────────────────────────────────
+Chart.defaults.color = '#8891a5';
+Chart.defaults.borderColor = 'rgba(255,255,255,0.06)';
+Chart.defaults.font.family = "'Inter', sans-serif";
+
+const COLORS = {
+  accent: '#6c5ce7', green: '#00cec9', orange: '#fdcb6e',
+  red: '#ff7675', pink: '#fd79a8', blue: '#74b9ff',
+  purple: '#a29bfe', dim: '#636e72',
+};
+
+const charts = {};
+
+// ─── Tab Switching ───────────────────────────────────────────────────────────
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById(tab.dataset.panel).classList.add('active');
+  });
+});
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+function phaseBadge(phase) {
+  return `<span class="badge badge-${phase}">${phase}</span>`;
+}
+
+function confidenceBar(val) {
+  const hue = val < 30 ? 0 : val < 60 ? 40 : val < 85 ? 180 : 270;
+  return `<div style="display:flex;align-items:center;gap:8px">
+    <div class="confidence-bar" style="width:80px">
+      <div class="confidence-fill" style="width:${val}%;background:hsl(${hue},70%,60%)"></div>
+    </div>
+    <span style="font-size:12px;font-weight:600">${val}%</span>
+  </div>`;
+}
+
+function timeAgo(iso) {
+  if (!iso) return '—';
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+
+function destroyChart(id) { if (charts[id]) { charts[id].destroy(); delete charts[id]; } }
+
+// ─── Dashboard 1: Engagement ─────────────────────────────────────────────────
+async function loadEngagement() {
+  try {
+    const data = await fetch('/api/dashboard/engagement').then(r => r.json());
+    if (data.error) throw new Error(data.error);
+
+    // Cards
+    const au = data.activeUsers || {};
+    const totalTopics = (data.topics || []).length;
+    const pulseTotal = Object.values(data.pulseDistribution || {}).reduce((a,b) => a + b, 0);
+    const cardsHtml = `
+      <div class="card"><div class="card-label">Active Users (24h)</div><div class="card-value">${au['24h'] || 0}</div><div class="card-sub">7d: ${au['7d'] || 0} · 30d: ${au['30d'] || 0}</div></div>
+      <div class="card"><div class="card-label">Pulse Tracked Users</div><div class="card-value">${pulseTotal}</div></div>
+      <div class="card"><div class="card-label">Active Topics</div><div class="card-value" style="color:${COLORS.green}">${totalTopics}</div></div>
+      <div class="card"><div class="card-label">Msgs Today</div><div class="card-value">${data.messagesPerDay?.[0]?.messageCount || 0}</div><div class="card-sub">${data.messagesPerDay?.[0]?.userCount || 0} users</div></div>
+    `;
+    document.getElementById('engagement-cards').innerHTML = cardsHtml;
+
+    // Pulse pie chart
+    const pd = data.pulseDistribution || {};
+    destroyChart('pulseChart');
+    charts.pulseChart = new Chart(document.getElementById('pulseChart'), {
+      type: 'doughnut',
+      data: {
+        labels: Object.keys(pd),
+        datasets: [{
+          data: Object.values(pd),
+          backgroundColor: [COLORS.dim, COLORS.orange, COLORS.green, COLORS.accent],
+          borderWidth: 0, hoverOffset: 8,
+        }]
+      },
+      options: { responsive: true, plugins: { legend: { position: 'bottom', labels: { padding: 16 } } } }
+    });
+
+    // Messages per day line chart
+    const mpd = (data.messagesPerDay || []).reverse();
+    destroyChart('messagesChart');
+    charts.messagesChart = new Chart(document.getElementById('messagesChart'), {
+      type: 'line',
+      data: {
+        labels: mpd.map(d => d.day.slice(5)),
+        datasets: [{
+          label: 'Messages', data: mpd.map(d => d.messageCount),
+          borderColor: COLORS.accent, backgroundColor: 'rgba(108,92,231,0.1)',
+          fill: true, tension: 0.4, pointRadius: 3,
+        }, {
+          label: 'Users', data: mpd.map(d => d.userCount),
+          borderColor: COLORS.green, backgroundColor: 'rgba(0,206,201,0.1)',
+          fill: true, tension: 0.4, pointRadius: 3,
+        }]
+      },
+      options: { responsive:true, scales:{y:{beginAtZero:true}}, plugins:{legend:{position:'bottom'}} }
+    });
+
+    // Topics table
+    const tbody = document.querySelector('#topicsTable tbody');
+    tbody.innerHTML = (data.topics || []).map(t => `
+      <tr>
+        <td>${t.displayName || t.userId.slice(0,8)}</td>
+        <td>${t.topic}</td>
+        <td>${confidenceBar(t.confidence)}</td>
+        <td>${phaseBadge(t.phase)}</td>
+        <td>${t.signalCount}</td>
+        <td style="color:var(--text-dim)">${timeAgo(t.lastSignalAt)}</td>
+      </tr>
+    `).join('');
+
+    document.getElementById('engagement-loading').style.display = 'none';
+    document.getElementById('engagement-content').style.display = 'block';
+  } catch (e) {
+    document.getElementById('engagement-loading').innerHTML = `<span style="color:var(--red)">⚠ ${e.message}</span>`;
+  }
+}
+
+// ─── Dashboard 2: Conversational Intelligence ────────────────────────────────
+async function loadIntelligence() {
+  try {
+    const data = await fetch('/api/dashboard/intelligence').then(r => r.json());
+    if (data.error) throw new Error(data.error);
+
+    // Cards
+    const totalTools = (data.tools || []).reduce((a,t) => a + t.total, 0);
+    const avgSuccess = (data.tools || []).length > 0
+      ? Math.round((data.tools || []).reduce((a,t) => a + t.successRate, 0) / data.tools.length)
+      : 0;
+    const fc = data.funnelConversion || {};
+    const funnelTotal = Object.values(fc).reduce((a,b) => a + b, 0);
+    const tp = data.topicPhases || {};
+    const completedTopics = tp.completed || 0;
+    const allTopics = Object.values(tp).reduce((a,b) => a + b, 0);
+
+    document.getElementById('intelligence-cards').innerHTML = `
+      <div class="card"><div class="card-label">Tool Calls (30d)</div><div class="card-value">${totalTools}</div></div>
+      <div class="card"><div class="card-label">Avg Success Rate</div><div class="card-value" style="color:${COLORS.green}">${avgSuccess}%</div></div>
+      <div class="card"><div class="card-label">Avg Signals Before Tool Use</div><div class="card-value">${data.avgSignalsBeforeToolUse || '—'}</div></div>
+      <div class="card"><div class="card-label">Topic Completion Rate</div><div class="card-value" style="color:${COLORS.accent}">${allTopics > 0 ? Math.round(completedTopics/allTopics*100) : 0}%</div><div class="card-sub">${completedTopics} of ${allTopics}</div></div>
+    `;
+
+    // Tool usage bar chart
+    const tools = (data.tools || []).slice(0, 10);
+    destroyChart('toolsChart');
+    charts.toolsChart = new Chart(document.getElementById('toolsChart'), {
+      type: 'bar',
+      data: {
+        labels: tools.map(t => t.toolName.replace(/_/g,' ')),
+        datasets: [{
+          label: 'Calls', data: tools.map(t => t.total),
+          backgroundColor: COLORS.accent + '99', borderRadius: 6,
+        }, {
+          label: 'Successes', data: tools.map(t => t.successes),
+          backgroundColor: COLORS.green + '99', borderRadius: 6,
+        }]
+      },
+      options: { responsive:true, indexAxis:'y', scales:{x:{beginAtZero:true}}, plugins:{legend:{position:'bottom'}} }
+    });
+
+    // Topic phase funnel
+    const phaseOrder = ['noticed','probing','shifting','executing','completed','abandoned'];
+    const phaseColors = [COLORS.dim, COLORS.orange, COLORS.blue, COLORS.green, COLORS.accent, COLORS.red];
+    destroyChart('topicFunnelChart');
+    charts.topicFunnelChart = new Chart(document.getElementById('topicFunnelChart'), {
+      type: 'bar',
+      data: {
+        labels: phaseOrder,
+        datasets: [{
+          data: phaseOrder.map(p => tp[p] || 0),
+          backgroundColor: phaseColors.map(c => c + '99'),
+          borderRadius: 6,
+        }]
+      },
+      options: { responsive:true, plugins:{legend:{display:false}}, scales:{y:{beginAtZero:true}} }
+    });
+
+    // Funnel conversion doughnut
+    destroyChart('funnelConversionChart');
+    charts.funnelConversionChart = new Chart(document.getElementById('funnelConversionChart'), {
+      type: 'doughnut',
+      data: {
+        labels: Object.keys(fc),
+        datasets: [{
+          data: Object.values(fc),
+          backgroundColor: [COLORS.green, COLORS.accent, COLORS.red, COLORS.orange, COLORS.dim],
+          borderWidth: 0,
+        }]
+      },
+      options: { responsive:true, plugins:{legend:{position:'right',labels:{padding:12}}} }
+    });
+
+    // Tools table
+    const ttbody = document.querySelector('#toolsTable tbody');
+    ttbody.innerHTML = (data.tools || []).map(t => `
+      <tr>
+        <td><strong>${t.toolName}</strong></td>
+        <td>${t.total}</td>
+        <td><span style="color:${t.successRate>=80?COLORS.green:t.successRate>=50?COLORS.orange:COLORS.red}">${t.successRate}%</span></td>
+        <td>${t.avgMs}ms</td>
+      </tr>
+    `).join('');
+
+    document.getElementById('intelligence-loading').style.display = 'none';
+    document.getElementById('intelligence-content').style.display = 'block';
+  } catch (e) {
+    document.getElementById('intelligence-loading').innerHTML = `<span style="color:var(--red)">⚠ ${e.message}</span>`;
+  }
+}
+
+// ─── Dashboard 3: Proactive Performance ──────────────────────────────────────
+async function loadProactive() {
+  try {
+    const data = await fetch('/api/dashboard/proactive').then(r => r.json());
+    if (data.error) throw new Error(data.error);
+
+    // Cards
+    const us = data.userStats || {};
+    const totalSent = (data.proactiveSends || []).reduce((a,d) => a + d.sent, 0);
+    const totalResp = (data.proactiveSends || []).reduce((a,d) => a + d.responses, 0);
+    const avgRate = totalSent > 0 ? Math.round(totalResp / totalSent * 100) : 0;
+
+    document.getElementById('proactive-cards').innerHTML = `
+      <div class="card"><div class="card-label">Proactive Users</div><div class="card-value">${us.totalUsers || 0}</div><div class="card-sub">${us.activeToday || 0} sent today</div></div>
+      <div class="card"><div class="card-label">Total Sends (14d)</div><div class="card-value">${totalSent}</div></div>
+      <div class="card"><div class="card-label">Response Rate</div><div class="card-value" style="color:${avgRate>=40?COLORS.green:avgRate>=20?COLORS.orange:COLORS.red}">${avgRate}%</div><div class="card-sub">${totalResp} responses</div></div>
+      <div class="card"><div class="card-label">Avg Sends/Day/User</div><div class="card-value">${us.avgSendsToday || 0}</div></div>
+    `;
+
+    // Sends vs responses line chart
+    const sends = (data.proactiveSends || []).reverse();
+    destroyChart('sendsChart');
+    charts.sendsChart = new Chart(document.getElementById('sendsChart'), {
+      type: 'line',
+      data: {
+        labels: sends.map(d => d.day.slice(5)),
+        datasets: [{
+          label: 'Sends', data: sends.map(d => d.sent),
+          borderColor: COLORS.accent, backgroundColor: 'rgba(108,92,231,0.1)',
+          fill: true, tension: 0.4,
+        }, {
+          label: 'Responses', data: sends.map(d => d.responses),
+          borderColor: COLORS.green, backgroundColor: 'rgba(0,206,201,0.1)',
+          fill: true, tension: 0.4,
+        }]
+      },
+      options: { responsive:true, scales:{y:{beginAtZero:true}}, plugins:{legend:{position:'bottom'}} }
+    });
+
+    // Gate decisions pie
+    const gd = data.gateDecisions || [];
+    destroyChart('gateChart');
+    charts.gateChart = new Chart(document.getElementById('gateChart'), {
+      type: 'doughnut',
+      data: {
+        labels: gd.map(g => g.reason),
+        datasets: [{
+          data: gd.map(g => g.count),
+          backgroundColor: [COLORS.green, COLORS.orange, COLORS.red, COLORS.blue, COLORS.dim],
+          borderWidth: 0,
+        }]
+      },
+      options: { responsive:true, plugins:{legend:{position:'bottom',labels:{padding:12}}} }
+    });
+
+    // Content type bar chart
+    const ct = data.contentTypes || [];
+    destroyChart('contentTypeChart');
+    charts.contentTypeChart = new Chart(document.getElementById('contentTypeChart'), {
+      type: 'bar',
+      data: {
+        labels: ct.map(c => c.type),
+        datasets: [{
+          label: 'Uses', data: ct.map(c => c.count),
+          backgroundColor: [COLORS.pink+'99', COLORS.blue+'99', COLORS.orange+'99', COLORS.green+'99', COLORS.accent+'99'],
+          borderRadius: 8,
+        }]
+      },
+      options: { responsive:true, scales:{y:{beginAtZero:true}}, plugins:{legend:{display:false}} }
+    });
+
+    document.getElementById('proactive-loading').style.display = 'none';
+    document.getElementById('proactive-content').style.display = 'block';
+  } catch (e) {
+    document.getElementById('proactive-loading').innerHTML = `<span style="color:var(--red)">⚠ ${e.message}</span>`;
+  }
+}
+
+// ─── Init & Auto-Refresh ─────────────────────────────────────────────────────
+async function refreshAll() {
+  await Promise.all([loadEngagement(), loadIntelligence(), loadProactive()]);
+  document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
+}
+
+refreshAll();
+setInterval(refreshAll, 30000);
+</script>
+
+</body>
+</html>
