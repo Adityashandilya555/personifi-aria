@@ -139,7 +139,7 @@ function festivalCalendar(): FestivalEvent[] {
             suggestions: ['New Year parties in Bengaluru', 'Countdown events at Koramangala', 'Rooftop dinner reservations', 'Brigade Road countdown'],
             hashtag: 'newyearbangalore',
         },
-        // Local Bengaluru events (approximate)
+        // Local Bengaluru/Karnataka events — included only when location is Karnataka/Bengaluru
         {
             name: 'Karaga Festival',
             date: `${y}-04-12`,
@@ -155,6 +155,36 @@ function festivalCalendar(): FestivalEvent[] {
             hashtag: 'blf',
         },
     ]
+}
+
+/**
+ * Extra Bengaluru-only festivals not covered by festivalCalendar().
+ * Festivals shared with festivalCalendar (Karaga, BLF, Ugadi, Dasara) are
+ * kept in festivalCalendar to avoid duplication — the dedup at line 312
+ * handles any overlap from Calendarific API results.
+ */
+function bengaluruCalendar(): FestivalEvent[] {
+    const y = year()
+    return [
+        {
+            name: 'Kadalekai Parishe',
+            date: `${y}-11-27`,
+            type: 'local',
+            suggestions: ['Groundnut fair at Bull Temple Rd', 'Street food around Basavanagudi', 'Bull Temple visit'],
+            hashtag: 'kadalekai',
+        },
+        {
+            name: 'Bengaluru Habba',
+            date: `${y}-12-15`,
+            type: 'local',
+            suggestions: ['Art installations at Cubbon Park', 'Music stages across the city', 'Food courts at Palace Grounds'],
+            hashtag: 'bengaluruhabba',
+        },
+    ]
+}
+
+function isKarnataka(location: string): boolean {
+    return /bengaluru|bangalore|mysuru|mysore|karnataka|blr/i.test(location)
 }
 
 // ─── In-memory state ──────────────────────────────────────────────────────────
@@ -195,15 +225,39 @@ function daysBetween(from: string, to: string): number {
     return Math.round((b - a) / msPerDay)
 }
 
-// ─── Calendarific API (optional) ──────────────────────────────────────────────
+// ─── Calendarific API (optional, per-region — Issue #93) ──────────────────────
 
-async function fetchCalendarificEvents(): Promise<FestivalEvent[]> {
+/** Map city/region names to Calendarific sub-region codes for India.
+ *  Returns undefined for unmapped cities — caller omits the &location param,
+ *  so the API returns national holidays only (which is correct behaviour). */
+function getCalendarificRegion(location: string): string | undefined {
+    const loc = location.toLowerCase()
+    if (/bengaluru|bangalore|mysuru|mysore|karnataka/i.test(loc)) return 'in-ka'
+    if (/mumbai|bombay|pune|maharashtra|nagpur/i.test(loc)) return 'in-mh'
+    if (/\bdelhi\b|new delhi|\bncr\b/i.test(loc)) return 'in-dl'
+    if (/\bnoida\b/i.test(loc)) return 'in-up'          // Noida is in Uttar Pradesh
+    if (/gurgaon|gurugram|haryana/i.test(loc)) return 'in-hr' // Gurgaon is in Haryana
+    if (/hyderabad|secunderabad|telangana/i.test(loc)) return 'in-ts'
+    if (/chennai|madras|tamil nadu|coimbatore/i.test(loc)) return 'in-tn'
+    if (/kolkata|calcutta|west bengal/i.test(loc)) return 'in-wb'
+    if (/ahmedabad|gujarat|surat/i.test(loc)) return 'in-gj'
+    if (/jaipur|rajasthan/i.test(loc)) return 'in-rj'
+    if (/lucknow|uttar pradesh|varanasi/i.test(loc)) return 'in-up'
+    if (/kochi|kerala|thiruvananthapuram/i.test(loc)) return 'in-kl'
+    return undefined // unknown city — let API return national holidays
+}
+
+async function fetchCalendarificEvents(location = 'Bengaluru'): Promise<FestivalEvent[]> {
     const apiKey = process.env.FESTIVAL_API_KEY
     if (!apiKey) return []
 
     try {
         const y = year()
-        const url = `https://calendarific.com/api/v2/holidays?api_key=${apiKey}&country=IN&year=${y}&location=in-ka`
+        const region = getCalendarificRegion(location)
+        // Only append &location= when we have a known region code.
+        // For unmapped cities, omit it so Calendarific returns national holidays.
+        const locationParam = region ? `&location=${region}` : ''
+        const url = `https://calendarific.com/api/v2/holidays?api_key=${apiKey}&country=IN&year=${y}${locationParam}`
         const res = await fetch(url, { signal: AbortSignal.timeout(5000) })
         if (!res.ok) return []
         const data = await res.json()
@@ -215,7 +269,7 @@ async function fetchCalendarificEvents(): Promise<FestivalEvent[]> {
                 name: h.name,
                 date: h.date?.iso?.slice(0, 10) ?? '',
                 type: 'national' as const,
-                suggestions: [`${h.name} celebrations in Bengaluru`],
+                suggestions: [`${h.name} celebrations in ${location}`],
                 hashtag: h.name.toLowerCase().replace(/\s+/g, ''),
             }))
             .filter((e: FestivalEvent) => e.date.length === 10)
@@ -234,15 +288,28 @@ export async function refreshFestivalState(location = DEFAULT_LOCATION): Promise
     const loc = normLocation(location)
     const today = todayIST()
 
-    // Merge hardcoded + API events
-    const apiEvents = await fetchCalendarificEvents().catch(() => [])
-    const allEvents = [...festivalCalendar(), ...apiEvents]
+    // National festivals apply everywhere; Bengaluru-specific entries only for Karnataka.
+    const apiEvents = await fetchCalendarificEvents(loc).catch(() => [])
+    const allEvents = [
+        ...festivalCalendar(),
+        ...(isKarnataka(loc) ? bengaluruCalendar() : []),
+        ...apiEvents,
+    ]
+
+    // Deduplicate by name+date in case Calendarific returns events already in the hardcoded list
+    const seen = new Set<string>()
+    const uniqueEvents = allEvents.filter(e => {
+        const key = `${e.name}|${e.date}`
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+    })
 
     // Find the nearest upcoming (or today's) festival
     let nearestFestival: FestivalEvent | null = null
     let nearestDays = 999
 
-    for (const event of allEvents) {
+    for (const event of uniqueEvents) {
         const days = daysBetween(today, event.date)
         if (days >= 0 && days < nearestDays) {
             nearestDays = days

@@ -1,8 +1,16 @@
 /**
  * Scheduler – Health heartbeat + proactive content pipeline
  *
- * Proactive pipeline runs every 10 minutes:
- *   contentIntelligence → 70B proactive agent → reelPipeline → Telegram
+ * Two execution modes (Issue #93):
+ *
+ * **Production (AWS_EVENTBRIDGE_RULE_ARN set):**
+ *   All engagement crons are managed by Lambda + EventBridge.
+ *   This scheduler only runs the health heartbeat, media scraping,
+ *   and startup DB tasks. All other crons are handled by lambda-handler.ts.
+ *
+ * **Dev mode (no EventBridge):**
+ *   Falls back to node-cron for all schedules, same as before.
+ *   This is the only mode available when running locally without AWS.
  *
  * The proactive runner handles its own gate checks:
  *   - Time windows (8am–10pm IST)
@@ -20,20 +28,53 @@ import { checkPriceAlerts } from './alerts/price-alerts.js'
 import { runSocialOutbound } from './social/index.js'
 import { runFriendBridgeOutbound } from './social/outbound-worker.js'
 import { runIntelligenceCron } from './intelligence/intelligence-cron.js'
-import { refreshTrafficState } from './stimulus/traffic-stimulus.js'
-import { refreshFestivalState } from './stimulus/festival-stimulus.js'
+import { refreshAllStimuliForActiveLocations } from './stimulus/stimulus-router.js'
 import { processMemoryWriteQueue } from './archivist/memory-queue.js'
 import { checkAndSummarizeSessions } from './archivist/session-summaries.js'
 import { sweepStaleTopics } from './topic-intent/sweep.js'
-import { refreshWeatherState } from './weather/weather-stimulus.js'
+
+// ─── Mode Detection ───────────────────────────────────────────────────────
+
+/**
+ * Returns true when Lambda + EventBridge manages all crons (production).
+ * Checks AWS_EVENTBRIDGE_RULE_ARN env var.
+ */
+function isProductionMode(): boolean {
+  return !!(process.env.AWS_EVENTBRIDGE_RULE_ARN)
+}
 
 // ─── Core scheduler ────────────────────────────────────────────────────────
 
 export function initScheduler(_databaseUrl: string) {
-  // ── 1. Health heartbeat — every 30 seconds ──────────────────────────────
+  const production = isProductionMode()
+
+  // ── 1. Health heartbeat — every 30 seconds (always runs) ────────────────
   setInterval(() => {
     console.log(`[HEARTBEAT] alive — ${new Date().toISOString()}`)
   }, 30_000)
+
+  // ── 3. Media scraping cron — every 6 hours (always runs, browser-dependent) ─
+  registerMediaCron()
+
+  // ── 4. Migrations + load active users on startup (always runs) ──────────
+  setTimeout(async () => {
+    try {
+      await runMigrations()
+      await loadUsersFromDB()
+    } catch (err) {
+      console.error('[SCHEDULER] Startup DB tasks failed:', err)
+    }
+  }, 8000) // after DB pool is ready
+
+  // ─── Production Mode: Lambda/EventBridge manages all engagement crons ───
+  if (production) {
+    console.log('[SCHEDULER] Production mode — engagement crons managed by Lambda/EventBridge')
+    console.log('[SCHEDULER] Initialized — heartbeat (30s) + media (*/6h) | all other crons via Lambda')
+    return
+  }
+
+  // ─── Dev Mode: Local node-cron fallback ─────────────────────────────────
+  console.log('[SCHEDULER] Dev mode — using local node-cron (no EventBridge configured)')
 
   // ── 2a. Topic follow-ups — every 30 minutes (Mode A, priority) ─────────
   //    Checks warm topics (confidence > 25%, inactive 4h+) and sends natural follow-ups.
@@ -56,9 +97,6 @@ export function initScheduler(_databaseUrl: string) {
       console.error('[SCHEDULER] Content blast pipeline error:', err)
     }
   })
-
-  // ── 3. Media scraping cron — every 6 hours ────────────────────────────
-  registerMediaCron()
 
   // ── 3b. Social outbound worker — every 15 minutes (#58) ───────────────
   cron.schedule('*/15 * * * *', async () => {
@@ -103,30 +141,13 @@ export function initScheduler(_databaseUrl: string) {
     }
   })
 
-  // ── 6b. Weather stimulus refresh — every 30 minutes ───────────────────
+  // ── 6b. Stimulus refresh (weather + traffic + festival) — every 30 minutes (Issue #93)
+  //    Refreshes all stimuli for all active user locations via stimulus-router
   cron.schedule('*/30 * * * *', async () => {
     try {
-      await refreshWeatherState()
+      await refreshAllStimuliForActiveLocations()
     } catch (err) {
-      console.error('[SCHEDULER] Weather stimulus refresh error:', err)
-    }
-  })
-
-  // ── 6c. Traffic stimulus refresh — every 30 minutes (Issue #91) ──────
-  cron.schedule('*/30 * * * *', async () => {
-    try {
-      await refreshTrafficState()
-    } catch (err) {
-      console.error('[SCHEDULER] Traffic stimulus refresh error:', err)
-    }
-  })
-
-  // ── 6d. Festival stimulus refresh — every 6 hours (Issue #90) ────────
-  cron.schedule('0 */6 * * *', async () => {
-    try {
-      await refreshFestivalState()
-    } catch (err) {
-      console.error('[SCHEDULER] Festival stimulus refresh error:', err)
+      console.error('[SCHEDULER] Stimulus batch refresh error:', err)
     }
   })
 
@@ -165,16 +186,6 @@ export function initScheduler(_databaseUrl: string) {
       console.error('[SCHEDULER] Session summarization failed:', err)
     }
   })
-
-  // ── 4. Migrations + load active users on startup ──────────────────────
-  setTimeout(async () => {
-    try {
-      await runMigrations()
-      await loadUsersFromDB()
-    } catch (err) {
-      console.error('[SCHEDULER] Startup DB tasks failed:', err)
-    }
-  }, 8000) // after DB pool is ready
 
   console.log('[SCHEDULER] Initialized — heartbeat (30s) + topic-followups (*/30m) + content-blast (*/2h) + media (*/6h) + price alerts (*/30) + weather (*/30) + traffic (*/30) + festival (*/6h) + intelligence (*/2h) + friend-bridge (*/30m) + memory queue (*/30s) + session summaries (*/5m)')
 }

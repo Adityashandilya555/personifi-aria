@@ -1,0 +1,7 @@
+-- Engagement Metrics — Issue #93
+-- PostgreSQL fallback table for weighted preference metrics.
+--
+-- NOTE: This schema is applied via the numbered migration:
+--   database/migrations/004_engagement_metrics_table.sql
+--
+-- This file is kept for reference only. Do not run it directly.

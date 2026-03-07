@@ -1,23 +1,7 @@
-/**
- * Friend Onboarding Flow — Issue #92
- *
- * Handles first-time user setup. Called from handler.ts before normal message processing
- * when a user's onboarding_complete flag is FALSE.
- *
- * Steps:
- *  1. name      — Ask for name (if not already set)
- *  2. city      — Ask for home city/area in Bengaluru
- *  3. prefs     — Capture 3 quick preference questions (food, budget, travel style)
- *  4. friends   — Show list of existing users OR ask for phone numbers; require >= 1 friend
- *  5. done      — Mark onboarding_complete = TRUE, trigger squad invite if possible
- *
- * Returns OnboardingResult:
- *  { handled: true, ... }  → onboarding is active; handler will route through normal 70B path with structured context
- *  { handled: false }      → onboarding complete or not active; normal pipeline continues
- */
-
 import { getPool } from '../character/session-store.js'
 import { addFriend, resolveUserByPlatformId } from '../social/friend-graph.js'
+import { initializeMetrics, getMetrics } from '../pulse/engagement-metrics.js'
+import type { OnboardingPreference } from '../pulse/engagement-types.js'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -172,6 +156,26 @@ async function completeOnboarding(userId: string): Promise<void> {
         `UPDATE users SET onboarding_complete = TRUE, onboarding_step = 'done', authenticated = TRUE, updated_at = NOW()
          WHERE user_id = $1`,
         [userId]
+    )
+
+
+    getMetrics(userId).then(existing => {
+        if (existing) return // already initialized — don't overwrite
+
+        return pool
+            .query<{ category: string; value: string }>(
+                `SELECT category, value FROM user_preferences WHERE user_id = $1`,
+                [userId],
+            )
+            .then(prefRows => {
+                const prefs: OnboardingPreference[] = prefRows.rows.map(r => ({
+                    category: r.category,
+                    value: r.value,
+                }))
+                return initializeMetrics(userId, prefs)
+            })
+    }).catch(err =>
+        console.error(`[Onboarding] Failed to initialize engagement metrics for ${userId}:`, err),
     )
 }
 
