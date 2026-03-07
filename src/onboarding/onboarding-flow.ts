@@ -159,24 +159,29 @@ async function completeOnboarding(userId: string): Promise<void> {
     )
 
 
-    getMetrics(userId).then(existing => {
-        if (existing) return // already initialized — don't overwrite
+    // Fire-and-forget: defer metrics initialization to the next event loop tick
+    // so the onboarding completion response is sent first (per coding guidelines:
+    // "Memory writes must be fire-and-forget using setImmediate").
+    setImmediate(() => {
+        getMetrics(userId).then(existing => {
+            if (existing) return // already initialized — don't overwrite
 
-        return pool
-            .query<{ category: string; value: string }>(
-                `SELECT category, value FROM user_preferences WHERE user_id = $1`,
-                [userId],
-            )
-            .then(prefRows => {
-                const prefs: OnboardingPreference[] = prefRows.rows.map(r => ({
-                    category: r.category,
-                    value: r.value,
-                }))
-                return initializeMetrics(userId, prefs)
-            })
-    }).catch(err =>
-        console.error(`[Onboarding] Failed to initialize engagement metrics for ${userId}:`, err),
-    )
+            return pool
+                .query<{ category: string; value: string }>(
+                    `SELECT category, value FROM user_preferences WHERE user_id = $1`,
+                    [userId],
+                )
+                .then(prefRows => {
+                    const prefs: OnboardingPreference[] = prefRows.rows.map(r => ({
+                        category: r.category,
+                        value: r.value,
+                    }))
+                    return initializeMetrics(userId, prefs)
+                })
+        }).catch(err =>
+            console.error(`[Onboarding] Failed to initialize engagement metrics for ${userId}:`, err),
+        )
+    })
 }
 
 async function saveUserName(userId: string, name: string): Promise<void> {

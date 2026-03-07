@@ -34,9 +34,10 @@ describe('bedrock-extractor', () => {
         expect(isBedrockExtractionAvailable()).toBe(false)
     })
 
-    it('isBedrockExtractionAvailable returns true with region and model', async () => {
+    it('isBedrockExtractionAvailable returns true with region, model, and AWS_ENABLED', async () => {
         process.env.AWS_REGION = 'us-east-1'
         process.env.AWS_BEDROCK_MODEL_ID = 'anthropic.claude-3-haiku-20240307-v1:0'
+        process.env.AWS_ENABLED = 'true'
 
         const mod = await import('../aws/aws-config.js')
         if (mod._resetConfigCache) mod._resetConfigCache()

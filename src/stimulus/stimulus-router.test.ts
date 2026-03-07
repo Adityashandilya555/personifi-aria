@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { getCityCorridors } from '../stimulus/traffic-stimulus.js'
+import { getCityCorridors } from './traffic-stimulus.js'
 
 // ─── getCityCorridors tests ──────────────────────────────────────────────────
 

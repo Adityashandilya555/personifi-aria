@@ -19,6 +19,7 @@ import { embed } from '../embeddings.js'
 import { addMemories } from '../memory-store.js'
 import { archiveSession, type ArchivableMessage } from './s3-archive.js'
 import { withGroqRetry } from '../utils/retry.js'
+import { sanitizeInput } from '../character/sanitize.js'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -170,10 +171,20 @@ async function generateSummary(
     userId: string,
     messages: ArchivableMessage[]
 ): Promise<string | null> {
+    // Sanitize user messages before forwarding to any LLM — per coding guidelines,
+    // all user input must pass through src/character/sanitize.ts to prevent prompt injection.
+    const sanitizedMessages = messages.map(m => {
+        if (m.role === 'user') {
+            const { sanitized } = sanitizeInput(m.content ?? '')
+            return { ...m, content: sanitized }
+        }
+        return m
+    })
+
     // ── Try Bedrock first ────────────────────────────────────────────────
     try {
         const { summarizeViaBedrock } = await import('./bedrock-summarizer.js')
-        const bedrockResult = await summarizeViaBedrock(userId, messages)
+        const bedrockResult = await summarizeViaBedrock(userId, sanitizedMessages)
         if (bedrockResult) return bedrockResult
     } catch {
         // Bedrock unavailable — fall through to Groq
@@ -181,7 +192,7 @@ async function generateSummary(
 
     // ── Fallback: Groq 8B ────────────────────────────────────────────────
     // Filter to user/assistant messages only, last 30 messages max
-    const relevant = messages
+    const relevant = sanitizedMessages
         .filter(m => m.role === 'user' || m.role === 'assistant')
         .slice(-30)
         .map(m => `${m.role === 'user' ? 'User' : 'Aria'}: ${m.content}`)
