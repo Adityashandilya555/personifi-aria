@@ -8,7 +8,7 @@
  * then use the existing Groq-based generateSummary() path.
  */
 
-import { getBedrock } from '../aws/aws-clients.js'
+import { archivistClients } from '../aws/aws-clients.js'
 import { getAwsConfig } from '../aws/aws-config.js'
 import { publishMetric, subagentDimension } from '../aws/cloudwatch-metrics.js'
 import type { ArchivableMessage } from './s3-archive.js'
@@ -40,7 +40,7 @@ export async function summarizeViaBedrock(
     userId: string,
     messages: ArchivableMessage[],
 ): Promise<string | null> {
-    const client = await getBedrock()
+    const client = await archivistClients.getBedrock()
     if (!client) return null
 
     const config = getAwsConfig()

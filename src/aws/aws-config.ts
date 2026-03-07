@@ -67,9 +67,11 @@ function loadConfig(): AwsConfig {
   const sessionToken = process.env.AWS_SESSION_TOKEN
   const hasExplicitKeys = !!(accessKeyId && secretAccessKey)
 
-  // enabled = true if we have explicit keys OR if we're likely running on AWS
-  // infra (AWS_REGION is set, which ECS/Lambda always provide automatically).
-  const enabled = hasExplicitKeys || !!process.env.AWS_REGION
+  // enabled = true if we have explicit keys OR if explicitly opted-in for
+  // IAM-role/metadata environments (ECS/Lambda). AWS_REGION alone is NOT
+  // sufficient — a dev shell may export it without valid credentials.
+  // Set AWS_ENABLED=true in ECS/Lambda task definitions to opt in.
+  const enabled = hasExplicitKeys || process.env.AWS_ENABLED === 'true'
 
   const credentials = hasExplicitKeys
     ? { accessKeyId: accessKeyId!, secretAccessKey: secretAccessKey!, ...(sessionToken ? { sessionToken } : {}) }

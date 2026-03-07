@@ -254,13 +254,21 @@ function buildApiState(location: string, delayMinutes: number): TrafficStimulusS
     if (delayMinutes >= 20) { severity = 'heavy'; stimulus = 'HEAVY_TRAFFIC' }
     else if (delayMinutes >= 8) { severity = 'moderate'; stimulus = 'MODERATE_TRAFFIC' }
 
+    const cityCorridors = getCityCorridors(location)
+
+    // Don't attach corridors to CLEAR_TRAFFIC — no affected roads when traffic is clear
+    let affectedCorridors: string[] = []
+    if (severity === 'heavy') {
+        affectedCorridors = cityCorridors.peak
+    } else if (severity === 'moderate') {
+        affectedCorridors = cityCorridors.moderate
+    }
+
     return {
         location,
         severity,
         durationMinutes: Math.max(0, delayMinutes),
-        affectedCorridors: isBengaluru(location)
-            ? (severity === 'heavy' ? ['ORR', 'Silk Board'] : ['MG Road', 'Whitefield'])
-            : ['city center'],
+        affectedCorridors,
         stimulus,
         source: 'api',
         updatedAt: Date.now(),

@@ -12,7 +12,7 @@
  * Falls back to PostgreSQL when DynamoDB is not configured.
  */
 
-import { getDynamoDocClient } from '../aws/aws-clients.js'
+import { pulseClients } from '../aws/aws-clients.js'
 import { getAwsConfig } from '../aws/aws-config.js'
 import type { EngagementMetricsRecord, WeightedMetric } from './engagement-types.js'
 
@@ -24,7 +24,7 @@ import type { EngagementMetricsRecord, WeightedMetric } from './engagement-types
  */
 export async function putMetricsToDynamo(record: EngagementMetricsRecord): Promise<boolean> {
     try {
-        const client = await getDynamoDocClient()
+        const client = await pulseClients.getDynamoDocClient()
         if (!client) return false
 
         const config = getAwsConfig()
@@ -57,7 +57,7 @@ export async function putMetricsToDynamo(record: EngagementMetricsRecord): Promi
  */
 export async function getMetricsFromDynamo(userId: string): Promise<EngagementMetricsRecord | null> {
     try {
-        const client = await getDynamoDocClient()
+        const client = await pulseClients.getDynamoDocClient()
         if (!client) return null
 
         const config = getAwsConfig()
@@ -99,7 +99,7 @@ export async function updateSingleMetricInDynamo(
     isFriendInteraction = false,
 ): Promise<boolean> {
     try {
-        const client = await getDynamoDocClient()
+        const client = await pulseClients.getDynamoDocClient()
         if (!client) return false
 
         const config = getAwsConfig()
@@ -144,7 +144,7 @@ export async function updateSingleMetricInDynamo(
  */
 export async function deleteMetricsFromDynamo(userId: string): Promise<boolean> {
     try {
-        const client = await getDynamoDocClient()
+        const client = await pulseClients.getDynamoDocClient()
         if (!client) return false
 
         const config = getAwsConfig()

@@ -7,7 +7,7 @@
  * Falls back to Groq 8B (rejection-memory.ts) when Bedrock is unavailable.
  */
 
-import { getBedrock } from '../aws/aws-clients.js'
+import { intelligenceClients } from '../aws/aws-clients.js'
 import { getAwsConfig } from '../aws/aws-config.js'
 import { publishMetric, subagentDimension } from '../aws/cloudwatch-metrics.js'
 import type { RejectedEntity, PreferredEntity } from './rejection-memory.js'
@@ -76,7 +76,7 @@ export async function extractSignalsViaBedrock(
     userMessage: string,
     assistantReply: string,
 ): Promise<BedrockSignals | null> {
-    const client = await getBedrock()
+    const client = await intelligenceClients.getBedrock()
     if (!client) return null // Bedrock not configured — caller should fallback
 
     const config = getAwsConfig()

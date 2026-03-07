@@ -38,15 +38,29 @@ describe('aws-config', () => {
         })
     })
 
-    it('returns enabled=true with no explicit credentials when AWS_REGION is set (IAM/default chain)', async () => {
+    it('returns enabled=true with no explicit credentials when AWS_ENABLED=true (IAM/default chain)', async () => {
         delete process.env.AWS_ACCESS_KEY_ID
         delete process.env.AWS_SECRET_ACCESS_KEY
         process.env.AWS_REGION = 'ap-south-1'
+        process.env.AWS_ENABLED = 'true'
         const { getAwsConfig, _resetConfigCache } = await import('../aws/aws-config.js')
         _resetConfigCache()
         const config = getAwsConfig()
         expect(config.enabled).toBe(true)
         expect(config.credentials).toBeUndefined() // SDK will use default chain
+        delete process.env.AWS_REGION
+        delete process.env.AWS_ENABLED
+    })
+
+    it('returns enabled=false when only AWS_REGION is set (no credentials, no opt-in)', async () => {
+        delete process.env.AWS_ACCESS_KEY_ID
+        delete process.env.AWS_SECRET_ACCESS_KEY
+        delete process.env.AWS_ENABLED
+        process.env.AWS_REGION = 'ap-south-1'
+        const { getAwsConfig, _resetConfigCache } = await import('../aws/aws-config.js')
+        _resetConfigCache()
+        const config = getAwsConfig()
+        expect(config.enabled).toBe(false)
         delete process.env.AWS_REGION
     })
 
@@ -96,7 +110,10 @@ describe('aws-config', () => {
 // ─── isServiceEnabled tests ──────────────────────────────────────────────────
 
 describe('isServiceEnabled', () => {
+    const originalEnv = { ...process.env }
+
     afterEach(() => {
+        process.env = { ...originalEnv }
         vi.resetModules()
     })
 
@@ -144,7 +161,10 @@ describe('isServiceEnabled', () => {
 // ─── aws-clients.ts tests ───────────────────────────────────────────────────
 
 describe('aws-clients', () => {
+    const originalEnv = { ...process.env }
+
     afterEach(() => {
+        process.env = { ...originalEnv }
         vi.resetModules()
     })
 

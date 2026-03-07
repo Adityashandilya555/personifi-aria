@@ -199,13 +199,49 @@ function isKarnataka(location: string): boolean {
     return /bengaluru|bangalore|mysuru|mysore|karnataka|blr/i.test(location)
 }
 
+// ─── Location sanitization ────────────────────────────────────────────────────
+
+const MAX_LOCATION_LENGTH = 100
+
+/**
+ * Sanitize a raw location string before it reaches festival text / prompts.
+ * Strips Unicode tricks, injection patterns, and caps length.
+ */
+function sanitizeLocation(raw: string): string {
+    let v = raw
+        .replace(/[\u200B-\u200D\uFEFF]/g, '')  // zero-width chars
+        .replace(/[\u2028\u2029]/g, ' ')          // line/paragraph separators
+        .replace(/[\x00-\x1F\x7F]/g, '')          // control characters
+        .replace(/\s+/g, ' ')
+        .trim()
+
+    // Cap length to prevent oversized payloads
+    if (v.length > MAX_LOCATION_LENGTH) {
+        v = v.slice(0, MAX_LOCATION_LENGTH).trim()
+    }
+
+    // Strip common prompt injection fragments from location strings
+    v = v
+        .replace(/ignore\s*(all\s*)?(previous|above|prior|system)/gi, '')
+        .replace(/you\s*are\s*now/gi, '')
+        .replace(/system\s*prompt/gi, '')
+        .replace(/\[INST\]/gi, '')
+        .replace(/<\/?system>/gi, '')
+        .replace(/<<SYS>>/gi, '')
+        .replace(/\[\[SYSTEM\]\]/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+
+    return v
+}
+
 // ─── In-memory state ──────────────────────────────────────────────────────────
 
 const DEFAULT_LOCATION = 'your city'
 const stateByLocation = new Map<string, FestivalStimulusState>()
 
 function normLocation(location?: string): string {
-    const v = (location ?? DEFAULT_LOCATION).trim()
+    const v = sanitizeLocation(location ?? DEFAULT_LOCATION)
     return v.length > 0 ? v : DEFAULT_LOCATION
 }
 
@@ -372,7 +408,9 @@ export function festivalMessage(state: FestivalStimulusState): string | null {
 
     const { name, suggestions } = state.festival ?? { name: '', suggestions: [] }
     const suggestion = suggestions[Math.floor(Math.random() * suggestions.length)]
-    const localSuggestion = String(suggestion).replace(/Bengaluru/gi, state.location).replace(/Bangalore/gi, state.location)
+    // Sanitize location again at the message boundary — defense-in-depth
+    const safeLocation = sanitizeLocation(state.location)
+    const localSuggestion = String(suggestion).replace(/Bengaluru/gi, safeLocation).replace(/Bangalore/gi, safeLocation)
 
     switch (state.stimulus) {
         case 'FESTIVAL_DAY':

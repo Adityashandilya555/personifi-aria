@@ -1,4 +1,4 @@
-import { getCloudWatch } from './aws-clients.js'
+import { sharedClients } from './aws-clients.js'
 import { getAwsConfig } from './aws-config.js'
 
 // ─── Metric Names ─────────────────────────────────────────────────────────────
@@ -76,7 +76,7 @@ export async function publishMetric(
     dimensions: MetricDimension[] = [],
 ): Promise<void> {
     try {
-        const client = await getCloudWatch()
+        const client = await sharedClients.getCloudWatch()
         if (!client) return // CloudWatch not configured — silent no-op
 
         const config = getAwsConfig()
@@ -113,7 +113,7 @@ export async function publishMetrics(
     }>,
 ): Promise<void> {
     try {
-        const client = await getCloudWatch()
+        const client = await sharedClients.getCloudWatch()
         if (!client) return
 
         const config = getAwsConfig()
