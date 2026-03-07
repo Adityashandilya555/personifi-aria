@@ -166,6 +166,20 @@ describe('rejection-memory (Bedrock fallback path)', () => {
         delete process.env.AWS_SECRET_ACCESS_KEY
         delete process.env.AWS_REGION
 
+        // Mock Groq to prevent real API calls if keyword filter passes
+        vi.doMock('groq-sdk', () => ({
+            default: class MockGroq {
+                chat = {
+                    completions: {
+                        create: vi.fn().mockResolvedValue({
+                            choices: [{ message: { content: '{"rejections":[],"preferences":[]}' } }],
+                        }),
+                    },
+                }
+            },
+        }))
+
+        vi.resetModules()
         const { extractRejectionSignals } = await import('../intelligence/rejection-memory.js')
         const result = await extractRejectionSignals(
             'The weather is nice today and I am going for a walk',
@@ -174,6 +188,8 @@ describe('rejection-memory (Bedrock fallback path)', () => {
 
         expect(result.rejections).toEqual([])
         expect(result.preferences).toEqual([])
+
+        vi.doUnmock('groq-sdk')
     })
 })
 

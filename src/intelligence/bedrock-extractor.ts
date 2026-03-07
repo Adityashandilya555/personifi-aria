@@ -10,6 +10,7 @@
 import { getBedrock } from '../aws/aws-clients.js'
 import { getAwsConfig } from '../aws/aws-config.js'
 import { publishMetric, subagentDimension } from '../aws/cloudwatch-metrics.js'
+import { sanitizeInput } from '../character/sanitize.js'
 import type { RejectedEntity, PreferredEntity } from './rejection-memory.js'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -87,6 +88,10 @@ export async function extractSignalsViaBedrock(
     try {
         const { InvokeModelCommand } = await import('@aws-sdk/client-bedrock-runtime')
 
+        // Sanitize inputs against prompt injection before embedding
+        const safeUser = sanitizeInput(userMessage).sanitized
+        const safeAssistant = sanitizeInput(assistantReply).sanitized
+
         const body = JSON.stringify({
             anthropic_version: 'bedrock-2023-05-31',
             max_tokens: 500,
@@ -97,8 +102,8 @@ export async function extractSignalsViaBedrock(
                     content: `${EXTRACTION_PROMPT}
 
 ---
-User message: "${userMessage.slice(0, 800)}"
-Assistant reply: "${assistantReply.slice(0, 400)}"`,
+User message: "${safeUser.slice(0, 800)}"
+Assistant reply: "${safeAssistant.slice(0, 400)}"`,
                 },
             ],
         })

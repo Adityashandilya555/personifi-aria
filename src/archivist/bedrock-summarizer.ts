@@ -11,6 +11,7 @@
 import { getBedrock } from '../aws/aws-clients.js'
 import { getAwsConfig } from '../aws/aws-config.js'
 import { publishMetric, subagentDimension } from '../aws/cloudwatch-metrics.js'
+import { sanitizeInput } from '../character/sanitize.js'
 import type { ArchivableMessage } from './s3-archive.js'
 
 // ─── Prompt ─────────────────────────────────────────────────────────────────
@@ -46,11 +47,11 @@ export async function summarizeViaBedrock(
     const config = getAwsConfig()
     const modelId = config.bedrock.modelId
 
-    // Format messages — last 30 user/assistant messages
+    // Format messages — last 30 user/assistant messages, sanitized against prompt injection
     const relevant = messages
         .filter(m => m.role === 'user' || m.role === 'assistant')
         .slice(-30)
-        .map(m => `${m.role === 'user' ? 'User' : 'Aria'}: ${m.content}`)
+        .map(m => `${m.role === 'user' ? 'User' : 'Aria'}: ${sanitizeInput(m.content).sanitized}`)
         .join('\n')
 
     if (!relevant.trim()) return null

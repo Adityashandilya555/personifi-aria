@@ -105,7 +105,9 @@ export function extractEngagementSignals(input: PulseInput, bedrockSignals?: Bed
   if (fastReply !== 0) matchedSignals.push('fast_reply')
   if (topicPersistence !== 0) matchedSignals.push('topic_persistence')
   if (classifierSignal !== 0) matchedSignals.push(`classifier_${classifierSignalKey}`)
-  if (bedrockSignals) matchedSignals.push('bedrock_enhanced')
+  if (bedrockSignals && (bedrockSignals.urgency > 0 || bedrockSignals.desire || bedrockSignals.rejection)) {
+    matchedSignals.push('bedrock_enhanced')
+  }
 
   return {
     scoreDelta,
