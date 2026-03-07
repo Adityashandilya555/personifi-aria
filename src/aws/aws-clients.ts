@@ -76,9 +76,11 @@ export async function getBedrock(): Promise<import('@aws-sdk/client-bedrock-runt
         bedrockInitPromise = (async () => {
             try {
                 const { BedrockRuntimeClient } = await import('@aws-sdk/client-bedrock-runtime')
+                const { NodeHttpHandler } = await import('@smithy/node-http-handler')
                 bedrockClient = new BedrockRuntimeClient({
                     region: config.bedrock.region,
                     credentials: config.credentials ?? undefined,
+                    requestHandler: new NodeHttpHandler({ requestTimeout: 15_000 }),
                 })
                 console.log(`[AWS] Bedrock client initialized — region=${config.bedrock.region} model=${config.bedrock.modelId}`)
                 return bedrockClient

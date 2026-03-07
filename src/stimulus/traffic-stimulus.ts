@@ -47,37 +47,37 @@ function getIST(): Date {
 export function getCityCorridors(location: string): { peak: string[]; moderate: string[] } {
     const loc = location.toLowerCase()
 
-    if (/bengaluru|bangalore|blr/i.test(loc)) {
+    if (/bengaluru|bangalore|blr/.test(loc)) {
         return {
             peak: ['ORR', 'Silk Board', 'KR Puram', 'Hebbal'],
             moderate: ['MG Road', 'Marathahalli', 'Whitefield'],
         }
     }
-    if (/mumbai|bombay/i.test(loc)) {
+    if (/mumbai|bombay/.test(loc)) {
         return {
             peak: ['Western Express Highway', 'Eastern Express Highway', 'Sion-Panvel', 'Andheri-Kurla Road'],
             moderate: ['Linking Road', 'SV Road', 'LBS Marg'],
         }
     }
-    if (/delhi|new delhi|ncr|noida|gurgaon|gurugram/i.test(loc)) {
+    if (/delhi|new delhi|ncr|noida|gurgaon|gurugram/.test(loc)) {
         return {
             peak: ['Ring Road', 'NH-48 (Gurgaon)', 'DND Flyway', 'Ashram Chowk'],
             moderate: ['Outer Ring Road', 'Lajpat Nagar', 'ITO'],
         }
     }
-    if (/hyderabad|secunderabad/i.test(loc)) {
+    if (/hyderabad|secunderabad/.test(loc)) {
         return {
             peak: ['ORR Gachibowli', 'Jubilee Hills Check Post', 'Mehdipatnam-Tolichowki', 'HITEC City'],
             moderate: ['Tank Bund', 'Ameerpet', 'Kukatpally'],
         }
     }
-    if (/chennai|madras/i.test(loc)) {
+    if (/chennai|madras/.test(loc)) {
         return {
             peak: ['OMR', 'Anna Salai', 'GST Road', 'Poonamallee High Road'],
             moderate: ['Cathedral Road', 'Nungambakkam', 'T Nagar'],
         }
     }
-    if (/pune|puna/i.test(loc)) {
+    if (/pune|puna/.test(loc)) {
         return {
             peak: ['Mumbai-Pune Expressway', 'FC Road', 'Hinjewadi-Wakad', 'Sinhagad Road'],
             moderate: ['JM Road', 'Koregaon Park', 'Kothrud'],
@@ -254,13 +254,13 @@ function buildApiState(location: string, delayMinutes: number): TrafficStimulusS
     if (delayMinutes >= 20) { severity = 'heavy'; stimulus = 'HEAVY_TRAFFIC' }
     else if (delayMinutes >= 8) { severity = 'moderate'; stimulus = 'MODERATE_TRAFFIC' }
 
+    const cityCorridors = getCityCorridors(location)
+
     return {
         location,
         severity,
         durationMinutes: Math.max(0, delayMinutes),
-        affectedCorridors: isBengaluru(location)
-            ? (severity === 'heavy' ? ['ORR', 'Silk Board'] : ['MG Road', 'Whitefield'])
-            : ['city center'],
+        affectedCorridors: severity === 'heavy' ? cityCorridors.peak : cityCorridors.moderate,
         stimulus,
         source: 'api',
         updatedAt: Date.now(),

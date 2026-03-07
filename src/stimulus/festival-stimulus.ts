@@ -158,39 +158,27 @@ function festivalCalendar(): FestivalEvent[] {
 }
 
 /**
- * Festivals that are relevant for Karnataka/Bengaluru only.
- * Returned separately so refreshFestivalState can include them conditionally.
+ * Extra Bengaluru-only festivals not covered by festivalCalendar().
+ * Festivals shared with festivalCalendar (Karaga, BLF, Ugadi, Dasara) are
+ * kept in festivalCalendar to avoid duplication — the dedup at line 312
+ * handles any overlap from Calendarific API results.
  */
 function bengaluruCalendar(): FestivalEvent[] {
     const y = year()
     return [
         {
-            name: 'Ugadi',
-            date: `${y}-03-30`,
-            type: 'regional',
-            suggestions: ['Traditional Ugadi brunch spots', 'Obbattu and Holige delivery', 'Ugadi pachadi near you', 'Kannada restaurants'],
-            hashtag: 'ugadi',
-        },
-        {
-            name: 'Dussehra / Mysuru Dasara',
-            date: `${y}-10-02`,
-            type: 'regional',
-            suggestions: ['Mysuru Dasara day trip', 'Bengaluru Dussehra events', 'Jumbo Savari procession', 'Chamundi Hills visit'],
-            hashtag: 'mysurudasara',
-        },
-        {
-            name: 'Karaga Festival',
-            date: `${y}-04-12`,
+            name: 'Kadalekai Parishe',
+            date: `${y}-11-27`,
             type: 'local',
-            suggestions: ['Karaga procession route in Bangalore', 'Dharmaraja temple visit', 'Old city Bengaluru walk'],
-            hashtag: 'bangalorekaraga',
+            suggestions: ['Groundnut fair at Bull Temple Rd', 'Street food around Basavanagudi', 'Bull Temple visit'],
+            hashtag: 'kadalekai',
         },
         {
-            name: 'Bangalore Literature Festival',
-            date: `${y}-11-01`,
+            name: 'Bengaluru Habba',
+            date: `${y}-12-15`,
             type: 'local',
-            suggestions: ['BLF at NIMHANS Convention Centre', 'Book launches and talks', 'Literary cafe stops'],
-            hashtag: 'blf',
+            suggestions: ['Art installations at Cubbon Park', 'Music stages across the city', 'Food courts at Palace Grounds'],
+            hashtag: 'bengaluruhabba',
         },
     ]
 }

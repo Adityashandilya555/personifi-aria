@@ -77,7 +77,7 @@ function loadConfig(): AwsConfig {
 
   return {
     enabled,
-    region: process.env.AWS_BEDROCK_REGION ?? process.env.AWS_REGION ?? 'ap-south-1',
+    region: process.env.AWS_REGION ?? 'ap-south-1',
     credentials,
 
     dynamodb: {
@@ -92,7 +92,7 @@ function loadConfig(): AwsConfig {
 
     bedrock: {
       modelId: process.env.AWS_BEDROCK_MODEL_ID ?? 'anthropic.claude-3-haiku-20240307-v1:0',
-      region: process.env.AWS_BEDROCK_REGION ?? 'ap-south-1',
+      region: process.env.AWS_BEDROCK_REGION ?? process.env.AWS_REGION ?? 'ap-south-1',
     },
 
     lambda: {

@@ -1,8 +1,16 @@
 /**
  * Scheduler – Health heartbeat + proactive content pipeline
  *
- * Proactive pipeline runs every 10 minutes:
- *   contentIntelligence → 70B proactive agent → reelPipeline → Telegram
+ * Two execution modes (Issue #93):
+ *
+ * **Production (AWS_EVENTBRIDGE_RULE_ARN set):**
+ *   All engagement crons are managed by Lambda + EventBridge.
+ *   This scheduler only runs the health heartbeat, media scraping,
+ *   and startup DB tasks. All other crons are handled by lambda-handler.ts.
+ *
+ * **Dev mode (no EventBridge):**
+ *   Falls back to node-cron for all schedules, same as before.
+ *   This is the only mode available when running locally without AWS.
  *
  * The proactive runner handles its own gate checks:
  *   - Time windows (8am–10pm IST)
@@ -25,13 +33,48 @@ import { processMemoryWriteQueue } from './archivist/memory-queue.js'
 import { checkAndSummarizeSessions } from './archivist/session-summaries.js'
 import { sweepStaleTopics } from './topic-intent/sweep.js'
 
+// ─── Mode Detection ───────────────────────────────────────────────────────
+
+/**
+ * Returns true when Lambda + EventBridge manages all crons (production).
+ * Checks AWS_EVENTBRIDGE_RULE_ARN env var.
+ */
+function isProductionMode(): boolean {
+  return !!(process.env.AWS_EVENTBRIDGE_RULE_ARN)
+}
+
 // ─── Core scheduler ────────────────────────────────────────────────────────
 
 export function initScheduler(_databaseUrl: string) {
-  // ── 1. Health heartbeat — every 30 seconds ──────────────────────────────
+  const production = isProductionMode()
+
+  // ── 1. Health heartbeat — every 30 seconds (always runs) ────────────────
   setInterval(() => {
     console.log(`[HEARTBEAT] alive — ${new Date().toISOString()}`)
   }, 30_000)
+
+  // ── 3. Media scraping cron — every 6 hours (always runs, browser-dependent) ─
+  registerMediaCron()
+
+  // ── 4. Migrations + load active users on startup (always runs) ──────────
+  setTimeout(async () => {
+    try {
+      await runMigrations()
+      await loadUsersFromDB()
+    } catch (err) {
+      console.error('[SCHEDULER] Startup DB tasks failed:', err)
+    }
+  }, 8000) // after DB pool is ready
+
+  // ─── Production Mode: Lambda/EventBridge manages all engagement crons ───
+  if (production) {
+    console.log('[SCHEDULER] Production mode — engagement crons managed by Lambda/EventBridge')
+    console.log('[SCHEDULER] Initialized — heartbeat (30s) + media (*/6h) | all other crons via Lambda')
+    return
+  }
+
+  // ─── Dev Mode: Local node-cron fallback ─────────────────────────────────
+  console.log('[SCHEDULER] Dev mode — using local node-cron (no EventBridge configured)')
 
   // ── 2a. Topic follow-ups — every 30 minutes (Mode A, priority) ─────────
   //    Checks warm topics (confidence > 25%, inactive 4h+) and sends natural follow-ups.
@@ -54,9 +97,6 @@ export function initScheduler(_databaseUrl: string) {
       console.error('[SCHEDULER] Content blast pipeline error:', err)
     }
   })
-
-  // ── 3. Media scraping cron — every 6 hours ────────────────────────────
-  registerMediaCron()
 
   // ── 3b. Social outbound worker — every 15 minutes (#58) ───────────────
   cron.schedule('*/15 * * * *', async () => {
@@ -146,16 +186,6 @@ export function initScheduler(_databaseUrl: string) {
       console.error('[SCHEDULER] Session summarization failed:', err)
     }
   })
-
-  // ── 4. Migrations + load active users on startup ──────────────────────
-  setTimeout(async () => {
-    try {
-      await runMigrations()
-      await loadUsersFromDB()
-    } catch (err) {
-      console.error('[SCHEDULER] Startup DB tasks failed:', err)
-    }
-  }, 8000) // after DB pool is ready
 
   console.log('[SCHEDULER] Initialized — heartbeat (30s) + topic-followups (*/30m) + content-blast (*/2h) + media (*/6h) + price alerts (*/30) + weather (*/30) + traffic (*/30) + festival (*/6h) + intelligence (*/2h) + friend-bridge (*/30m) + memory queue (*/30s) + session summaries (*/5m)')
 }

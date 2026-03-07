@@ -141,10 +141,10 @@ export async function initializeMetrics(
 
     // Write to both stores
     await saveToPostgres(record)
-    // DynamoDB is fire-and-forget — don't await in critical path
-    putMetricsToDynamo(record).catch(err =>
+    // DynamoDB is fire-and-forget — use setImmediate to stay off the response path
+    setImmediate(() => putMetricsToDynamo(record).catch(err =>
         console.error('[EngagementMetrics] DynamoDB init write failed:', err),
-    )
+    ))
 
     console.log(
         `[EngagementMetrics] Initialized for user=${userId} categories=${Object.keys(metrics).join(',')}`,
@@ -196,13 +196,13 @@ export async function updateMetric(input: MetricUpdateInput): Promise<WeightedMe
         await saveToPostgres(newRecord)
     }
 
-    // DynamoDB — fire-and-forget single-field update
-    updateSingleMetricInDynamo(userId, category, updated, input.isFriendInteraction ?? false).catch(err =>
+    // DynamoDB — fire-and-forget single-field update (setImmediate to stay off response path)
+    setImmediate(() => updateSingleMetricInDynamo(userId, category, updated, input.isFriendInteraction ?? false).catch(err =>
         console.error(`[EngagementMetrics] DynamoDB update failed for ${category}:`, err),
-    )
+    ))
 
     // CloudWatch metric — fire-and-forget
-    recordEngagementDelta(userId, delta).catch(() => { })
+    setImmediate(() => recordEngagementDelta(userId, delta).catch(() => { }))
 
     return updated
 }
@@ -210,11 +210,31 @@ export async function updateMetric(input: MetricUpdateInput): Promise<WeightedMe
 /**
  * Get a user's full engagement metrics record.
  * Tries DynamoDB first (hot-path), falls back to PostgreSQL.
+ * Performs a staleness check — if DynamoDB record is >5min old, reconciles with Postgres.
  */
+const STALENESS_THRESHOLD_MS = 5 * 60 * 1000 // 5 minutes
+
 export async function getMetrics(userId: string): Promise<EngagementMetricsRecord | null> {
     // Try DynamoDB first (fast hot-path)
     const dynamoRecord = await getMetricsFromDynamo(userId)
-    if (dynamoRecord) return dynamoRecord
+    if (dynamoRecord) {
+        // Staleness check — if DynamoDB record is old, verify against Postgres
+        const dynamoAge = Date.now() - new Date(dynamoRecord.updatedAt).getTime()
+        if (dynamoAge > STALENESS_THRESHOLD_MS) {
+            const pgRecord = await loadFromPostgres(userId)
+            if (pgRecord) {
+                const pgTime = new Date(pgRecord.updatedAt).getTime()
+                const dynamoTime = new Date(dynamoRecord.updatedAt).getTime()
+                // Prefer whichever is more recent
+                if (pgTime > dynamoTime) {
+                    // Reconcile: push fresh Postgres data back to DynamoDB
+                    setImmediate(() => putMetricsToDynamo(pgRecord).catch(() => { }))
+                    return pgRecord
+                }
+            }
+        }
+        return dynamoRecord
+    }
 
     // Fall back to PostgreSQL
     return loadFromPostgres(userId)
@@ -280,9 +300,9 @@ export async function syncEngagementState(
     }
 
     await saveToPostgres(record)
-    putMetricsToDynamo(record).catch(err =>
+    setImmediate(() => putMetricsToDynamo(record).catch(err =>
         console.error('[EngagementMetrics] DynamoDB state sync failed:', err),
-    )
+    ))
 }
 
 /**
@@ -304,6 +324,17 @@ export async function recordInteraction(
        WHERE user_id = $1`,
             [userId, friendInc],
         )
+
+        // Also update DynamoDB counters (fire-and-forget) to keep both stores in sync
+        setImmediate(() => {
+            getMetricsFromDynamo(userId).then(record => {
+                if (!record) return
+                record.totalInteractions = (record.totalInteractions ?? 0) + 1
+                if (isFriendInteraction) record.friendInteractions = (record.friendInteractions ?? 0) + 1
+                record.updatedAt = new Date().toISOString()
+                putMetricsToDynamo(record).catch(() => { })
+            }).catch(() => { })
+        })
     } catch {
         // Non-critical — don't break the main flow
     }

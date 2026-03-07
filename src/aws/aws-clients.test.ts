@@ -170,6 +170,9 @@ describe('aws-clients', () => {
 describe('cloudwatch-metrics', () => {
     it('publishMetric is a no-op when CloudWatch not configured', async () => {
         delete process.env.AWS_ACCESS_KEY_ID
+        delete process.env.AWS_SECRET_ACCESS_KEY
+        delete process.env.AWS_REGION
+        vi.resetModules()
         const { publishMetric } = await import('../aws/cloudwatch-metrics.js')
         // Should not throw — silent no-op
         await expect(publishMetric('TestMetric', 1)).resolves.toBeUndefined()

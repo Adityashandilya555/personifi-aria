@@ -64,7 +64,8 @@ async function getUserHomeLocation(userId: string): Promise<string | null> {
         // Sanitize against prompt injection — home_location is user-supplied and
         // interpolated directly into LLM prompts via weatherMessage/trafficMessage/festivalMessage.
         return sanitizeInput(raw).sanitized
-    } catch {
+    } catch (err) {
+        console.warn(`[StimulusRouter] getUserHomeLocation failed for userId=${userId}:`, (err as Error).message)
         return null
     }
 }
@@ -84,7 +85,8 @@ export async function getActiveUserLocations(): Promise<string[]> {
          AND onboarding_complete = TRUE`,
         )
         return rows.map(r => r.home_location)
-    } catch {
+    } catch (err) {
+        console.error('[StimulusRouter] getActiveUserLocations DB query failed:', (err as Error).message)
         return []
     }
 }
@@ -226,13 +228,15 @@ function festivalMessageForRouter(state: FestivalStimulusState): string {
 const MAX_CONCURRENT_LOCATIONS = 20
 
 /**
- * Refresh all stimulus states for all active user locations.
+ * Refreshes all 3 stimulus types for all active user home locations.
  * Called by scheduler every 30 minutes instead of single-location refreshes.
  *
  * All 3 stimulus types per location are refreshed in parallel (Promise.all),
  * not sequentially, cutting wall-clock time from O(3N) to O(N) serial batches.
  * Locations are capped at MAX_CONCURRENT_LOCATIONS to avoid API rate-limit spikes.
  */
+let _batchOffset = 0 // Rotating offset — survives across scheduler runs
+
 export async function refreshAllStimuliForActiveLocations(): Promise<void> {
     const locations = await getActiveUserLocations()
     if (locations.length === 0) return
@@ -240,21 +244,46 @@ export async function refreshAllStimuliForActiveLocations(): Promise<void> {
     // PII-safe: log count only, not the city names themselves
     console.log(`[StimulusRouter] Refreshing stimuli for ${locations.length} location(s)`)
 
-    // Cap concurrency to avoid thundering-herd on external APIs
-    const batch = locations.slice(0, MAX_CONCURRENT_LOCATIONS)
+    // Rotating batch — advance through locations across runs so every location is eventually refreshed
+    const batch: string[] = []
+    for (let i = 0; i < Math.min(MAX_CONCURRENT_LOCATIONS, locations.length); i++) {
+        batch.push(locations[(_batchOffset + i) % locations.length])
+    }
+    // Advance offset for next invocation
+    _batchOffset = (_batchOffset + MAX_CONCURRENT_LOCATIONS) % Math.max(1, locations.length)
+
     if (locations.length > MAX_CONCURRENT_LOCATIONS) {
-        console.warn(`[StimulusRouter] Location count (${locations.length}) exceeds cap — refreshing first ${MAX_CONCURRENT_LOCATIONS}`)
+        console.warn(
+            `[StimulusRouter] ${locations.length} locations > cap ${MAX_CONCURRENT_LOCATIONS} — processing batch offset=${_batchOffset}`,
+        )
     }
 
-    await Promise.allSettled(
-        batch.map((loc) =>
-            // All 3 stimulus types refreshed in parallel per location (not sequentially)
-            Promise.allSettled([
+    const results = await Promise.allSettled(
+        batch.map(async (loc) => {
+            // All 3 stimulus types refreshed in parallel per location
+            const perLoc = await Promise.allSettled([
                 refreshWeatherState(loc),
                 refreshTrafficState(loc),
                 refreshFestivalState(loc),
             ])
-        ),
+            // Log per-location failures
+            const stimulusNames = ['weather', 'traffic', 'festival']
+            perLoc.forEach((r, i) => {
+                if (r.status === 'rejected') {
+                    console.error(
+                        `[StimulusRouter] ${stimulusNames[i]} refresh failed for location (hash=${loc.length}):`,
+                        r.reason,
+                    )
+                }
+            })
+        }),
     )
+
+    // Log any top-level batch failures
+    results.forEach((r, i) => {
+        if (r.status === 'rejected') {
+            console.error(`[StimulusRouter] Batch item ${i} failed:`, r.reason)
+        }
+    })
 }
 

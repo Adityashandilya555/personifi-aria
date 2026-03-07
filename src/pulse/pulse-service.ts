@@ -98,8 +98,8 @@ export class PulseService {
     this.cache.set(input.userId, next)
 
     // Sync engagement state to weighted metrics record (Issue #93)
-    // Fire-and-forget — don't block the main scoring path
-    syncEngagementState(input.userId, nextState, nextScore).catch(() => { })
+    // Fire-and-forget — use setImmediate to stay off the response path
+    setImmediate(() => syncEngagementState(input.userId, nextState, nextScore).catch(() => { }))
 
     if (current.state !== nextState) {
       console.log(
