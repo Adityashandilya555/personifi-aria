@@ -170,6 +170,16 @@ async function generateSummary(
     userId: string,
     messages: ArchivableMessage[]
 ): Promise<string | null> {
+    // ── Try Bedrock first ────────────────────────────────────────────────
+    try {
+        const { summarizeViaBedrock } = await import('./bedrock-summarizer.js')
+        const bedrockResult = await summarizeViaBedrock(userId, messages)
+        if (bedrockResult) return bedrockResult
+    } catch {
+        // Bedrock unavailable — fall through to Groq
+    }
+
+    // ── Fallback: Groq 8B ────────────────────────────────────────────────
     // Filter to user/assistant messages only, last 30 messages max
     const relevant = messages
         .filter(m => m.role === 'user' || m.role === 'assistant')

@@ -8,6 +8,7 @@ import {
   URGENCY_PATTERNS,
 } from './constants.js'
 import type { EngagementSignals, PulseInput } from './types.js'
+import type { BedrockSignals } from '../intelligence/bedrock-extractor.js'
 
 const STOP_WORDS = new Set([
   'a', 'an', 'and', 'are', 'at', 'be', 'can', 'do', 'for', 'from', 'get', 'go',
@@ -54,13 +55,30 @@ function topicKeyFromTokens(tokens: string[]): string | null {
   return tokens.slice(0, 4).join(':')
 }
 
-export function extractEngagementSignals(input: PulseInput): EngagementSignals {
+export function extractEngagementSignals(input: PulseInput, bedrockSignals?: BedrockSignals | null): EngagementSignals {
   const now = input.now ?? new Date()
   const normalizedMessage = input.message.trim()
 
-  const urgency = hasAnyPattern(normalizedMessage, URGENCY_PATTERNS) ? SIGNAL_WEIGHTS.urgency : 0
-  const desire = hasAnyPattern(normalizedMessage, DESIRE_PATTERNS) ? SIGNAL_WEIGHTS.desire : 0
-  const rejection = hasAnyPattern(normalizedMessage, REJECTION_PATTERNS) ? SIGNAL_WEIGHTS.rejection : 0
+  // Heuristic regex-based signals
+  let urgency = hasAnyPattern(normalizedMessage, URGENCY_PATTERNS) ? SIGNAL_WEIGHTS.urgency : 0
+  let desire = hasAnyPattern(normalizedMessage, DESIRE_PATTERNS) ? SIGNAL_WEIGHTS.desire : 0
+  let rejection = hasAnyPattern(normalizedMessage, REJECTION_PATTERNS) ? SIGNAL_WEIGHTS.rejection : 0
+
+  // Blend Bedrock signals when available (weighted average: 60% Bedrock, 40% heuristic)
+  if (bedrockSignals) {
+    const bedrockUrgency = bedrockSignals.urgency * SIGNAL_WEIGHTS.urgency
+    urgency = urgency > 0
+      ? urgency * 0.4 + bedrockUrgency * 0.6
+      : bedrockUrgency
+
+    if (bedrockSignals.desire && desire === 0) {
+      desire = SIGNAL_WEIGHTS.desire * 0.6  // Bedrock detected desire that heuristic missed
+    }
+
+    if (bedrockSignals.rejection && rejection === 0) {
+      rejection = SIGNAL_WEIGHTS.rejection * 0.6
+    }
+  }
 
   const previousMessageAt = parseTimestamp(input.previousMessageAt)
   const fastReply = isFastReply(previousMessageAt, now) ? SIGNAL_WEIGHTS.fastReply : 0
@@ -87,6 +105,7 @@ export function extractEngagementSignals(input: PulseInput): EngagementSignals {
   if (fastReply !== 0) matchedSignals.push('fast_reply')
   if (topicPersistence !== 0) matchedSignals.push('topic_persistence')
   if (classifierSignal !== 0) matchedSignals.push(`classifier_${classifierSignalKey}`)
+  if (bedrockSignals) matchedSignals.push('bedrock_enhanced')
 
   return {
     scoreDelta,
