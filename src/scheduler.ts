@@ -20,12 +20,10 @@ import { checkPriceAlerts } from './alerts/price-alerts.js'
 import { runSocialOutbound } from './social/index.js'
 import { runFriendBridgeOutbound } from './social/outbound-worker.js'
 import { runIntelligenceCron } from './intelligence/intelligence-cron.js'
-import { refreshTrafficState } from './stimulus/traffic-stimulus.js'
-import { refreshFestivalState } from './stimulus/festival-stimulus.js'
+import { refreshAllStimuliForActiveLocations } from './stimulus/stimulus-router.js'
 import { processMemoryWriteQueue } from './archivist/memory-queue.js'
 import { checkAndSummarizeSessions } from './archivist/session-summaries.js'
 import { sweepStaleTopics } from './topic-intent/sweep.js'
-import { refreshWeatherState } from './weather/weather-stimulus.js'
 
 // ─── Core scheduler ────────────────────────────────────────────────────────
 
@@ -103,30 +101,13 @@ export function initScheduler(_databaseUrl: string) {
     }
   })
 
-  // ── 6b. Weather stimulus refresh — every 30 minutes ───────────────────
+  // ── 6b. Stimulus refresh (weather + traffic + festival) — every 30 minutes (Issue #93)
+  //    Refreshes all stimuli for all active user locations via stimulus-router
   cron.schedule('*/30 * * * *', async () => {
     try {
-      await refreshWeatherState()
+      await refreshAllStimuliForActiveLocations()
     } catch (err) {
-      console.error('[SCHEDULER] Weather stimulus refresh error:', err)
-    }
-  })
-
-  // ── 6c. Traffic stimulus refresh — every 30 minutes (Issue #91) ──────
-  cron.schedule('*/30 * * * *', async () => {
-    try {
-      await refreshTrafficState()
-    } catch (err) {
-      console.error('[SCHEDULER] Traffic stimulus refresh error:', err)
-    }
-  })
-
-  // ── 6d. Festival stimulus refresh — every 6 hours (Issue #90) ────────
-  cron.schedule('0 */6 * * *', async () => {
-    try {
-      await refreshFestivalState()
-    } catch (err) {
-      console.error('[SCHEDULER] Festival stimulus refresh error:', err)
+      console.error('[SCHEDULER] Stimulus batch refresh error:', err)
     }
   })
 
