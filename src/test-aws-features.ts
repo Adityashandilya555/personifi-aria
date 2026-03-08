@@ -1,3 +1,4 @@
+import 'dotenv/config'
 import { extractSignalsViaBedrock } from './intelligence/bedrock-extractor.js'
 import { PulseService } from './pulse/pulse-service.js'
 import { getPool } from './character/session-store.js'
