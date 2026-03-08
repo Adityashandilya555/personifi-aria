@@ -51,13 +51,21 @@ async function runAwsTests() {
     console.log('\n[debug] ---------------------------------------------------')
     console.log('[debug] 2️⃣  TESTING PULSE / ENGAGEMENT METRICS')
     console.log('[debug] ---------------------------------------------------')
-    const testUserId = `test-aws-user-${Date.now()}`
+    const testUserId = crypto.randomUUID()
     console.log(`[debug] Creating fake engagement for test user: ${testUserId}`)
     console.log('[debug] Sending highly urgent message: "I need you to book this hotel right now, please hurry it\'s very urgent!"')
 
     try {
-        const { initDatabase } = await import('./character/session-store.js')
+        const { initDatabase, getPool } = await import('./character/session-store.js')
         await initDatabase(process.env.DATABASE_URL || 'postgresql://dummy:dummy@localhost:5432/dummy')
+
+        // Ensure user exists for foreign key constraint
+        const db = getPool()
+        await db.query(`
+            INSERT INTO users (user_id, channel, channel_user_id) 
+            VALUES ($1, 'test', $1) 
+            ON CONFLICT (user_id) DO NOTHING
+        `, [testUserId])
 
         const pulseService = new PulseService()
         const record = await pulseService.recordEngagement({
