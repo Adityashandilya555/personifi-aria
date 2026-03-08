@@ -64,9 +64,9 @@ async function runAwsTests() {
         const db = getPool()
         await db.query(`
             INSERT INTO users (user_id, channel, channel_user_id) 
-            VALUES ($1, 'test', $1) 
+            VALUES ($1, 'test', $2) 
             ON CONFLICT (user_id) DO NOTHING
-        `, [testUserId])
+        `, [testUserId, testUserId])
 
         const pulseService = new PulseService()
         const record = await pulseService.recordEngagement({
