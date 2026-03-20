@@ -13,17 +13,12 @@ permissions:
 
 jobs:
   pr_agent_job:
-    # Trigger on:
-    # 1. Any new/reopened PR
-    # 2. When CodeRabbitAI posts a review (Qodo reads it and gives final verdict)
-    # 3. When DeepSource posts a review
-    # 4. Manual /review comment
+    # Triggers ONLY when:
+    # 1. DeepSource completes its review — Qodo runs after and summarizes logical issues
+    # 2. Explicit /review comment — manual trigger
     if: |
-      github.event_name == 'pull_request' ||
-      (github.event_name == 'pull_request_review' && (
-        github.event.review.user.login == 'coderabbitai[bot]' ||
-        github.event.review.user.login == 'deepsource-io[bot]'
-      )) ||
+      (github.event_name == 'pull_request_review' &&
+        github.event.review.user.login == 'deepsource-io[bot]') ||
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/review'))
     runs-on: ubuntu-latest
     name: Run Qodo on PR

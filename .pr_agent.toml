@@ -12,14 +12,28 @@ approve_pr_on_self_review = false
 extra_instructions = """
 You are the final reviewer for **Personifi-Aria** — a production TypeScript Telegram bot undergoing a structured 8-phase architectural migration.
 
-Your job:
-1. Read any CodeRabbitAI and DeepSource review comments already posted on this PR
-2. Evaluate each finding against the architecture context below
-3. Give a FINAL VERDICT section at the end of your review with:
-   - MUST FIX: findings that are genuinely blocking or architecturally wrong
-   - VALID BUT LOW PRIORITY: real issues that are in files scheduled for deletion or not on the critical path
-   - SAFE TO IGNORE: noise, style opinions, or suggestions that contradict the migration direction
-   - MISSING FROM OTHER REVIEWS: things CodeRabbitAI/DeepSource missed that actually matter
+**DeepSource has already reviewed this PR for antipatterns, code style, and static analysis issues. Do NOT repeat or re-flag anything DeepSource has already covered.**
+
+Your job has two parts:
+
+**Part 1 — DeepSource Summary**
+Read all DeepSource inline comments and review findings on this PR. Write a concise summary grouped as:
+- MUST FIX (from DeepSource): issues DeepSource flagged that are genuine blockers
+- SAFE TO IGNORE (from DeepSource): false positives or issues in files scheduled for deletion in Phase 6
+
+**Part 2 — Logical Issues Only**
+Independently review the PR diff for logical correctness issues ONLY. Do not flag style, formatting, naming, or anything static analysis tools catch. Focus exclusively on:
+- Wrong business logic (incorrect scoring formula, wrong Pulse delta values, wrong thresholds)
+- Race conditions or data corruption in concurrent code
+- Missing or incorrect database constraints that would cause silent data bugs
+- Incorrect query logic that would return wrong results
+- Architectural violations against the migration plan (e.g. blocking writes in response path, new cron jobs added to scheduler.ts, tool calls without sandbox)
+- ProactiveState or signal_packets logic that could corrupt Sentinel's scoring loop
+
+End with a single **VERDICT** section:
+- MUST FIX (logical): your own logical findings
+- SAFE TO IGNORE (from DeepSource): DeepSource findings that don't need action
+- MUST FIX (from DeepSource): DeepSource findings that genuinely need action
 
 ---
 
@@ -253,40 +267,33 @@ Benchmarks: avg <500ms (no tool), <800ms (with tool), Sentinel 500 users <5 minu
 
 ---
 
-## REVIEW RULES — HOW TO FLAG FINDINGS
+## LOGICAL ISSUES TO ACTIVELY CHECK (your exclusive focus)
 
-When reviewing CodeRabbitAI and DeepSource comments:
+Only flag issues in these categories — ignore everything else:
 
-SAFE TO IGNORE — flag these explicitly:
-- Style/formatting suggestions in files scheduled for deletion (mood-engine, influence-engine, cognitive, Scout files, personality.ts layers, proactiveRunner, scheduler crons)
-- Suggestions to add abstraction or refactor legacy code that is being deleted in Phase 6
-- Type annotation suggestions in deprecated modules
-- Import order warnings in any file not on the Phase 0-5 critical path
-- Test coverage requests for files being deleted
+MUST FIX — logical correctness:
+- Pulse delta values that don't match spec: rejection=-18, committed=+14, soft-yes=+8, ignore=-5
+- Scoring formula deviations: score = Σ stimulus_w × pref_match(U,S) × receptivity(U) × (1-fatigue(U))
+- Wrong FIRE/BUFFER/DROP thresholds: FIRE ≥0.8, BUFFER 0.6-0.8, DROP <0.6
+- Blocking DB writes in the response path (must be fire-and-forget after response sent)
+- Tool calls that bypass tool-sandbox.ts validation
+- ProactiveState injected without checking direction-mismatch against current user intent
+- signal_packets not written after each reactive Alpha response
+- New periodic work added to scheduler.ts instead of Sentinel loop
+- handler-legacy.ts deleted before Phase 6 three-day burn-in
+- Missing unique constraint enforcement (user_id+stimulus_key on proactive_state)
+- Sentinel FIRE path that skips writing to proactive_state before calling Telegram API
+- Fatigue logic that allows more than 3 proactive messages/day (5 if PROACTIVE pulse)
+- Pulse mode switch without hysteresis (must require 3 positive interactions for REACTIVE→PROACTIVE recovery)
 
-VALID BUT LOW PRIORITY:
-- Issues in files that are on the critical path but not in the current active phase
-- Suggestions that are architecturally correct but would block the current phase from merging
-
-MUST FIX:
-- Any blocking DB write in the response path (must be fire-and-forget)
-- Tool calls executing without going through tool-sandbox.ts
-- New cron jobs added to scheduler.ts (all periodic work must go to Sentinel loop)
-- handler-legacy.ts being deleted before Phase 6 burn-in
-- ProactiveState injected without direction-mismatch check
-- Pulse signal values that don't match spec (rejection=-18, committed=+14, soft-yes=+8, ignore=-5)
-- Token budget violations (total context > 8000 tokens in Alpha call)
-- Missing indexes on new tables (user_id+status on proactive_state, unique on stimulus_cache)
-- Telegram parse mode inconsistency (mixing HTML and Markdown)
-- sendData() from Mini Apps processed without validation
-
-MISSING FROM OTHER REVIEWS — actively look for:
-- New logic added to files scheduled for deletion
-- Sync DB writes blocking the response path
-- LLM calls added that push total above 2 per message
-- Fusion Engine changes that make it a replacement instead of parallel addition (Phase 1 only)
-- Missing feature flag when modifying handler.ts
-- Social signals or friend graph writes that don't go to Neo4j
+DO NOT FLAG (DeepSource already handles these):
+- Code style, formatting, naming conventions
+- Missing type annotations
+- Import ordering
+- Unused variables or dead code
+- Test coverage
+- Complexity metrics
+- Any issue in files scheduled for deletion: mood-engine.ts, influence-engine.ts, cognitive.ts, src/scout/, personality.ts legacy layers, proactiveRunner.ts
 """
 
 [pr_description]
