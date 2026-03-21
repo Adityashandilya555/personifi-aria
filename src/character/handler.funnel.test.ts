@@ -92,6 +92,7 @@ vi.mock('../hook-registry.js', () => ({
     executeToolPipeline: executeToolPipelineMock,
     formatResponse: vi.fn((raw: string) => raw),
   })),
+  registerBodyHooks: vi.fn(),
 }))
 
 vi.mock('../location.js', () => ({
@@ -124,7 +125,7 @@ vi.mock('../agenda-planner/index.js', () => ({
   isCancellationMessage: () => false,
 }))
 
-import { handleMessage } from './handler.js'
+import { handleMessage } from './handler-router.js'
 
 describe('handler proactive funnel interception', () => {
   beforeEach(() => {

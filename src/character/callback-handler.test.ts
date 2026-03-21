@@ -6,7 +6,7 @@ const { handleMessageMock, handleFunnelCallbackMock, handleTaskCallbackMock } = 
   handleTaskCallbackMock: vi.fn(),
 }))
 
-vi.mock('./handler.js', () => ({
+vi.mock('./handler-router.js', () => ({
   handleMessage: handleMessageMock,
 }))
 

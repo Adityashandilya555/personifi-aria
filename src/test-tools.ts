@@ -445,7 +445,7 @@ async function runAgentTests(): Promise<{ passed: number; failed: number }> {
             name: 'Handler Pipeline',
             fn: async () => {
                 if (!process.env.GROQ_API_KEY) throw new Error('GROQ_API_KEY not set — needed for Groq client init')
-                const { handleMessage } = await import('./character/handler.js')
+                const { handleMessage } = await import('./character/handler-router.js')
                 if (typeof handleMessage !== 'function') throw new Error('handleMessage missing')
                 return 'handleMessage() exported ✓'
             },

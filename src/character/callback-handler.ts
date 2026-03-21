@@ -6,7 +6,7 @@
  * The [callback:action] prefix prevents the 8B from misfiring a tool route.
  */
 
-import { handleMessage } from './handler.js'
+import { handleMessage } from './handler-router.js'
 import { handleFunnelCallback } from '../proactive-intent/index.js'
 import { handleTaskCallback } from '../task-orchestrator/index.js'
 import { acceptFriend } from '../social/friend-graph.js'
@@ -84,7 +84,7 @@ export async function handleCallbackAction(
         )
         return {
           text: generated.text,
-          choices: (generated._buttons ?? result.buttons)?.flat().map(b => ({ label: b.text, action: b.callback_data })),
+          choices: (generated._buttons ?? result.buttons)?.flat().map((b: any) => ({ label: b.text, action: b.callback_data })),
         }
       }
     } catch (err) {

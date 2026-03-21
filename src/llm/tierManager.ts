@@ -16,17 +16,24 @@ import { withGroqRetry } from '../utils/retry.js'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
+export interface ProviderCallResult {
+    text: string;
+    toolCalls?: any[];
+}
+
 export interface LLMProvider {
     name: string
     call: (
         messages: ChatMessage[],
         opts: CallOptions
-    ) => Promise<string>
+    ) => Promise<ProviderCallResult>
 }
 
 export interface ChatMessage {
-    role: 'system' | 'user' | 'assistant'
+    role: 'system' | 'user' | 'assistant' | 'tool'
     content: string
+    tool_calls?: any[]
+    tool_call_id?: string
 }
 
 export interface CallOptions {
@@ -37,9 +44,10 @@ export interface CallOptions {
     toolChoice?: 'auto' | 'none'
 }
 
-interface ProviderResult {
+export interface ProviderResult {
     text: string
     provider: string
+    toolCalls?: any[]
 }
 
 // ─── Media URL Stripping ────────────────────────────────────────────────────
@@ -93,7 +101,11 @@ function makeGroqProvider(model: string, label: string): LLMProvider {
                 () => client.chat.completions.create(params),
                 `groq-${model.includes('70b') || model.includes('70B') ? '70b' : '8b'}`,
             )
-            return completion.choices[0]?.message?.content || ''
+            const message = completion.choices[0]?.message;
+            return {
+                text: message?.content || '',
+                toolCalls: message?.tool_calls
+            }
         },
     }
 }
@@ -143,7 +155,15 @@ function makeGeminiProvider(model: string, label: string): LLMProvider {
             }
 
             const data = await resp.json()
-            return data.candidates?.[0]?.content?.parts?.[0]?.text || ''
+            const fnCalls = data.candidates?.[0]?.content?.parts?.filter((p: any) => p.functionCall).map((p: any) => ({
+                id: 'call_' + Math.random().toString(36).substr(2, 9),
+                type: 'function',
+                function: { name: p.functionCall.name, arguments: JSON.stringify(p.functionCall.args) }
+            }));
+            return {
+                text: data.candidates?.[0]?.content?.parts?.[0]?.text || '',
+                toolCalls: fnCalls?.length ? fnCalls : undefined
+            }
         },
     }
 }
@@ -178,8 +198,8 @@ async function callWithFallback(
         for (let attempt = 0; attempt < BACKOFF_DELAYS.length; attempt++) {
             try {
                 console.log(`[LLM] Using ${provider.name} (${tier})`)
-                const text = await provider.call(messages, opts)
-                return { text, provider: provider.name }
+                const res = await provider.call(messages, opts)
+                return { text: res.text, toolCalls: res.toolCalls, provider: provider.name }
             } catch (err: any) {
                 const is429 = err?.status === 429
                     || err?.error?.error?.code === 429
@@ -231,7 +251,7 @@ function sleep(ms: number): Promise<void> {
 export async function generateResponse(
     messages: ChatMessage[],
     opts: CallOptions = {}
-): Promise<{ text: string; provider: string }> {
+): Promise<ProviderResult> {
     const safeMessages = sanitizeMessages(messages)
     return callWithFallback(TIER2_PROVIDERS, safeMessages, opts, 'tier2-response')
 }
