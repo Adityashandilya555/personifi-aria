@@ -107,7 +107,7 @@ export function extractToolMediaContext(toolName: string, rawData: unknown): Too
     ) {
         if (Array.isArray(rootArray)) {
             for (const entry of rootArray.slice(0, 8)) {
-                extractFromFoodEntry(entry, placeNames, itemNames, []) // Do not capture photos
+                extractFromFoodEntry(entry, placeNames, itemNames, photoUrls)
             }
         }
     } else if (

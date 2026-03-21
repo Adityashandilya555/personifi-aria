@@ -50,3 +50,5 @@ desktop.ini
 # ─── Playwright ──────────────────────────────────────────────────────────────
 playwright-report/
 test-results/
+
+CLAUDE.md
