@@ -16,10 +16,49 @@ import { getPool } from '../character/session-store.js'
 import { addMemories } from '../memory-store.js'
 import { addToGraph } from '../graph-memory.js'
 import { processUserMessage } from '../memory.js'
-import { updateConversationGoal } from '../cognitive.js'
 import { logger } from '../logger.js'
 
 const log = logger.child({ module: 'memory-queue' })
+
+// ─── Conversation Goal Persistence ───────────────────────────────────────────
+// Inlined from cognitive.ts (no longer imported to break the dependency).
+
+async function updateConversationGoal(
+    userId: string,
+    sessionId: string,
+    newGoal: string | null,
+    context: Record<string, any> = {}
+): Promise<void> {
+    const pool = getPool()
+    try {
+        if (!newGoal || newGoal.trim() === '') {
+            await pool.query(
+                `UPDATE conversation_goals
+                 SET status = 'completed', updated_at = NOW()
+                 WHERE user_id = $1
+                   AND session_id = $2
+                   AND status = 'active'
+                   AND COALESCE(source, 'classifier') = 'classifier'`,
+                [userId, sessionId]
+            )
+            return
+        }
+        await pool.query(
+            `INSERT INTO conversation_goals
+               (user_id, session_id, goal, status, context, goal_type, priority, source)
+             VALUES ($1, $2, $3, 'active', $4, 'general', 5, 'classifier')
+             ON CONFLICT ON CONSTRAINT conversation_goals_user_session_unique
+             DO UPDATE SET
+               goal       = EXCLUDED.goal,
+               context    = EXCLUDED.context,
+               source     = 'classifier',
+               updated_at = NOW()`,
+            [userId, sessionId, newGoal.trim(), JSON.stringify(context)]
+        )
+    } catch (error) {
+        log.error({ err: error }, 'Goal update failed')
+    }
+}
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 

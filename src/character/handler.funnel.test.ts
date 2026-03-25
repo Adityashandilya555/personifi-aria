@@ -4,32 +4,22 @@ const {
   getOrCreateUserMock,
   getOrCreateSessionMock,
   checkRateLimitMock,
-  classifyMessageMock,
+  callAlphaMock,
   handleFunnelReplyMock,
-  generateResponseMock,
   appendMessagesMock,
   agendaGetStackMock,
   agendaEvaluateMock,
-  routeMessageMock,
   executeToolPipelineMock,
 } = vi.hoisted(() => ({
   getOrCreateUserMock: vi.fn(),
   getOrCreateSessionMock: vi.fn(),
   checkRateLimitMock: vi.fn(),
-  classifyMessageMock: vi.fn(),
+  callAlphaMock: vi.fn(),
   handleFunnelReplyMock: vi.fn(),
-  generateResponseMock: vi.fn(),
   appendMessagesMock: vi.fn(),
   agendaGetStackMock: vi.fn(),
   agendaEvaluateMock: vi.fn(),
-  routeMessageMock: vi.fn(),
   executeToolPipelineMock: vi.fn(),
-}))
-
-vi.mock('groq-sdk', () => ({
-  default: class MockGroq {
-    chat = { completions: { create: vi.fn() } }
-  },
 }))
 
 vi.mock('./session-store.js', () => ({
@@ -38,6 +28,7 @@ vi.mock('./session-store.js', () => ({
   updateUserProfile: vi.fn(),
   appendMessages: appendMessagesMock,
   trimSessionHistory: vi.fn(),
+  clearSessionMessages: vi.fn(),
   checkRateLimit: checkRateLimitMock,
   trackUsage: vi.fn(),
   getPool: vi.fn(() => ({})),
@@ -64,15 +55,8 @@ vi.mock('../graph-memory.js', () => ({
   addToGraph: vi.fn(async () => undefined),
 }))
 
-vi.mock('../cognitive.js', () => ({
-  classifyMessage: classifyMessageMock,
-  getActiveGoal: vi.fn(async () => null),
-  updateConversationGoal: vi.fn(async () => undefined),
-}))
-
-vi.mock('../personality.js', () => ({
-  composeSystemPrompt: vi.fn(() => 'SYSTEM_PROMPT'),
-  getRawSoulPrompt: vi.fn(() => 'RAW_SOUL'),
+vi.mock('../alpha/alpha-caller.js', () => ({
+  callAlpha: callAlphaMock,
 }))
 
 vi.mock('../memory.js', () => ({
@@ -88,7 +72,7 @@ vi.mock('../identity.js', () => ({
 
 vi.mock('../hook-registry.js', () => ({
   getBrainHooks: vi.fn(() => ({
-    routeMessage: routeMessageMock,
+    routeMessage: vi.fn(async () => ({ useTool: false, toolName: null, toolParams: {} })),
     executeToolPipeline: executeToolPipelineMock,
     formatResponse: vi.fn((raw: string) => raw),
   })),
@@ -103,10 +87,6 @@ vi.mock('../character/scene-manager.js', () => ({
   toolToFlow: vi.fn(() => 'none'),
 }))
 
-vi.mock('../llm/tierManager.js', () => ({
-  generateResponse: generateResponseMock,
-}))
-
 vi.mock('../proactive-intent/index.js', () => ({
   handleFunnelReply: handleFunnelReplyMock,
 }))
@@ -117,6 +97,30 @@ vi.mock('../agenda-planner/index.js', () => ({
     evaluate: agendaEvaluateMock,
   },
   isCancellationMessage: () => false,
+}))
+
+vi.mock('../inline-media.js', () => ({
+  selectInlineMedia: vi.fn(async () => null),
+}))
+
+vi.mock('../influence-engine.js', () => ({
+  selectStrategy: vi.fn(() => ({ mediaHint: false })),
+}))
+
+vi.mock('../weather/weather-stimulus.js', () => ({
+  getWeatherState: vi.fn(() => null),
+}))
+
+vi.mock('../stimulus/traffic-stimulus.js', () => ({
+  getTrafficState: vi.fn(() => null),
+}))
+
+vi.mock('../topic-intent/index.js', () => ({
+  topicIntentService: {
+    getActiveTopics: vi.fn(async () => []),
+    processMessage: vi.fn(async () => undefined),
+    completeTopic: vi.fn(async () => undefined),
+  },
 }))
 
 import { handleMessage } from './handler.js'
@@ -140,28 +144,17 @@ describe('handler proactive funnel interception', () => {
       lastActive: new Date(),
     })
     checkRateLimitMock.mockResolvedValue(true)
-    classifyMessageMock.mockResolvedValue({
-      message_complexity: 'simple',
-      needs_tool: false,
-      tool_hint: null,
-      tool_args: {},
-      skip_memory: true,
-      skip_graph: true,
-      skip_cognitive: true,
-      userSignal: 'normal',
-      cognitiveState: {
-        internalMonologue: 'ok',
-        emotionalState: 'neutral',
-        conversationGoal: 'inform',
-        relevantMemories: [],
-      },
-    })
-    generateResponseMock.mockResolvedValue({
-      text: 'main pipeline reply',
+    callAlphaMock.mockResolvedValue({
+      responseText: 'main pipeline reply',
       provider: 'mock',
+      toolCalled: false,
+      toolName: undefined,
+      toolRawData: undefined,
+      budget: { soul: 0, userCtx: 0, proactive: 0, pulse: 0, history: 0, tools: 0, total: 100, overflow: false },
+      totalLatencyMs: 50,
+      llmCallCount: 1,
     })
     appendMessagesMock.mockResolvedValue(undefined)
-    routeMessageMock.mockResolvedValue({ useTool: false, toolName: null, toolParams: {} })
     executeToolPipelineMock.mockResolvedValue(null)
     agendaGetStackMock.mockResolvedValue([])
     agendaEvaluateMock.mockResolvedValue({
@@ -183,8 +176,7 @@ describe('handler proactive funnel interception', () => {
     const result = await handleMessage('telegram', 'tg1', 'hello')
 
     expect(result.text).toBe('funnel handled reply')
-    expect(classifyMessageMock).not.toHaveBeenCalled()
-    expect(generateResponseMock).not.toHaveBeenCalled()
+    expect(callAlphaMock).not.toHaveBeenCalled()
   })
 
   it('continues normal pipeline when funnel says not handled (pass-through)', async () => {
@@ -196,8 +188,7 @@ describe('handler proactive funnel interception', () => {
     const result = await handleMessage('telegram', 'tg1', 'compare this for me')
 
     expect(result.text).toBe('main pipeline reply')
-    expect(classifyMessageMock).toHaveBeenCalledTimes(1)
-    expect(generateResponseMock).toHaveBeenCalledTimes(1)
+    expect(callAlphaMock).toHaveBeenCalledTimes(1)
   })
 
   it('triggers proactive search_places after onboarding location capture', async () => {

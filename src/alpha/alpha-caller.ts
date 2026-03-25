@@ -46,6 +46,8 @@ export interface AlphaCallResult {
     toolCalled: boolean
     /** Tool name if called */
     toolName?: string
+    /** Raw tool output data (for venue/media extraction downstream) */
+    toolRawData?: unknown
     /** Token budget info */
     budget: BudgetBreakdown
     /** Total latency across all LLM calls (ms) */
@@ -137,9 +139,11 @@ export async function callAlpha(input: AlphaCallInput): Promise<AlphaCallResult>
 
     // Parse and execute through sandbox
     let toolResultText: string
+    let toolRawData: unknown
     try {
         const execResult = await executeAlphaTool(toolName, rawArgs, input.userId)
         if (execResult.success && execResult.data != null) {
+            toolRawData = execResult.data
             toolResultText = typeof execResult.data === 'string'
                 ? execResult.data
                 : JSON.stringify(execResult.data)
@@ -175,6 +179,7 @@ export async function callAlpha(input: AlphaCallInput): Promise<AlphaCallResult>
             provider: providerUsed,
             toolCalled: true,
             toolName,
+            toolRawData,
             budget: ctx2.budget,
             totalLatencyMs: Date.now() - start,
             llmCallCount: 2,
@@ -197,6 +202,7 @@ export async function callAlpha(input: AlphaCallInput): Promise<AlphaCallResult>
         provider: providerUsed,
         toolCalled: true,
         toolName,
+        toolRawData,
         budget: ctx2.budget,
         totalLatencyMs: Date.now() - start,
         llmCallCount: 2,

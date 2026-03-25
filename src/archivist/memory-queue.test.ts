@@ -38,10 +38,6 @@ vi.mock('../memory.js', () => ({
     processUserMessage: mocks.processUser,
 }))
 
-vi.mock('../cognitive.js', () => ({
-    updateConversationGoal: mocks.updateGoal,
-}))
-
 // Import AFTER vi.mock declarations
 import { enqueueMemoryWrite, processMemoryWriteQueue } from './memory-queue.js'
 
@@ -159,12 +155,19 @@ describe('processMemoryWriteQueue', () => {
             },
         })
         mocks.query
-            .mockResolvedValueOnce({ rows: [row] })
-            .mockResolvedValueOnce({ rows: [] })
-            .mockResolvedValueOnce({ rows: [] })
+            .mockResolvedValueOnce({ rows: [row] })  // claim batch
+            .mockResolvedValueOnce({ rows: [] })       // updateConversationGoal UPSERT
+            .mockResolvedValueOnce({ rows: [] })       // mark completed
+            .mockResolvedValueOnce({ rows: [] })       // purge
 
-        await processMemoryWriteQueue(20)
-        expect(mocks.updateGoal).toHaveBeenCalledWith(USER_ID, 'sess-001', 'Find flights to Bali', {})
+        const count = await processMemoryWriteQueue(20)
+        expect(count).toBe(1)
+        // Verify the goal UPSERT was made with correct parameters
+        const upsertCall = mocks.query.mock.calls.find(
+            (c: any[]) => typeof c[0] === 'string' && c[0].includes('conversation_goals')
+        )
+        expect(upsertCall).toBeDefined()
+        expect(upsertCall?.[1]).toEqual([USER_ID, 'sess-001', 'Find flights to Bali', '{}'])
     })
 
     it('retry: should reset to pending (not failed) when attempts < maxAttempts', async () => {

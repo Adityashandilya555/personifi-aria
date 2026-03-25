@@ -24,6 +24,5 @@ export type {
   ToolDefinition,
 } from '../hooks.js'
 
-// Classifier
-export { classifyMessage } from '../cognitive.js'
+// Classifier types (re-exported for downstream consumers)
 export type { ClassifierResult, MessageComplexity } from '../types/cognitive.js'

@@ -10,7 +10,6 @@
 
 import type { BrainHooks, BodyHooks } from './hooks.js'
 import { defaultBrainHooks, defaultBodyHooks } from './hooks.js'
-import { executeScoutPipeline } from './scout/index.js'
 
 // ─── Singleton State ─────────────────────────────────────────────────────────
 
@@ -37,7 +36,16 @@ export function registerBodyHooks(hooks: BodyHooks): void {
 export function getBrainHooks(): BrainHooks {
     return {
         ...brainHooks,
-        executeToolPipeline: (decision, context) => executeScoutPipeline(decision, context),
+        executeToolPipeline: async (decision, _context) => {
+            if (!decision.toolName) return null
+            const result = await bodyHooks.executeTool(decision.toolName, decision.toolParams)
+            if (!result.success) return null
+            return {
+                success: true,
+                data: typeof result.data === 'string' ? result.data : JSON.stringify(result.data),
+                raw: result.data,
+            }
+        },
     }
 }
 
