@@ -16,8 +16,6 @@ import cron from 'node-cron'
 import { logger } from './logger.js'
 
 const log = logger.child({ module: 'scheduler' })
-import { runProactiveForAllUsers, runTopicFollowUpsForAllUsers, loadUsersFromDB } from './media/proactiveRunner.js'
-import { registerMediaCron } from './cron/media-cron.js'
 import { runMigrations, cleanupExpiredRateLimits } from './character/session-store.js'
 import { checkPriceAlerts } from './alerts/price-alerts.js'
 import { runSocialOutbound } from './social/index.js'
@@ -35,31 +33,6 @@ export function initScheduler(_databaseUrl: string) {
   setInterval(() => {
     log.info('Heartbeat')
   }, 30_000)
-
-  // ── 2a. Topic follow-ups — every 30 minutes (Mode A, priority) ─────────
-  //    Checks warm topics (confidence > 25%, inactive 4h+) and sends natural follow-ups.
-  cron.schedule('*/30 * * * *', async () => {
-    log.info('Topic follow-up run')
-    try {
-      await runTopicFollowUpsForAllUsers()
-    } catch (err) {
-      log.error({ err }, 'Topic follow-up error')
-    }
-  })
-
-  // ── 2b. Content blast pipeline — every 2 hours (Mode B, fallback) ───────
-  //    Generic content blast when no warm topics exist. Gate checks in runner.
-  cron.schedule('0 */2 * * *', async () => {
-    log.info('Content blast pipeline triggered')
-    try {
-      await runProactiveForAllUsers()
-    } catch (err) {
-      log.error({ err }, 'Content blast pipeline error')
-    }
-  })
-
-  // ── 3. Media scraping cron — every 6 hours ────────────────────────────
-  registerMediaCron()
 
   // ── 3b. Social outbound worker — every 15 minutes (#58) ───────────────
   cron.schedule('*/15 * * * *', async () => {
@@ -148,11 +121,10 @@ export function initScheduler(_databaseUrl: string) {
     }
   })
 
-  // ── 4. Migrations + load active users on startup ──────────────────────
+  // ── 4. Migrations on startup ──────────────────────────────────────────
   setTimeout(async () => {
     try {
       await runMigrations()
-      await loadUsersFromDB()
     } catch (err) {
       log.error({ err }, 'Startup DB tasks failed')
     }

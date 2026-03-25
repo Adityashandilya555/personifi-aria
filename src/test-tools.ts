@@ -391,15 +391,6 @@ async function runAgentTests(): Promise<{ passed: number; failed: number }> {
             },
         },
         {
-            name: 'Proactive Runner',
-            fn: async () => {
-                const { runProactiveForAllUsers, runTopicFollowUpsForAllUsers } = await import('./media/proactiveRunner.js')
-                if (typeof runProactiveForAllUsers !== 'function') throw new Error('runProactiveForAllUsers missing')
-                if (typeof runTopicFollowUpsForAllUsers !== 'function') throw new Error('runTopicFollowUpsForAllUsers missing')
-                return 'runProactiveForAllUsers() + runTopicFollowUpsForAllUsers() ✓'
-            },
-        },
-        {
             name: 'Channel Adapters',
             fn: async () => {
                 const { channels, getEnabledChannels } = await import('./channels.js')

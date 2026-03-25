@@ -35,7 +35,6 @@ import { loadPreferences } from '../memory.js'
 import { pulseService } from '../pulse/index.js'
 import { callAlpha } from '../alpha/alpha-caller.js'
 import type { HistoryMessage } from '../alpha/context-manager.js'
-import { registerProactiveUser, updateUserActivity } from '../media/proactiveRunner.js'
 import { handleOnboarding, type OnboardingResult } from '../onboarding/onboarding-flow.js'
 import { generateLinkCode, redeemLinkCode, getLinkedUserIds } from '../identity.js'
 
@@ -106,12 +105,6 @@ export async function handleMessageAlpha(
 
     // Get/create user
     const user = await getOrCreateUser(channel, channelUserId)
-
-    // Activity tracking (resets inactivity timer)
-    if (channel === 'telegram') {
-        updateUserActivity(channelUserId, channelUserId)
-    }
-    registerProactiveUser(channelUserId, channelUserId)
 
     // Onboarding intercept
     let onboardingResult: OnboardingResult | null = options.onboardingResult ?? null

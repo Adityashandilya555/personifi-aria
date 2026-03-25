@@ -107,11 +107,6 @@ vi.mock('../llm/tierManager.js', () => ({
   generateResponse: generateResponseMock,
 }))
 
-vi.mock('../media/proactiveRunner.js', () => ({
-  registerProactiveUser: vi.fn(),
-  updateUserActivity: vi.fn(),
-}))
-
 vi.mock('../proactive-intent/index.js', () => ({
   handleFunnelReply: handleFunnelReplyMock,
 }))

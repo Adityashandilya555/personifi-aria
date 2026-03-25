@@ -71,8 +71,6 @@ import { setScene, toolToFlow } from '../character/scene-manager.js'
 // Tier 2: LLM with fallback chains
 import { generateResponse, type ChatMessage } from '../llm/tierManager.js'
 
-// Proactive content registration + activity tracking
-import { registerProactiveUser, updateUserActivity } from '../media/proactiveRunner.js'
 import { handleFunnelReply } from '../proactive-intent/index.js'
 import { handleTaskReply } from '../task-orchestrator/index.js'
 import { addFriend, acceptFriend, removeFriend, getFriends, getPendingRequests, resolveUserByPlatformId } from '../social/friend-graph.js'
@@ -565,11 +563,6 @@ export async function handleMessage(
 
     // ─── Step 2: Get or create user, resolve person_id ────────────
     const user = await getOrCreateUser(channel, channelUserId)
-
-    // Register + update activity clock (resets inactivity timer for smart gate)
-    if (channel === 'telegram') {
-      updateUserActivity(channelUserId, channelUserId)
-    }
 
     // ─── Step 2.5: Onboarding intercept (Issue #92) ──────────────
     // New users must complete onboarding, but responses should still flow through
